@@ -138,11 +138,48 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
     gap: 20px;
   }
   h1 {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 14px;
+    flex-wrap: wrap;
     margin: 0;
     font-size: clamp(42px, 8vw, 78px);
     font-weight: 800;
     line-height: .94;
     letter-spacing: 0;
+  }
+  .title-compass {
+    width: clamp(40px, 8vw, 62px);
+    height: clamp(58px, 12vw, 92px);
+    margin-bottom: -8px;
+    filter: drop-shadow(0 16px 28px rgba(31, 74, 55, .18));
+  }
+  .title-compass .disc {
+    fill: var(--primary);
+  }
+  .title-compass .wing {
+    stroke: color-mix(in srgb, var(--primary) 82%, #11251a);
+    stroke-linejoin: round;
+    stroke-width: 5;
+  }
+  .title-compass .wing-left {
+    fill: #e5d0b5;
+  }
+  .title-compass .wing-right {
+    fill: #fffaf2;
+  }
+  .title-compass .core {
+    fill: #d97955;
+    stroke: color-mix(in srgb, var(--primary) 82%, #11251a);
+    stroke-linejoin: round;
+    stroke-width: 2;
+  }
+  .title-compass .ridge {
+    fill: none;
+    opacity: .2;
+    stroke: color-mix(in srgb, var(--primary) 82%, #11251a);
+    stroke-linecap: round;
+    stroke-width: 2;
   }
   p {
     margin: 0;
@@ -248,7 +285,16 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
 </head>
 <body>
 <main>
-  <h1>Autopilot</h1>
+  <h1>
+    <span>Autopilot</span>
+    <svg class="title-compass" viewBox="0 0 64 96" aria-label="Autopilot compass">
+      <circle class="disc" cx="32" cy="51" r="31" />
+      <path class="wing wing-left" d="M32 6 59 89 32 72 5 89Z" />
+      <path class="wing wing-right" d="M32 6 59 89 32 72Z" />
+      <path class="core" d="M32 22 45 64 32 56 19 64Z" />
+      <path class="ridge" d="M32 6 32 72" />
+    </svg>
+  </h1>
   <p>Where to next?</p>
   <form action="https://www.google.com/search" method="get">
     <span class="search-mark" aria-hidden="true"></span>

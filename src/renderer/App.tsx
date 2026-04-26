@@ -809,10 +809,7 @@ export function App(): JSX.Element {
                     type="button"
                   >
                     <span className={`workspace-icon ${item.color}`} aria-hidden="true">
-                      <AutopilotNeedle className="workspace-needle" />
-                      <span className="workspace-glyph">
-                        <Icon size={11} />
-                      </span>
+                      <Icon size={12} />
                     </span>
                     <span className="workspace-label">{item.label}</span>
                   </button>
@@ -1043,18 +1040,20 @@ export function App(): JSX.Element {
             <div className="web-content-placeholder">
               {isBrowserPreview ? (
                 <section className="empty-state" aria-label="Autopilot start page">
-                  <button className="icon-preview-trigger empty-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
-                    <AutopilotNeedle className="empty-needle" />
-                  </button>
-                  <h1>Ready to browse</h1>
-                  <p>Search or enter an address to get started</p>
+                  <h1 className="home-wordmark">
+                    <span>Autopilot</span>
+                    <button className="icon-preview-trigger home-title-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+                      <AutopilotNeedle className="home-title-needle" />
+                    </button>
+                  </h1>
+                  <p>Where to next?</p>
                   <form className="empty-search" onSubmit={navigate}>
                     <Search size={22} aria-hidden="true" />
                     <input
                       value={addressDraft}
                       onChange={(event) => setAddressDraft(event.target.value)}
                       aria-label="Search or enter address"
-                      placeholder="Search or enter address"
+                      placeholder="Search Google or enter an address"
                     />
                     <LockKeyhole size={19} aria-hidden="true" />
                   </form>
