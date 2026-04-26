@@ -12,6 +12,7 @@ import {
   updateSelectedBookmarkSources
 } from "./bookmarks.js";
 import { EmailService } from "./email.js";
+import { loadAutopilotEnv } from "./env.js";
 import { PasswordStore } from "./passwords.js";
 import { TabController } from "./tabs.js";
 import type { AddBookmarkFolderInput, AddBookmarkInput, BookmarkNodeTarget } from "../shared/bookmarks.js";
@@ -21,6 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 let tabs: TabController | null = null;
+loadAutopilotEnv();
 const passwordStore = new PasswordStore();
 const emailService = new EmailService();
 

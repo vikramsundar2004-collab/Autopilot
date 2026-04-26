@@ -81,6 +81,15 @@ function getGoogleClientId(): string {
   return (process.env.AUTOPILOT_GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "").trim();
 }
 
+function getGoogleClientSecret(): string {
+  return (process.env.AUTOPILOT_GOOGLE_CLIENT_SECRET || process.env.VITE_GOOGLE_CLIENT_SECRET || "").trim();
+}
+
+function getGoogleOAuthForm(input: Record<string, string>): Record<string, string> {
+  const clientSecret = getGoogleClientSecret();
+  return clientSecret ? { ...input, client_secret: clientSecret } : input;
+}
+
 function isStoredAccount(value: unknown): value is StoredEmailAccount {
   if (!value || typeof value !== "object") {
     return false;
@@ -193,7 +202,7 @@ export class EmailService {
         configured: false,
         connected: false,
         accountEmail: account?.accountEmail ?? null,
-        reason: "Set AUTOPILOT_GOOGLE_CLIENT_ID to enable Gmail sync."
+        reason: "Paste AUTOPILOT_GOOGLE_CLIENT_ID and AUTOPILOT_GOOGLE_CLIENT_SECRET into .env.local to enable Gmail sync."
       };
     }
 
@@ -344,11 +353,14 @@ export class EmailService {
 
     while (Date.now() - startedAt < device.expires_in * 1000) {
       await new Promise((resolve) => setTimeout(resolve, interval * 1000));
-      const token = await postForm<GmailTokenResponse>(GMAIL_TOKEN_URL, {
-        client_id: clientId,
-        device_code: device.device_code,
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code"
-      }).catch((error) => ({ error: error instanceof Error ? error.message : "authorization_pending" }));
+      const token = await postForm<GmailTokenResponse>(
+        GMAIL_TOKEN_URL,
+        getGoogleOAuthForm({
+          client_id: clientId,
+          device_code: device.device_code,
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code"
+        })
+      ).catch((error) => ({ error: error instanceof Error ? error.message : "authorization_pending" }));
 
       if (token.error === "authorization_pending") {
         continue;
@@ -375,11 +387,14 @@ export class EmailService {
       throw new Error("Gmail needs to be connected again.");
     }
 
-    const token = await postForm<GmailTokenResponse>(GMAIL_TOKEN_URL, {
-      client_id: getGoogleClientId(),
-      refresh_token: refreshToken,
-      grant_type: "refresh_token"
-    });
+    const token = await postForm<GmailTokenResponse>(
+      GMAIL_TOKEN_URL,
+      getGoogleOAuthForm({
+        client_id: getGoogleClientId(),
+        refresh_token: refreshToken,
+        grant_type: "refresh_token"
+      })
+    );
     if (!token.access_token) {
       throw new Error(token.error_description || token.error || "Google did not return a refreshed access token.");
     }
@@ -436,4 +451,3 @@ export class EmailService {
     return safeStorage.decryptString(Buffer.from(value, "base64"));
   }
 }
-

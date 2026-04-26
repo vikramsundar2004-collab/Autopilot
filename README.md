@@ -9,6 +9,17 @@ npm install
 npm run dev
 ```
 
+## Gmail Setup
+
+Create or edit `.env.local` in the project root:
+
+```bash
+AUTOPILOT_GOOGLE_CLIENT_ID=your-client-id
+AUTOPILOT_GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+Restart Autopilot after changing those values. `.env.local` is ignored by git, and `.env.example` shows the expected keys.
+
 ## Scripts
 
 - `npm run dev` starts Vite and Electron together.
