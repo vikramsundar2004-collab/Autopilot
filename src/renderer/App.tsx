@@ -173,6 +173,32 @@ function formatFocusMinutes(minutes: number): string {
   return remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
 }
 
+function getActionVerb(source: ActionItemSource): string {
+  switch (source) {
+    case "Email":
+      return "Reply or follow up";
+    case "Calendar":
+      return "Prepare for";
+    case "Chat":
+      return "Respond to";
+    case "Web":
+      return "Review";
+    case "Notes":
+      return "Turn into a task";
+    default:
+      return "Handle";
+  }
+}
+
+function getActionInstruction(item: ActionItem): string {
+  const context = item.context ? ` in ${item.context}` : "";
+  return `${getActionVerb(item.source)}: ${item.title}${context}.`;
+}
+
+function getActionSourceSummary(item: ActionItem): string {
+  return item.context ? `${item.source} - ${item.context}` : item.source;
+}
+
 function getSidebarMaxWidth(): number {
   if (typeof window === "undefined") {
     return MAX_SIDEBAR_WIDTH;
@@ -1361,24 +1387,26 @@ export function App(): JSX.Element {
                 <div>
                   <p className="panel-kicker">Today's call</p>
                   <h2>
-                    {urgentActionCount > 0
-                      ? "Close the urgent thread first, then move the next priority actions."
-                      : sourcedOpenActionItems.length > 0
-                        ? "Start with the next useful move, then clear the queue."
-                        : "No urgent work is waiting."}
+                    {nextActionItem ? `Do this first: ${getActionInstruction(nextActionItem)}` : "No urgent work is waiting."}
                   </h2>
                   <p>
-                    Reviewed {sourcedOpenActionItems.length} active signals from selected sources and condensed them into the next useful moves.
+                    {nextActionItem
+                      ? `Source: ${getActionSourceSummary(nextActionItem)}. Then work through the next ${
+                          Math.max(topPriorityActionItems.length - 1, 0)
+                        } ${topPriorityActionItems.length === 2 ? "task" : "tasks"} below in order.`
+                      : "Choose sources to build a clear, exact plan for what to handle next."}
                   </p>
                   <ol>
                     {topPriorityActionItems.length > 0 ? (
-                      topPriorityActionItems.map((item) => (
+                      topPriorityActionItems.map((item, index) => (
                         <li key={item.id}>
-                          <span>{item.title}</span>
+                          <strong>{index === 0 ? "Do first" : `Step ${index + 1}`}</strong>
+                          <span>{getActionInstruction(item)}</span>
                         </li>
                       ))
                     ) : (
                       <li>
+                        <strong>Start here</strong>
                         <span>Choose sources to build today's plan.</span>
                       </li>
                     )}
