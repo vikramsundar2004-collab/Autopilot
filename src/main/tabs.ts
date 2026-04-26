@@ -12,6 +12,7 @@ import {
   type BrowserSnapshot,
   type Tab
 } from "../shared/browserModel.js";
+import type { PageTextCaptureResult } from "../shared/productivity.js";
 
 type ManagedTab = Tab & {
   view: WebContentsView;
@@ -699,6 +700,44 @@ export class TabController {
     }
 
     return this.getSnapshot();
+  }
+
+  async readPageText(tabId: string): Promise<PageTextCaptureResult> {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+      return { success: false, reason: "No active page to read." };
+    }
+
+    try {
+      const capture = (await tab.view.webContents.executeJavaScript(
+        `(() => {
+          const bodyText = document.body?.innerText || "";
+          return {
+            title: document.title || "",
+            url: location.href,
+            text: bodyText.slice(0, 30000)
+          };
+        })()`,
+        true
+      )) as Partial<Record<"title" | "url" | "text", unknown>>;
+
+      const text = typeof capture.text === "string" ? capture.text.replace(/\s+\n/g, "\n").trim() : "";
+      if (!text) {
+        return { success: false, reason: "The current page did not expose readable text." };
+      }
+
+      return {
+        success: true,
+        title: typeof capture.title === "string" ? capture.title.trim().slice(0, 140) : tab.title,
+        url: typeof capture.url === "string" ? capture.url : tab.url,
+        text
+      };
+    } catch (error) {
+      return {
+        success: false,
+        reason: error instanceof Error && error.message ? error.message : "Unable to read the current page."
+      };
+    }
   }
 
   async print(tabId: string): Promise<{ success: boolean; reason?: string }> {

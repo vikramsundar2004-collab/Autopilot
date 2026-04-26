@@ -23,6 +23,7 @@ import type {
   PasswordSaveResult,
   PendingPasswordSave
 } from "../shared/passwords";
+import type { PageTextCaptureResult } from "../shared/productivity";
 
 type ViewBounds = {
   x: number;
@@ -41,6 +42,7 @@ type TabsApi = {
   back: (tabId: string) => Promise<BrowserSnapshot>;
   forward: (tabId: string) => Promise<BrowserSnapshot>;
   reload: (tabId: string) => Promise<BrowserSnapshot>;
+  readPageText: (tabId: string) => Promise<PageTextCaptureResult>;
   print: (tabId: string) => Promise<{ success: boolean; reason?: string }>;
   setWebArea: (bounds: ViewBounds, visible: boolean) => Promise<BrowserSnapshot>;
   subscribe: (listener: (snapshot: BrowserSnapshot) => void) => () => void;
@@ -299,6 +301,19 @@ export function createPreviewAutopilotApi(): AutopilotApi {
       back: async () => cloneSnapshot(snapshot),
       forward: async () => cloneSnapshot(snapshot),
       reload: async () => cloneSnapshot(snapshot),
+      readPageText: async (tabId: string) => {
+        const tab = snapshot.tabs.find((entry) => entry.id === tabId);
+        if (!tab) {
+          return { success: false, reason: "No active page to read." };
+        }
+
+        return {
+          success: true,
+          title: tab.title,
+          url: tab.url,
+          text: "Please turn this preview page into an action item before Friday."
+        };
+      },
       print: async () => ({ success: false, reason: "Printing is available in the desktop app." }),
       setWebArea: async () => cloneSnapshot(snapshot),
       subscribe: (listener: (snapshot: BrowserSnapshot) => void) => {

@@ -13,6 +13,7 @@ import type {
   PasswordSaveResult,
   PendingPasswordSave
 } from "../shared/passwords";
+import type { PageTextCaptureResult } from "../shared/productivity";
 
 type ViewBounds = {
   x: number;
@@ -31,6 +32,7 @@ type TabsApi = {
   back: (tabId: string) => Promise<BrowserSnapshot>;
   forward: (tabId: string) => Promise<BrowserSnapshot>;
   reload: (tabId: string) => Promise<BrowserSnapshot>;
+  readPageText: (tabId: string) => Promise<PageTextCaptureResult>;
   print: (tabId: string) => Promise<{ success: boolean; reason?: string }>;
   setWebArea: (bounds: ViewBounds, visible: boolean) => Promise<BrowserSnapshot>;
   subscribe: (listener: (snapshot: BrowserSnapshot) => void) => () => void;

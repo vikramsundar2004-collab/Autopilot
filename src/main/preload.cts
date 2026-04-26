@@ -15,6 +15,7 @@ import type {
   PasswordSaveResult,
   PendingPasswordSave
 } from "../shared/passwords.js";
+import type { PageTextCaptureResult } from "../shared/productivity.js";
 
 const tabsApi = {
   getSnapshot: () => ipcRenderer.invoke("tabs:snapshot") as Promise<BrowserSnapshot>,
@@ -26,6 +27,7 @@ const tabsApi = {
   back: (tabId: string) => ipcRenderer.invoke("tabs:back", tabId) as Promise<BrowserSnapshot>,
   forward: (tabId: string) => ipcRenderer.invoke("tabs:forward", tabId) as Promise<BrowserSnapshot>,
   reload: (tabId: string) => ipcRenderer.invoke("tabs:reload", tabId) as Promise<BrowserSnapshot>,
+  readPageText: (tabId: string) => ipcRenderer.invoke("tabs:read-page-text", tabId) as Promise<PageTextCaptureResult>,
   print: (tabId: string) => ipcRenderer.invoke("tabs:print", tabId) as Promise<{ success: boolean; reason?: string }>,
   setWebArea: (bounds: Rectangle, visible: boolean) =>
     ipcRenderer.invoke("tabs:web-area", bounds, visible) as Promise<BrowserSnapshot>,

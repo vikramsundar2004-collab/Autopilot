@@ -54,9 +54,17 @@ import {
 import type { PasswordAvailability, PasswordCredentialSummary, PendingPasswordSave } from "../shared/passwords";
 import { getAutopilotApi } from "./autopilotApi";
 import { addHistoryEntry, loadHistoryEntries, saveHistoryEntries, type BrowserHistoryEntry } from "./history";
+import {
+  createActionItem,
+  extractActionItemTitles,
+  loadActionItems,
+  saveActionItems,
+  type ActionItem,
+  type ActionItemSource
+} from "./productivity";
 import { applyTheme, getThemeWarnings, loadTheme, resetTheme, saveTheme } from "./theme";
 
-type AppView = "browser" | "settings";
+type AppView = "browser" | "productivity" | "settings";
 
 type BookmarkContextMenu = {
   x: number;
@@ -86,13 +94,41 @@ const colorControls: Array<{ key: keyof BrowserTheme; label: string }> = [
   { key: "focus", label: "Focus" }
 ];
 
-const workspaceItems = [
-  { label: "browsing", count: 3, color: "blue", icon: Globe2 },
-  { label: "coding", count: 2, color: "violet", icon: Code2 },
-  { label: "productivity", count: 2, color: "green", icon: Check },
-  { label: "chatting", count: 2, color: "orange", icon: MessageCircle },
-  { label: "design", count: 1, color: "pink", icon: Palette }
+const workspaceItems: Array<{ label: string; color: string; icon: typeof Globe2; view: AppView }> = [
+  { label: "browsing", color: "blue", icon: Globe2, view: "browser" },
+  { label: "coding", color: "violet", icon: Code2, view: "browser" },
+  { label: "productivity", color: "green", icon: Check, view: "productivity" },
+  { label: "chatting", color: "orange", icon: MessageCircle, view: "browser" },
+  { label: "design", color: "pink", icon: Palette, view: "browser" }
 ];
+
+const actionSourceOptions: ActionItemSource[] = ["Email", "Web", "Notes", "Chat", "Manual"];
+
+function inferActionSourceFromPage(url: string, title: string): ActionItemSource {
+  const pageKey = `${url} ${title}`.toLowerCase();
+  if (/\b(gmail|mail\.google|outlook|office365|inbox|email)\b/.test(pageKey)) {
+    return "Email";
+  }
+
+  if (/\b(slack|discord|teams|chat)\b/.test(pageKey)) {
+    return "Chat";
+  }
+
+  return "Web";
+}
+
+function getActionContextFromPage(title: string, url: string): string {
+  const trimmedTitle = title.trim();
+  if (trimmedTitle) {
+    return trimmedTitle;
+  }
+
+  try {
+    return new URL(url).hostname || "Current page";
+  } catch {
+    return "Current page";
+  }
+}
 
 function getSidebarMaxWidth(): number {
   if (typeof window === "undefined") {
@@ -278,6 +314,13 @@ export function App(): JSX.Element {
   const [passwordStatus, setPasswordStatus] = useState("");
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, string>>({});
   const [historyEntries, setHistoryEntries] = useState<BrowserHistoryEntry[]>(() => loadHistoryEntries());
+  const [actionItems, setActionItems] = useState<ActionItem[]>(() => loadActionItems());
+  const [actionDraft, setActionDraft] = useState("");
+  const [actionSource, setActionSource] = useState<ActionItemSource>("Manual");
+  const [actionContext, setActionContext] = useState("");
+  const [captureText, setCaptureText] = useState("");
+  const [captureSource, setCaptureSource] = useState<ActionItemSource>("Email");
+  const [captureStatus, setCaptureStatus] = useState("");
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [addressDraft, setAddressDraft] = useState("");
   const [view, setView] = useState<AppView>("browser");
@@ -291,6 +334,9 @@ export function App(): JSX.Element {
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
   const isBrowserPreview = autopilot.runtime === "browser-preview";
   const warnings = useMemo(() => getThemeWarnings(theme), [theme]);
+  const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
+  const completedActionItems = useMemo(() => actionItems.filter((item) => item.completedAt), [actionItems]);
+  const emailActionCount = useMemo(() => actionItems.filter((item) => item.source === "Email" && !item.completedAt).length, [actionItems]);
   const selectedBookmarkSourceLabels = useMemo(() => {
     const labels = new Map(bookmarkSources.map((source) => [source.id, source.label]));
     return selectedBookmarkSources.map((sourceId) => labels.get(sourceId) ?? sourceId).join(", ");
@@ -304,6 +350,10 @@ export function App(): JSX.Element {
     applyTheme(theme);
     saveTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    saveActionItems(actionItems);
+  }, [actionItems]);
 
   useEffect(() => {
     sidebarWidthRef.current = sidebarWidth;
@@ -748,6 +798,79 @@ export function App(): JSX.Element {
       .catch(() => setPasswordStatus("Saved password could not be removed."));
   }
 
+  function addManualActionItem(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    const title = actionDraft.trim();
+    if (!title) {
+      return;
+    }
+
+    setActionItems((currentItems) => [createActionItem(title, actionSource, actionContext), ...currentItems]);
+    setActionDraft("");
+    setActionContext("");
+  }
+
+  function importCapturedActions(): void {
+    const titles = extractActionItemTitles(captureText);
+    if (titles.length === 0) {
+      setCaptureStatus("No action items were found in that source.");
+      return;
+    }
+
+    setActionItems((currentItems) => [
+      ...titles.map((title) => createActionItem(title, captureSource, captureSource === "Email" ? "Inbox" : captureSource)),
+      ...currentItems
+    ]);
+    setCaptureText("");
+    setCaptureStatus(`Pulled ${titles.length} action ${titles.length === 1 ? "item" : "items"} from ${captureSource}.`);
+  }
+
+  async function importCurrentPageActions(): Promise<void> {
+    if (!activeTabId) {
+      setCaptureStatus("Open a page in the browser workspace first.");
+      return;
+    }
+
+    setCaptureStatus("Reading the current page...");
+    const page = await autopilot.tabs.readPageText(activeTabId).catch(() => ({
+      success: false as const,
+      reason: "The current page could not be read."
+    }));
+    if (!page.success) {
+      setCaptureStatus(page.reason);
+      return;
+    }
+
+    const titles = extractActionItemTitles(`${page.title}\n${page.text}`);
+    if (titles.length === 0) {
+      setCaptureStatus("No action items were found on the current page.");
+      return;
+    }
+
+    const pageSource = inferActionSourceFromPage(page.url, page.title);
+    const context = getActionContextFromPage(page.title, page.url);
+    setActionItems((currentItems) => [...titles.map((title) => createActionItem(title, pageSource, context)), ...currentItems]);
+    setCaptureSource(pageSource);
+    setCaptureStatus(`Pulled ${titles.length} action ${titles.length === 1 ? "item" : "items"} from ${context}.`);
+  }
+
+  function toggleActionItem(itemId: string): void {
+    setActionItems((currentItems) =>
+      currentItems.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              completedAt: item.completedAt ? null : Date.now()
+            }
+          : item
+      )
+    );
+  }
+
+  function deleteActionItem(itemId: string): void {
+    setActionItems((currentItems) => currentItems.filter((item) => item.id !== itemId));
+  }
+
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
     if (!sidebarOpen) {
       return;
@@ -800,12 +923,12 @@ export function App(): JSX.Element {
             <nav className="workspace-list" aria-label="Workspaces">
               {workspaceItems.map((item, index) => {
                 const Icon = item.icon;
-                const isActive = index === 0 && view === "browser";
+                const isActive = item.view === "productivity" ? view === "productivity" : index === 0 && view === "browser";
                 return (
                   <button
                     className={`workspace-item ${item.color} ${isActive ? "active" : ""}`}
                     key={item.label}
-                    onClick={() => setView("browser")}
+                    onClick={() => setView(item.view)}
                     type="button"
                   >
                     <span className={`workspace-icon ${item.color}`} aria-hidden="true">
@@ -982,58 +1105,60 @@ export function App(): JSX.Element {
         {sidebarOpen ? <ChevronLeft size={18} /> : <ChevronRight size={18} />}
       </button>
 
-      <section className="browser-shell" aria-label="Browser workspace">
+      <section className={`browser-shell ${view === "browser" ? "" : "app-view"}`} aria-label="Autopilot workspace">
         <header className="titlebar">
           <div className="app-title">
             <button className="icon-preview-trigger app-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
               <img className="app-logo" src="./autopilot-logo.svg" alt="" />
             </button>
-            <strong>Autopilot Browser</strong>
+            <strong>{view === "productivity" ? "Autopilot Productivity" : view === "settings" ? "Autopilot Settings" : "Autopilot Browser"}</strong>
           </div>
         </header>
 
-        <form className="nav-toolbar" onSubmit={navigate}>
-          <div className="nav-actions" aria-label="Navigation controls">
-            <button type="button" aria-label="Back" disabled={!activeTab?.canGoBack} onClick={() => activeTabId && autopilot.tabs.back(activeTabId)}>
-              <ArrowLeft size={18} />
-            </button>
-            <button
-              type="button"
-              aria-label="Forward"
-              disabled={!activeTab?.canGoForward}
-              onClick={() => activeTabId && autopilot.tabs.forward(activeTabId)}
-            >
-              <ArrowRight size={18} />
-            </button>
-            <button type="button" aria-label="Reload" onClick={() => activeTabId && autopilot.tabs.reload(activeTabId)}>
-              <RotateCw size={17} className={activeTab?.isLoading ? "spin" : ""} />
-            </button>
-            <button
-              type="button"
-              aria-label="Add bookmark"
-              disabled={!activeTab || isHomeUrl(activeTab.url) || isHistoryPageUrl(activeTab.url)}
-              onClick={addActiveBookmark}
-            >
-              <Star size={17} />
-            </button>
-            <button type="button" aria-label="Print page" onClick={printActivePage}>
-              <Printer size={17} />
-            </button>
-          </div>
+        {view === "browser" && (
+          <form className="nav-toolbar" onSubmit={navigate}>
+            <div className="nav-actions" aria-label="Navigation controls">
+              <button type="button" aria-label="Back" disabled={!activeTab?.canGoBack} onClick={() => activeTabId && autopilot.tabs.back(activeTabId)}>
+                <ArrowLeft size={18} />
+              </button>
+              <button
+                type="button"
+                aria-label="Forward"
+                disabled={!activeTab?.canGoForward}
+                onClick={() => activeTabId && autopilot.tabs.forward(activeTabId)}
+              >
+                <ArrowRight size={18} />
+              </button>
+              <button type="button" aria-label="Reload" onClick={() => activeTabId && autopilot.tabs.reload(activeTabId)}>
+                <RotateCw size={17} className={activeTab?.isLoading ? "spin" : ""} />
+              </button>
+              <button
+                type="button"
+                aria-label="Add bookmark"
+                disabled={!activeTab || isHomeUrl(activeTab.url) || isHistoryPageUrl(activeTab.url)}
+                onClick={addActiveBookmark}
+              >
+                <Star size={17} />
+              </button>
+              <button type="button" aria-label="Print page" onClick={printActivePage}>
+                <Printer size={17} />
+              </button>
+            </div>
 
-          <label className="address-bar">
-            <AutopilotNeedle className="address-needle" />
-            <LockKeyhole size={16} aria-hidden="true" />
-            <input
-              value={addressDraft}
-              onChange={(event) => setAddressDraft(event.target.value)}
-              aria-label="Address"
-              placeholder="Search or enter address"
-              spellCheck={false}
-            />
-            <Search size={17} aria-hidden="true" />
-          </label>
-        </form>
+            <label className="address-bar">
+              <AutopilotNeedle className="address-needle" />
+              <LockKeyhole size={16} aria-hidden="true" />
+              <input
+                value={addressDraft}
+                onChange={(event) => setAddressDraft(event.target.value)}
+                aria-label="Address"
+                placeholder="Search or enter address"
+                spellCheck={false}
+              />
+              <Search size={17} aria-hidden="true" />
+            </label>
+          </form>
+        )}
 
         <section className="workspace">
           <div className={`web-content-frame ${view !== "browser" ? "hidden" : ""}`} ref={webAreaRef}>
@@ -1066,6 +1191,137 @@ export function App(): JSX.Element {
               )}
             </div>
           </div>
+
+          {view === "productivity" && (
+            <section className="productivity-page" aria-labelledby="productivity-heading">
+              <header className="productivity-hero">
+                <div>
+                  <p className="panel-kicker">Productivity</p>
+                  <h1 id="productivity-heading">Action items</h1>
+                </div>
+                <div className="productivity-stats" aria-label="Action item summary">
+                  <span>
+                    <strong>{openActionItems.length}</strong>
+                    <small>Open</small>
+                  </span>
+                  <span>
+                    <strong>{emailActionCount}</strong>
+                    <small>Email</small>
+                  </span>
+                  <span>
+                    <strong>{completedActionItems.length}</strong>
+                    <small>Done</small>
+                  </span>
+                </div>
+              </header>
+
+              <div className="productivity-grid">
+                <section className="action-panel" aria-label="Create action item">
+                  <form className="action-compose" onSubmit={addManualActionItem}>
+                    <label>
+                      <span>Action</span>
+                      <input value={actionDraft} onChange={(event) => setActionDraft(event.target.value)} placeholder="Follow up with..." />
+                    </label>
+                    <div className="action-compose-row">
+                      <label>
+                        <span>Source</span>
+                        <select value={actionSource} onChange={(event) => setActionSource(event.target.value as ActionItemSource)}>
+                          {actionSourceOptions.map((source) => (
+                            <option key={source} value={source}>
+                              {source}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Context</span>
+                        <input value={actionContext} onChange={(event) => setActionContext(event.target.value)} placeholder="Inbox, tab, class..." />
+                      </label>
+                    </div>
+                    <button className="primary-action" type="submit" disabled={actionDraft.trim().length === 0}>
+                      Add action
+                    </button>
+                  </form>
+
+                  <div className="source-capture">
+                    <div className="source-capture-heading">
+                      <strong>Source intake</strong>
+                      <select value={captureSource} onChange={(event) => setCaptureSource(event.target.value as ActionItemSource)} aria-label="Capture source">
+                        {actionSourceOptions
+                          .filter((source) => source !== "Manual")
+                          .map((source) => (
+                            <option key={source} value={source}>
+                              {source}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    <button className="secondary-action" type="button" onClick={() => void importCurrentPageActions()} disabled={!activeTabId}>
+                      Pull from current page
+                    </button>
+                    <textarea
+                      value={captureText}
+                      onChange={(event) => setCaptureText(event.target.value)}
+                      placeholder="Paste an email, message, page note, or meeting note"
+                    />
+                    <button className="secondary-action" type="button" onClick={importCapturedActions} disabled={captureText.trim().length === 0}>
+                      Pull from pasted text
+                    </button>
+                    {captureStatus ? <p className="capture-status">{captureStatus}</p> : null}
+                  </div>
+                </section>
+
+                <section className="action-list-panel" aria-label="Action items">
+                  {openActionItems.length === 0 ? (
+                    <div className="action-empty">
+                      <Check size={22} aria-hidden="true" />
+                      <span>No open action items</span>
+                    </div>
+                  ) : (
+                    <div className="action-list">
+                      {openActionItems.map((item) => (
+                        <article className="action-item" key={item.id}>
+                          <button className="action-check" type="button" aria-label={`Mark ${item.title} done`} onClick={() => toggleActionItem(item.id)}>
+                            <Check size={15} />
+                          </button>
+                          <div className="action-copy">
+                            <strong>{item.title}</strong>
+                            <span>
+                              <b>{item.source}</b>
+                              {item.context ? ` - ${item.context}` : ""}
+                            </span>
+                          </div>
+                          <button className="action-delete" type="button" aria-label={`Delete ${item.title}`} onClick={() => deleteActionItem(item.id)}>
+                            <Trash2 size={15} />
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+
+                  {completedActionItems.length > 0 && (
+                    <details className="completed-actions">
+                      <summary>Completed</summary>
+                      {completedActionItems.map((item) => (
+                        <article className="action-item completed" key={item.id}>
+                          <button className="action-check" type="button" aria-label={`Reopen ${item.title}`} onClick={() => toggleActionItem(item.id)}>
+                            <Check size={15} />
+                          </button>
+                          <div className="action-copy">
+                            <strong>{item.title}</strong>
+                            <span>{item.source}</span>
+                          </div>
+                          <button className="action-delete" type="button" aria-label={`Delete ${item.title}`} onClick={() => deleteActionItem(item.id)}>
+                            <Trash2 size={15} />
+                          </button>
+                        </article>
+                      ))}
+                    </details>
+                  )}
+                </section>
+              </div>
+            </section>
+          )}
 
           {view === "settings" && (
             <section className="settings-page" aria-labelledby="settings-heading">

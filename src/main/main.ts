@@ -52,6 +52,7 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("tabs:back", (_event, tabId: string) => controller.goBack(tabId));
   ipcMain.handle("tabs:forward", (_event, tabId: string) => controller.goForward(tabId));
   ipcMain.handle("tabs:reload", (_event, tabId: string) => controller.reload(tabId));
+  ipcMain.handle("tabs:read-page-text", (_event, tabId: string) => controller.readPageText(tabId));
   ipcMain.handle("tabs:print", (_event, tabId: string) => controller.print(tabId));
   ipcMain.handle("tabs:web-area", (_event, bounds: Rectangle, visible: boolean) => controller.setWebArea(bounds, visible));
   ipcMain.handle("print-preview:print", (_event, options) => controller.printFromPreview(options));
