@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Autopilot logo</title>
+  <desc id="desc">A polished Autopilot compass with five orbiting workspace nodes for coding, productivity, browsing, designing, and chatting.</desc>
+  <defs>
+    <linearGradient id="bg" x1="48" y1="24" x2="218" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#265a43"/>
+      <stop offset=".58" stop-color="#1f4a37"/>
+      <stop offset="1" stop-color="#143425"/>
+    </linearGradient>
+    <linearGradient id="needle" x1="98" y1="54" x2="158" y2="196" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fffaf2"/>
+      <stop offset=".56" stop-color="#f2e5d0"/>
+      <stop offset="1" stop-color="#d8c4a8"/>
+    </linearGradient>
+    <filter id="soft-shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#0b1c14" flood-opacity=".28"/>
+    </filter>
+  </defs>
+
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <path d="M43 71c24-33 59-48 104-43 27 3 48 13 65 30" fill="none" stroke="#fffaf2" stroke-width="2" opacity=".18" stroke-linecap="round"/>
+  <circle cx="128" cy="128" r="82" fill="none" stroke="#fffaf2" stroke-width="7" opacity=".18"/>
+  <circle cx="128" cy="128" r="59" fill="#fffaf2" opacity=".96" filter="url(#soft-shadow)"/>
+
+  <g aria-label="Workspace nodes">
+    <circle cx="128" cy="43" r="12" fill="#9a765b"/>
+    <circle cx="205" cy="98" r="12" fill="#2f6b4f"/>
+    <circle cx="176" cy="206" r="12" fill="#b96f34"/>
+    <circle cx="80" cy="206" r="12" fill="#b35c83"/>
+    <circle cx="51" cy="98" r="12" fill="#4d8a63"/>
+    <circle cx="128" cy="43" r="5" fill="#fffaf2"/>
+    <circle cx="205" cy="98" r="5" fill="#fffaf2"/>
+    <circle cx="176" cy="206" r="5" fill="#fffaf2"/>
+    <circle cx="80" cy="206" r="5" fill="#fffaf2"/>
+    <circle cx="51" cy="98" r="5" fill="#fffaf2"/>
+  </g>
+
+  <g filter="url(#soft-shadow)">
+    <path d="M128 55 164 194 128 169 92 194Z" fill="url(#needle)"/>
+    <path d="M128 55 164 194 128 169Z" fill="#fffaf2" opacity=".92"/>
+    <path d="M128 55 128 169 92 194Z" fill="#e4d2b8"/>
+    <path d="M128 88 145 153 128 142 111 153Z" fill="#d97955"/>
+    <path d="M128 55 164 194 128 169 92 194Z" fill="none" stroke="#143425" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M128 83 146 154 128 142 110 154Z" fill="#d97955"/>
+  </g>
+
+  <circle cx="128" cy="128" r="18" fill="#1f4a37"/>
+  <path d="M128 116 133 134 128 131 123 134Z" fill="#fffaf2"/>
+</svg>
