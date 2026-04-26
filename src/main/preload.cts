@@ -8,6 +8,7 @@ import type {
   BrowserBookmarkSourceOption
 } from "../shared/bookmarks.js";
 import type { BrowserSnapshot } from "../shared/browserModel.js";
+import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email.js";
 import type {
   PasswordAvailability,
   PasswordCredentialSummary,
@@ -73,6 +74,13 @@ contextBridge.exposeInMainWorld("autopilot", {
     sources: () => ipcRenderer.invoke("bookmarks:sources") as Promise<BrowserBookmarkSourceOption[]>,
     selectedSources: () => ipcRenderer.invoke("bookmarks:selected-sources") as Promise<string[]>,
     setSources: (sources: string[]) => ipcRenderer.invoke("bookmarks:set-sources", sources) as Promise<BrowserBookmarkNode[]>
+  },
+  email: {
+    status: () => ipcRenderer.invoke("email:status") as Promise<EmailConnectionStatus>,
+    list: () => ipcRenderer.invoke("email:list") as Promise<EmailMessageSummary[]>,
+    connectGmail: () => ipcRenderer.invoke("email:connect-gmail") as Promise<EmailConnectResult>,
+    sync: () => ipcRenderer.invoke("email:sync") as Promise<EmailSyncResult>,
+    disconnect: () => ipcRenderer.invoke("email:disconnect") as Promise<EmailConnectionStatus>
   },
   passwords: passwordsApi
 });

@@ -11,6 +11,7 @@ import {
   readSelectedBookmarkSources,
   updateSelectedBookmarkSources
 } from "./bookmarks.js";
+import { EmailService } from "./email.js";
 import { PasswordStore } from "./passwords.js";
 import { TabController } from "./tabs.js";
 import type { AddBookmarkFolderInput, AddBookmarkInput, BookmarkNodeTarget } from "../shared/bookmarks.js";
@@ -21,6 +22,7 @@ const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 let tabs: TabController | null = null;
 const passwordStore = new PasswordStore();
+const emailService = new EmailService();
 
 function getAppIconPath(): string {
   return isDev
@@ -63,6 +65,11 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("bookmarks:sources", () => listAvailableBookmarkSources());
   ipcMain.handle("bookmarks:selected-sources", () => readSelectedBookmarkSources());
   ipcMain.handle("bookmarks:set-sources", (_event, sources: string[]) => updateSelectedBookmarkSources(sources));
+  ipcMain.handle("email:status", () => emailService.getStatus());
+  ipcMain.handle("email:list", () => emailService.listCachedMessages());
+  ipcMain.handle("email:connect-gmail", () => emailService.connectGmail());
+  ipcMain.handle("email:sync", () => emailService.syncInbox());
+  ipcMain.handle("email:disconnect", () => emailService.disconnect());
   ipcMain.handle("passwords:stage", (event, input: PasswordCaptureInput) =>
     passwordStore.stage({
       ...input,

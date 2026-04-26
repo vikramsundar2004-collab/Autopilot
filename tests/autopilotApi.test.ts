@@ -46,6 +46,19 @@ describe("browser preview autopilot api", () => {
     await expect(api.passwords.list()).resolves.toEqual([]);
   });
 
+  it("provides email sync stubs in browser preview", async () => {
+    const api = createPreviewAutopilotApi();
+
+    await expect(api.email.status()).resolves.toEqual(
+      expect.objectContaining({
+        configured: false,
+        connected: false,
+        provider: "gmail"
+      })
+    );
+    await expect(api.email.list()).resolves.toEqual([]);
+  });
+
   it("supports tab actions without window.autopilot", async () => {
     const api = createPreviewAutopilotApi();
     const initial = await api.tabs.getSnapshot();

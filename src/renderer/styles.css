@@ -1581,6 +1581,7 @@ input:focus-visible,
 }
 
 .sources-panel,
+.email-inbox-panel,
 .action-checklist-panel,
 .action-list-panel {
   min-width: 0;
@@ -1589,6 +1590,7 @@ input:focus-visible,
   background: color-mix(in srgb, var(--surface) 90%, white);
 }
 
+.email-inbox-panel,
 .action-checklist-panel,
 .sources-panel {
   display: grid;
@@ -1597,6 +1599,7 @@ input:focus-visible,
   padding: 16px;
 }
 
+.email-inbox-heading,
 .action-checklist-heading,
 .sources-heading {
   display: flex;
@@ -1606,11 +1609,13 @@ input:focus-visible,
   color: var(--text);
 }
 
+.email-inbox-heading > div,
 .action-checklist-heading > div,
 .sources-heading > div {
   min-width: 0;
 }
 
+.email-inbox-heading h2,
 .action-checklist-heading h2,
 .sources-heading h2 {
   margin: 0;
@@ -1618,6 +1623,140 @@ input:focus-visible,
   font-size: 18px;
   letter-spacing: 0;
   line-height: 1.15;
+}
+
+.email-inbox-heading span {
+  display: block;
+  overflow: hidden;
+  max-width: 720px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.email-inbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 8px;
+}
+
+.email-inbox-actions .primary-action,
+.email-inbox-actions .secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.email-sync-status {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--primary) 7%, var(--surface));
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.35;
+  padding: 9px 11px;
+}
+
+.email-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 68px;
+  border: 1px dashed color-mix(in srgb, var(--border) 92%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 34%, var(--surface));
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 750;
+  padding: 12px;
+}
+
+.email-empty svg {
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.email-message-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-color: var(--sage-muted) transparent;
+  scrollbar-width: thin;
+}
+
+.email-message {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, white);
+  padding: 11px;
+}
+
+.email-message.unread {
+  border-color: color-mix(in srgb, var(--primary) 24%, var(--border));
+  background: color-mix(in srgb, var(--sage-muted) 28%, var(--surface));
+}
+
+.email-message-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface-2));
+  color: var(--primary);
+}
+
+.email-message-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.email-message-copy strong,
+.email-message-copy span,
+.email-message-copy p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.email-message-copy strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.email-message-copy span,
+.email-message time {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.email-message-copy p {
+  margin: 0;
+  color: color-mix(in srgb, var(--text-muted) 86%, var(--text));
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.email-message time {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .action-checklist-heading > span {
@@ -2610,6 +2749,23 @@ input:focus-visible,
 
   .sources-heading {
     display: grid;
+  }
+
+  .email-inbox-heading {
+    display: grid;
+  }
+
+  .email-inbox-actions {
+    justify-content: start;
+  }
+
+  .email-message {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .email-message time {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .action-checklist-heading {

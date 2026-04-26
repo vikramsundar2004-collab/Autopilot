@@ -16,6 +16,7 @@ import {
   type BrowserBookmarkNode,
   type BrowserBookmarkSourceOption
 } from "../shared/bookmarks";
+import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email";
 import type {
   PasswordAvailability,
   PasswordCredentialSummary,
@@ -69,6 +70,14 @@ type PasswordsApi = {
   subscribeSavePrompts: (listener: (pending: PendingPasswordSave) => void) => () => void;
 };
 
+type EmailApi = {
+  status: () => Promise<EmailConnectionStatus>;
+  list: () => Promise<EmailMessageSummary[]>;
+  connectGmail: () => Promise<EmailConnectResult>;
+  sync: () => Promise<EmailSyncResult>;
+  disconnect: () => Promise<EmailConnectionStatus>;
+};
+
 export type AutopilotApi = {
   runtime: "electron" | "browser-preview";
   platform: string;
@@ -79,6 +88,7 @@ export type AutopilotApi = {
   tabs: TabsApi;
   bookmarks: BookmarksApi;
   passwords: PasswordsApi;
+  email: EmailApi;
 };
 
 let previewApi: AutopilotApi | null = null;
@@ -99,7 +109,15 @@ export function createPreviewAutopilotApi(): AutopilotApi {
   let previewBookmarks = structuredClone(DEFAULT_BOOKMARKS);
   let previewSelectedSources: string[] = [];
   let previewPasswords: PasswordCredentialSummary[] = [];
+  let previewEmailMessages: EmailMessageSummary[] = [];
   const listeners = new Set<(snapshot: BrowserSnapshot) => void>();
+  const previewEmailStatus: EmailConnectionStatus = {
+    provider: "gmail",
+    configured: false,
+    connected: false,
+    accountEmail: null,
+    reason: "Email sync is available in the desktop app when AUTOPILOT_GOOGLE_CLIENT_ID is configured."
+  };
 
   function publish(nextSnapshot: BrowserSnapshot): BrowserSnapshot {
     snapshot = cloneSnapshot(nextSnapshot);
@@ -218,6 +236,26 @@ export function createPreviewAutopilotApi(): AutopilotApi {
       setSources: async (sources: string[]) => {
         previewSelectedSources = [...new Set(sources)];
         return structuredClone(previewBookmarks);
+      }
+    },
+    email: {
+      status: async () => previewEmailStatus,
+      list: async () => [...previewEmailMessages],
+      connectGmail: async () => ({
+        success: false,
+        status: previewEmailStatus,
+        messages: [...previewEmailMessages],
+        reason: previewEmailStatus.reason
+      }),
+      sync: async () => ({
+        success: false,
+        status: previewEmailStatus,
+        messages: [...previewEmailMessages],
+        reason: previewEmailStatus.reason
+      }),
+      disconnect: async () => {
+        previewEmailMessages = [];
+        return previewEmailStatus;
       }
     },
     passwords: {

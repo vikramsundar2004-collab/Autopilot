@@ -54,10 +54,13 @@ import {
   type BrowserTheme,
   type Tab
 } from "../shared/browserModel";
+import type { EmailConnectionStatus, EmailMessageSummary } from "../shared/email";
 import type { PasswordAvailability, PasswordCredentialSummary, PendingPasswordSave } from "../shared/passwords";
 import { getAutopilotApi } from "./autopilotApi";
 import { addHistoryEntry, loadHistoryEntries, saveHistoryEntries, type BrowserHistoryEntry } from "./history";
 import {
+  createActionItem,
+  extractActionItemTitles,
   loadActionItems,
   loadProductivitySources,
   sanitizeActionItems,
@@ -115,7 +118,7 @@ const productivitySourceOptions: Array<{
   icon: LucideIcon;
   status: "ready" | "soon";
 }> = [
-  { id: "gmail", label: "Gmail", detail: "Pull action items from inbox threads", source: "Email", icon: Mail, status: "soon" },
+  { id: "gmail", label: "Gmail", detail: "Pull inbox messages and action items", source: "Email", icon: Mail, status: "soon" },
   { id: "outlook", label: "Outlook", detail: "Rank Microsoft mail when connected", source: "Email", icon: Mail, status: "soon" },
   { id: "google-calendar", label: "Google Calendar", detail: "Turn events and deadlines into work", source: "Calendar", icon: Clock, status: "soon" },
   { id: "slack", label: "Slack", detail: "Find asks buried in messages", source: "Chat", icon: MessageCircle, status: "soon" }
@@ -331,6 +334,10 @@ function getCredentialUsernameLabel(username: string): string {
   return username.trim() || "No username saved";
 }
 
+function getEmailContext(message: EmailMessageSummary): string {
+  return `${message.from} - ${message.subject}`.slice(0, 80);
+}
+
 export function App(): JSX.Element {
   const autopilot = useMemo(() => getAutopilotApi(), []);
   const [theme, setTheme] = useState<BrowserTheme>(() => loadTheme());
@@ -353,6 +360,10 @@ export function App(): JSX.Element {
   const [historyEntries, setHistoryEntries] = useState<BrowserHistoryEntry[]>(() => loadHistoryEntries());
   const [actionItems, setActionItems] = useState<ActionItem[]>(() => loadActionItems());
   const [captureStatus, setCaptureStatus] = useState("");
+  const [emailStatus, setEmailStatus] = useState<EmailConnectionStatus | null>(null);
+  const [emailMessages, setEmailMessages] = useState<EmailMessageSummary[]>([]);
+  const [emailSyncStatus, setEmailSyncStatus] = useState("");
+  const [emailBusy, setEmailBusy] = useState(false);
   const [selectedProductivitySources, setSelectedProductivitySources] = useState<ProductivitySourceId[]>(() => loadProductivitySources());
   const [selectedActionSource, setSelectedActionSource] = useState<ActionItemSource | "All">("All");
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -500,6 +511,38 @@ export function App(): JSX.Element {
       })
       .catch(() => setBookmarks(DEFAULT_BOOKMARKS));
   }, [applyBookmarks, autopilot]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void Promise.all([autopilot.email.status(), autopilot.email.list()])
+      .then(([status, messages]) => {
+        if (cancelled) {
+          return;
+        }
+
+        setEmailStatus(status);
+        setEmailMessages(messages);
+        setEmailSyncStatus(status.connected ? `Connected to ${status.accountEmail ?? "Gmail"}.` : status.reason ?? "");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEmailStatus({
+            provider: "gmail",
+            configured: false,
+            connected: false,
+            accountEmail: null,
+            reason: "Email sync could not start."
+          });
+          setEmailMessages([]);
+          setEmailSyncStatus("Email sync could not start.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [autopilot]);
 
   useEffect(() => {
     let cancelled = false;
@@ -912,7 +955,104 @@ export function App(): JSX.Element {
     });
   }
 
-  function syncSelectedProductivitySources(): void {
+  function addActionsFromEmailMessages(messages: EmailMessageSummary[]): number {
+    const existingKeys = new Set(actionItems.map((item) => `${item.source}:${item.context}:${item.title}`.toLowerCase()));
+    const nextItems: ActionItem[] = [];
+
+    for (const message of messages) {
+      const context = getEmailContext(message);
+      const titles = extractActionItemTitles(`${message.subject}. ${message.snippet}`);
+      for (const title of titles) {
+        const item = createActionItem(title, "Email", context);
+        const key = `${item.source}:${item.context}:${item.title}`.toLowerCase();
+        if (!existingKeys.has(key)) {
+          existingKeys.add(key);
+          nextItems.push(item);
+        }
+      }
+    }
+
+    if (nextItems.length > 0) {
+      setActionItems((currentItems) => [...nextItems, ...currentItems]);
+    }
+
+    return nextItems.length;
+  }
+
+  async function syncEmailInbox(): Promise<void> {
+    setEmailBusy(true);
+    setEmailSyncStatus("Syncing Gmail inbox...");
+    const result = await autopilot.email.sync().catch(() => ({
+      success: false as const,
+      status: emailStatus ?? {
+        provider: "gmail" as const,
+        configured: false,
+        connected: false,
+        accountEmail: null,
+        reason: "Email sync failed."
+      },
+      messages: emailMessages,
+      reason: "Email sync failed."
+    }));
+
+    setEmailStatus(result.status);
+    setEmailMessages(result.messages);
+    if (!result.success) {
+      setEmailSyncStatus(result.reason ?? result.status.reason ?? "Email sync failed.");
+      setEmailBusy(false);
+      return;
+    }
+
+    const addedCount = addActionsFromEmailMessages(result.messages);
+    setEmailSyncStatus(`Synced ${result.messages.length} inbox messages and added ${addedCount} action ${addedCount === 1 ? "item" : "items"}.`);
+    setEmailBusy(false);
+  }
+
+  async function connectGmailInbox(): Promise<void> {
+    setEmailBusy(true);
+    setEmailSyncStatus("Opening Google sign-in. Finish the prompt in your browser.");
+    const result = await autopilot.email.connectGmail().catch(() => ({
+      success: false as const,
+      status: emailStatus ?? {
+        provider: "gmail" as const,
+        configured: false,
+        connected: false,
+        accountEmail: null,
+        reason: "Gmail connection failed."
+      },
+      messages: emailMessages,
+      reason: "Gmail connection failed."
+    }));
+
+    setEmailStatus(result.status);
+    setEmailMessages(result.messages ?? emailMessages);
+    if (!result.success) {
+      setEmailSyncStatus(result.reason ?? result.status.reason ?? "Gmail connection failed.");
+      setEmailBusy(false);
+      return;
+    }
+
+    const syncedMessages = result.messages ?? [];
+    const addedCount = addActionsFromEmailMessages(syncedMessages);
+    setEmailSyncStatus(`Connected ${result.status.accountEmail ?? "Gmail"} and added ${addedCount} action ${addedCount === 1 ? "item" : "items"}.`);
+    setEmailBusy(false);
+  }
+
+  async function disconnectEmailInbox(): Promise<void> {
+    setEmailBusy(true);
+    const status = await autopilot.email.disconnect();
+    setEmailStatus(status);
+    setEmailMessages([]);
+    setEmailSyncStatus("Gmail disconnected.");
+    setEmailBusy(false);
+  }
+
+  async function syncSelectedProductivitySources(): Promise<void> {
+    if (selectedProductivitySources.includes("gmail")) {
+      await syncEmailInbox();
+      return;
+    }
+
     const selectedLabels = productivitySourceOptions
       .filter((source) => selectedProductivitySources.includes(source.id))
       .map((source) => source.label)
@@ -1368,6 +1508,66 @@ export function App(): JSX.Element {
               </section>
 
               <div className="productivity-grid">
+                <section className="email-inbox-panel" aria-label="Built-in email inbox">
+                  <div className="email-inbox-heading">
+                    <div>
+                      <p className="panel-kicker">Inbox</p>
+                      <h2>Email action feed</h2>
+                      <span>
+                        {emailStatus?.connected
+                          ? `Connected to ${emailStatus.accountEmail ?? "Gmail"}`
+                          : emailStatus?.reason ?? "Connect Gmail to pull messages into Autopilot."}
+                      </span>
+                    </div>
+                    <div className="email-inbox-actions">
+                      {emailStatus?.connected ? (
+                        <>
+                          <button className="secondary-action" type="button" onClick={() => void disconnectEmailInbox()} disabled={emailBusy}>
+                            Disconnect
+                          </button>
+                          <button className="primary-action" type="button" onClick={() => void syncEmailInbox()} disabled={emailBusy}>
+                            <RotateCw size={16} className={emailBusy ? "spin" : ""} aria-hidden="true" />
+                            Sync inbox
+                          </button>
+                        </>
+                      ) : (
+                        <button className="primary-action" type="button" onClick={() => void connectGmailInbox()} disabled={emailBusy || emailStatus?.configured === false}>
+                          <Mail size={16} aria-hidden="true" />
+                          Connect Gmail
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {emailSyncStatus ? <p className="email-sync-status">{emailSyncStatus}</p> : null}
+
+                  {emailMessages.length === 0 ? (
+                    <div className="email-empty">
+                      <Mail size={22} aria-hidden="true" />
+                      <span>{emailStatus?.connected ? "No inbox messages synced yet." : "Connect Gmail to show your inbox here."}</span>
+                    </div>
+                  ) : (
+                    <div className="email-message-list">
+                      {emailMessages.slice(0, 8).map((message) => (
+                        <article className={`email-message ${message.unread ? "unread" : ""}`} key={message.id}>
+                          <span className="email-message-icon" aria-hidden="true">
+                            <Mail size={16} />
+                          </span>
+                          <div className="email-message-copy">
+                            <strong>{message.subject}</strong>
+                            <span>
+                              {message.from}
+                              {message.fromEmail ? ` - ${message.fromEmail}` : ""}
+                            </span>
+                            <p>{message.snippet}</p>
+                          </div>
+                          <time dateTime={new Date(message.receivedAt).toISOString()}>{formatCredentialDate(message.receivedAt)}</time>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
                 <section className="action-checklist-panel" aria-label="Action item checklist">
                   <div className="action-checklist-heading">
                     <div>
@@ -1420,6 +1620,21 @@ export function App(): JSX.Element {
                       const Icon = source.icon;
                       const isSelected = selectedProductivitySourceSet.has(source.id);
                       const count = actionSourceCounts.get(source.source) ?? 0;
+                      const isGmailSource = source.id === "gmail";
+                      const sourceStatusClass = isGmailSource && emailStatus?.connected ? "ready" : source.status;
+                      const sourceStatusLabel = isGmailSource
+                        ? emailStatus?.connected
+                          ? "Connected"
+                          : emailStatus?.configured === false
+                            ? "Setup needed"
+                            : isSelected
+                              ? "Selected"
+                              : "Connect"
+                        : isSelected
+                          ? "Selected"
+                          : source.status === "ready"
+                            ? "Local"
+                            : "Connect later";
                       return (
                         <button
                           className={`source-card ${isSelected ? "selected" : ""}`}
@@ -1434,9 +1649,7 @@ export function App(): JSX.Element {
                             <strong>{source.label}</strong>
                             <small>{source.detail}</small>
                           </span>
-                          <span className={`source-status ${source.status}`}>
-                            {isSelected ? "Selected" : source.status === "ready" ? "Local" : "Connect later"}
-                          </span>
+                          <span className={`source-status ${sourceStatusClass}`}>{sourceStatusLabel}</span>
                           <b>{count}</b>
                         </button>
                       );

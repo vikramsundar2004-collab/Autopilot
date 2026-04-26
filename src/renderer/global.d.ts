@@ -6,6 +6,7 @@ import type {
   BrowserBookmarkSourceOption
 } from "../shared/bookmarks";
 import type { BrowserSnapshot } from "../shared/browserModel";
+import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email";
 import type {
   PasswordAvailability,
   PasswordCredentialSummary,
@@ -49,6 +50,14 @@ type PasswordsApi = {
   subscribeSavePrompts: (listener: (pending: PendingPasswordSave) => void) => () => void;
 };
 
+type EmailApi = {
+  status: () => Promise<EmailConnectionStatus>;
+  list: () => Promise<EmailMessageSummary[]>;
+  connectGmail: () => Promise<EmailConnectResult>;
+  sync: () => Promise<EmailSyncResult>;
+  disconnect: () => Promise<EmailConnectionStatus>;
+};
+
 declare global {
   interface Window {
     autopilot?: {
@@ -69,6 +78,7 @@ declare global {
         setSources: (sources: string[]) => Promise<BrowserBookmarkNode[]>;
       };
       passwords: PasswordsApi;
+      email: EmailApi;
     };
   }
 }
