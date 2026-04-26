@@ -115,6 +115,7 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
     --surface: ${theme.surface};
     --surface-2: ${theme.surface2};
     --primary: ${theme.primary};
+    --primary-hover: ${theme.primaryHover};
     --text: ${theme.text};
     --muted: ${theme.textMuted};
     --border: ${theme.border};
@@ -148,10 +149,21 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
     line-height: .94;
     letter-spacing: 0;
   }
-  .title-compass {
+  .title-compass-button {
+    display: grid;
+    place-items: center;
     width: clamp(40px, 8vw, 62px);
     height: clamp(58px, 12vw, 92px);
     margin-bottom: -8px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    cursor: zoom-in;
+    padding: 0;
+  }
+  .title-compass {
+    width: 100%;
+    height: 100%;
     filter: drop-shadow(0 16px 28px rgba(31, 74, 55, .18));
   }
   .title-compass .disc {
@@ -267,6 +279,10 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
     background: var(--primary-hover);
     transform: translateY(-1px);
   }
+  .title-compass-button:hover {
+    background: transparent;
+    transform: translateY(-1px);
+  }
   .shortcuts {
     display: flex;
     flex-wrap: wrap;
@@ -281,19 +297,94 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
     padding: 8px 12px;
     font-size: 14px;
   }
+  .icon-preview-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: grid;
+    place-items: center;
+    background:
+      radial-gradient(circle at 50% 34%, color-mix(in srgb, var(--surface-2) 34%, transparent), transparent 34%),
+      color-mix(in srgb, var(--text) 34%, transparent);
+    backdrop-filter: blur(10px);
+    padding: 24px;
+  }
+  .icon-preview-backdrop[hidden] {
+    display: none;
+  }
+  .icon-preview-dialog {
+    position: relative;
+    display: grid;
+    justify-items: center;
+    gap: 14px;
+    width: min(360px, calc(100vw - 32px));
+    border: 1px solid color-mix(in srgb, var(--border) 82%, white);
+    border-radius: 22px;
+    background: color-mix(in srgb, var(--surface) 97%, white);
+    box-shadow: 0 28px 90px rgba(51, 39, 31, .28);
+    padding: 30px 28px 28px;
+  }
+  .icon-preview-art {
+    display: grid;
+    place-items: center;
+    width: min(228px, 62vw);
+    aspect-ratio: 1;
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: 42px;
+    background:
+      radial-gradient(circle at 50% 22%, color-mix(in srgb, var(--surface-2) 70%, transparent), transparent 44%),
+      linear-gradient(145deg, color-mix(in srgb, var(--surface) 95%, white), var(--bg));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, .6),
+      0 18px 48px rgba(31, 74, 55, .15);
+  }
+  .icon-preview-logo {
+    width: min(184px, 50vw);
+    height: min(184px, 50vw);
+    border-radius: 42px;
+    box-shadow: 0 18px 44px rgba(31, 74, 55, .25);
+  }
+  .icon-preview-dialog h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: 32px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .icon-preview-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    min-height: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface-2) 54%, transparent);
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0;
+  }
+  .icon-preview-close:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
 </style>
 </head>
 <body>
 <main>
   <h1>
     <span>Autopilot</span>
-    <svg class="title-compass" viewBox="0 0 64 96" aria-label="Autopilot compass">
-      <circle class="disc" cx="32" cy="51" r="31" />
-      <path class="wing wing-left" d="M32 6 59 89 32 72 5 89Z" />
-      <path class="wing wing-right" d="M32 6 59 89 32 72Z" />
-      <path class="core" d="M32 22 45 64 32 56 19 64Z" />
-      <path class="ridge" d="M32 6 32 72" />
-    </svg>
+    <button class="title-compass-button" type="button" id="open-icon-preview" aria-label="Preview Autopilot app icon">
+      <svg class="title-compass" viewBox="0 0 64 96" aria-hidden="true">
+        <circle class="disc" cx="32" cy="51" r="31" />
+        <path class="wing wing-left" d="M32 6 59 89 32 72 5 89Z" />
+        <path class="wing wing-right" d="M32 6 59 89 32 72Z" />
+        <path class="core" d="M32 22 45 64 32 56 19 64Z" />
+        <path class="ridge" d="M32 6 32 72" />
+      </svg>
+    </button>
   </h1>
   <p>Where to next?</p>
   <form action="https://www.google.com/search" method="get">
@@ -307,6 +398,83 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
     <a href="https://github.com/">GitHub</a>
   </nav>
 </main>
+<div class="icon-preview-backdrop" id="icon-preview" hidden>
+  <section class="icon-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="icon-preview-heading">
+    <button class="icon-preview-close" type="button" id="close-icon-preview" aria-label="Close icon preview">×</button>
+    <div class="icon-preview-art">
+      <svg class="icon-preview-logo" viewBox="0 0 256 256" aria-hidden="true">
+        <defs>
+          <linearGradient id="homeIconBg" x1="48" y1="24" x2="218" y2="232" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#265a43"/>
+            <stop offset=".58" stop-color="#1f4a37"/>
+            <stop offset="1" stop-color="#143425"/>
+          </linearGradient>
+          <linearGradient id="homeIconNeedle" x1="98" y1="54" x2="158" y2="196" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#fffaf2"/>
+            <stop offset=".56" stop-color="#f2e5d0"/>
+            <stop offset="1" stop-color="#d8c4a8"/>
+          </linearGradient>
+          <filter id="homeIconShadow" x="-25%" y="-25%" width="150%" height="150%">
+            <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#0b1c14" flood-opacity=".28"/>
+          </filter>
+        </defs>
+        <rect width="256" height="256" rx="58" fill="url(#homeIconBg)"/>
+        <path d="M43 71c24-33 59-48 104-43 27 3 48 13 65 30" fill="none" stroke="#fffaf2" stroke-width="2" opacity=".18" stroke-linecap="round"/>
+        <circle cx="128" cy="128" r="82" fill="none" stroke="#fffaf2" stroke-width="7" opacity=".18"/>
+        <circle cx="128" cy="128" r="59" fill="#fffaf2" opacity=".96" filter="url(#homeIconShadow)"/>
+        <circle cx="128" cy="43" r="12" fill="#9a765b"/>
+        <circle cx="205" cy="98" r="12" fill="#2f6b4f"/>
+        <circle cx="176" cy="206" r="12" fill="#b96f34"/>
+        <circle cx="80" cy="206" r="12" fill="#b35c83"/>
+        <circle cx="51" cy="98" r="12" fill="#4d8a63"/>
+        <circle cx="128" cy="43" r="5" fill="#fffaf2"/>
+        <circle cx="205" cy="98" r="5" fill="#fffaf2"/>
+        <circle cx="176" cy="206" r="5" fill="#fffaf2"/>
+        <circle cx="80" cy="206" r="5" fill="#fffaf2"/>
+        <circle cx="51" cy="98" r="5" fill="#fffaf2"/>
+        <g filter="url(#homeIconShadow)">
+          <path d="M128 55 164 194 128 169 92 194Z" fill="url(#homeIconNeedle)"/>
+          <path d="M128 55 164 194 128 169Z" fill="#fffaf2" opacity=".92"/>
+          <path d="M128 55 128 169 92 194Z" fill="#e4d2b8"/>
+          <path d="M128 88 145 153 128 142 111 153Z" fill="#d97955"/>
+          <path d="M128 55 164 194 128 169 92 194Z" fill="none" stroke="#143425" stroke-width="8" stroke-linejoin="round"/>
+          <path d="M128 83 146 154 128 142 110 154Z" fill="#d97955"/>
+        </g>
+        <circle cx="128" cy="128" r="18" fill="#1f4a37"/>
+        <path d="M128 116 133 134 128 131 123 134Z" fill="#fffaf2"/>
+      </svg>
+    </div>
+    <h2 id="icon-preview-heading">Autopilot</h2>
+  </section>
+</div>
+<script>
+  const openIconPreview = document.getElementById("open-icon-preview");
+  const iconPreview = document.getElementById("icon-preview");
+  const closeIconPreview = document.getElementById("close-icon-preview");
+
+  function showIconPreview() {
+    iconPreview.hidden = false;
+    closeIconPreview.focus();
+  }
+
+  function hideIconPreview() {
+    iconPreview.hidden = true;
+    openIconPreview.focus();
+  }
+
+  openIconPreview.addEventListener("click", showIconPreview);
+  closeIconPreview.addEventListener("click", hideIconPreview);
+  iconPreview.addEventListener("click", (event) => {
+    if (event.target === iconPreview) {
+      hideIconPreview();
+    }
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !iconPreview.hidden) {
+      hideIconPreview();
+    }
+  });
+</script>
 </body>
 </html>`;
 

@@ -7,6 +7,7 @@ import {
   AUTOPILOT_PDF_LABEL,
   AUTOPILOT_PDF_NOTICE_MARKER,
   createHistoryUrl,
+  createHomeUrl,
   closeTab,
   createTab,
   getDisplayUrl,
@@ -124,5 +125,15 @@ describe("readableTitle", () => {
 
   it("uses New tab for home", () => {
     expect(readableTitle("", AUTOPILOT_HOME_LABEL)).toBe("New tab");
+  });
+});
+
+describe("createHomeUrl", () => {
+  it("includes a clickable app icon preview", () => {
+    const decodedHome = decodeURIComponent(createHomeUrl());
+
+    expect(decodedHome).toContain('id="open-icon-preview"');
+    expect(decodedHome).toContain('id="icon-preview"');
+    expect(decodedHome).toContain("icon-preview-logo");
   });
 });
