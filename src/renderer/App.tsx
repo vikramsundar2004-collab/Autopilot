@@ -14,8 +14,11 @@ import {
   FolderOpen,
   Globe2,
   KeyRound,
+  ListChecks,
   LockKeyhole,
+  Mail,
   MessageCircle,
+  NotepadText,
   Palette,
   Plus,
   Printer,
@@ -27,6 +30,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import {
   type CSSProperties,
   type FormEvent,
@@ -94,7 +98,7 @@ const colorControls: Array<{ key: keyof BrowserTheme; label: string }> = [
   { key: "focus", label: "Focus" }
 ];
 
-const workspaceItems: Array<{ label: string; color: string; icon: typeof Globe2; view: AppView }> = [
+const workspaceItems: Array<{ label: string; color: string; icon: LucideIcon; view: AppView }> = [
   { label: "browsing", color: "blue", icon: Globe2, view: "browser" },
   { label: "coding", color: "violet", icon: Code2, view: "browser" },
   { label: "productivity", color: "green", icon: Check, view: "productivity" },
@@ -103,6 +107,13 @@ const workspaceItems: Array<{ label: string; color: string; icon: typeof Globe2;
 ];
 
 const actionSourceOptions: ActionItemSource[] = ["Email", "Web", "Notes", "Chat", "Manual"];
+const actionSourceMetadata: Array<{ source: ActionItemSource; label: string; detail: string; icon: LucideIcon }> = [
+  { source: "Email", label: "Email", detail: "Inbox pages and pasted emails", icon: Mail },
+  { source: "Web", label: "Web", detail: "Current page tasks", icon: Globe2 },
+  { source: "Notes", label: "Notes", detail: "Class notes and meeting notes", icon: NotepadText },
+  { source: "Chat", label: "Chat", detail: "Messages and threads", icon: MessageCircle },
+  { source: "Manual", label: "Manual", detail: "Actions you add yourself", icon: ListChecks }
+];
 
 function inferActionSourceFromPage(url: string, title: string): ActionItemSource {
   const pageKey = `${url} ${title}`.toLowerCase();
@@ -128,6 +139,26 @@ function getActionContextFromPage(title: string, url: string): string {
   } catch {
     return "Current page";
   }
+}
+
+function isUrgentActionItem(item: ActionItem): boolean {
+  return /\b(urgent|today|deadline|due|overdue|priority|password|lose|blocked|asap|by friday|by monday)\b/i.test(
+    `${item.title} ${item.context}`
+  );
+}
+
+function isWaitingActionItem(item: ActionItem): boolean {
+  return /\b(waiting|wait|reply|response|approval|confirm)\b/i.test(`${item.title} ${item.context}`);
+}
+
+function formatFocusMinutes(minutes: number): string {
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder === 0 ? `${hours}h` : `${hours}h ${remainder}m`;
 }
 
 function getSidebarMaxWidth(): number {
@@ -321,6 +352,7 @@ export function App(): JSX.Element {
   const [captureText, setCaptureText] = useState("");
   const [captureSource, setCaptureSource] = useState<ActionItemSource>("Email");
   const [captureStatus, setCaptureStatus] = useState("");
+  const [selectedActionSource, setSelectedActionSource] = useState<ActionItemSource | "All">("All");
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [addressDraft, setAddressDraft] = useState("");
   const [view, setView] = useState<AppView>("browser");
@@ -336,7 +368,40 @@ export function App(): JSX.Element {
   const warnings = useMemo(() => getThemeWarnings(theme), [theme]);
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
   const completedActionItems = useMemo(() => actionItems.filter((item) => item.completedAt), [actionItems]);
-  const emailActionCount = useMemo(() => actionItems.filter((item) => item.source === "Email" && !item.completedAt).length, [actionItems]);
+  const urgentActionCount = useMemo(() => openActionItems.filter(isUrgentActionItem).length, [openActionItems]);
+  const waitingActionCount = useMemo(() => openActionItems.filter(isWaitingActionItem).length, [openActionItems]);
+  const focusTimeLabel = useMemo(() => formatFocusMinutes(openActionItems.length * 18), [openActionItems.length]);
+  const activeSourceCount = useMemo(() => new Set(openActionItems.map((item) => item.source)).size, [openActionItems]);
+  const todayLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric"
+      }).format(new Date()),
+    []
+  );
+  const visibleOpenActionItems = useMemo(
+    () => (selectedActionSource === "All" ? openActionItems : openActionItems.filter((item) => item.source === selectedActionSource)),
+    [openActionItems, selectedActionSource]
+  );
+  const visibleCompletedActionItems = useMemo(
+    () => (selectedActionSource === "All" ? completedActionItems : completedActionItems.filter((item) => item.source === selectedActionSource)),
+    [completedActionItems, selectedActionSource]
+  );
+  const actionSourceCounts = useMemo(() => {
+    const counts = new Map<ActionItemSource, number>();
+    for (const item of openActionItems) {
+      counts.set(item.source, (counts.get(item.source) ?? 0) + 1);
+    }
+
+    return counts;
+  }, [openActionItems]);
+  const topPriorityActionItems = useMemo(
+    () => [...openActionItems].sort((left, right) => Number(isUrgentActionItem(right)) - Number(isUrgentActionItem(left))).slice(0, 5),
+    [openActionItems]
+  );
+  const nextActionItem = topPriorityActionItems[0] ?? null;
   const selectedBookmarkSourceLabels = useMemo(() => {
     const labels = new Map(bookmarkSources.map((source) => [source.id, source.label]));
     return selectedBookmarkSources.map((sourceId) => labels.get(sourceId) ?? sourceId).join(", ");
@@ -941,101 +1006,155 @@ export function App(): JSX.Element {
             </nav>
           </section>
 
-          <section className="sidebar-section with-divider" aria-labelledby="tabs-heading">
-            <div className="sidebar-heading-row">
-              <p className="sidebar-heading" id="tabs-heading">
-                Tabs
+          {view === "productivity" ? (
+            <section className="sidebar-section with-divider productivity-sidebar" aria-labelledby="productivity-sidebar-heading">
+              <p className="sidebar-heading" id="productivity-sidebar-heading">
+                Action sources
               </p>
-              <button className="sidebar-icon-button" type="button" aria-label="New tab" onClick={addTab}>
-                <Plus size={16} />
-              </button>
-            </div>
-            <div className="tab-list" aria-label="Open tabs">
-              {tabs.map((tab) => (
-                <div className={`sidebar-tab ${tab.id === activeTabId && view === "browser" ? "active" : ""}`} key={tab.id}>
-                  <button className="sidebar-tab-main" type="button" onClick={() => activateTab(tab.id)}>
-                    <Globe2 size={16} aria-hidden="true" />
-                    <span>{tab.title}</span>
-                  </button>
-                  <button className="sidebar-tab-close" type="button" aria-label={`Delete ${tab.title}`} onClick={() => deleteTab(tab.id)}>
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="sidebar-section with-divider" aria-labelledby="bookmarks-heading">
-          <div className="sidebar-heading-row">
-            <p className="sidebar-heading" id="bookmarks-heading">
-              Bookmarks
-            </p>
-            <Bookmark size={14} aria-hidden="true" />
-          </div>
-          {bookmarkSources.length > 0 && (
-            <div className={`bookmark-import ${bookmarkImportOpen ? "open" : ""}`}>
-              <button className="bookmark-import-toggle" type="button" onClick={() => setBookmarkImportOpen((isOpen) => !isOpen)}>
-                <FolderOpen size={15} aria-hidden="true" />
-                <span>
-                  <strong>Browser imports</strong>
-                  <small>{selectedBookmarkSourceLabels || "Choose browsers"}</small>
+              <button
+                className={`source-filter ${selectedActionSource === "All" ? "active" : ""}`}
+                type="button"
+                onClick={() => setSelectedActionSource("All")}
+              >
+                <span className="source-filter-icon">
+                  <ListChecks size={15} aria-hidden="true" />
                 </span>
-                <ChevronDown size={15} aria-hidden="true" />
+                <span>
+                  <strong>All actions</strong>
+                  <small>{openActionItems.length} open</small>
+                </span>
               </button>
-              {bookmarkImportOpen && (
-                <div className="bookmark-import-panel">
-                  <div className="bookmark-source-list">
-                    {bookmarkSources.map((source) => (
-                      <label className="bookmark-source-option" key={source.id}>
-                        <input
-                          type="checkbox"
-                          checked={draftBookmarkSources.includes(source.id)}
-                          onChange={() => toggleDraftBookmarkSource(source.id)}
-                        />
-                        <span>
-                          <strong>{source.label}</strong>
-                          <small>{source.profileCount === 1 ? "1 profile" : `${source.profileCount} profiles`}</small>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                  <button className="bookmark-import-action" type="button" disabled={bookmarkImportBusy} onClick={applyBookmarkSources}>
-                    {draftBookmarkSources.length > 0 ? "Pull selected" : "Use none"}
+              {actionSourceMetadata.map((source) => {
+                const Icon = source.icon;
+                const count = actionSourceCounts.get(source.source) ?? 0;
+                return (
+                  <button
+                    className={`source-filter ${selectedActionSource === source.source ? "active" : ""}`}
+                    key={source.source}
+                    type="button"
+                    onClick={() => setSelectedActionSource(source.source)}
+                  >
+                    <span className="source-filter-icon">
+                      <Icon size={15} aria-hidden="true" />
+                    </span>
+                    <span>
+                      <strong>{source.label}</strong>
+                      <small>{count} open</small>
+                    </span>
+                  </button>
+                );
+              })}
+              <div className="productivity-sidebar-note">
+                <strong>{activeTab ? "Current page ready" : "Open a browser page"}</strong>
+                <span>{activeTab ? activeTab.title : "Use Browsing, then pull actions here."}</span>
+              </div>
+            </section>
+          ) : (
+            <>
+              <section className="sidebar-section with-divider" aria-labelledby="tabs-heading">
+                <div className="sidebar-heading-row">
+                  <p className="sidebar-heading" id="tabs-heading">
+                    Tabs
+                  </p>
+                  <button className="sidebar-icon-button" type="button" aria-label="New tab" onClick={addTab}>
+                    <Plus size={16} />
                   </button>
                 </div>
-              )}
-            </div>
-          )}
-          <nav className="bookmark-list" aria-label="Bookmarks" onContextMenu={(event) => openBookmarkContextMenu(event, null)}>
-              <BookmarkTree
-                nodes={bookmarks}
-                openFolders={openBookmarkFolders}
-                parentId="bookmarks"
-                onNavigate={navigateTo}
-                onToggleFolder={toggleBookmarkFolder}
-                onContextMenu={openBookmarkContextMenu}
-              />
-            </nav>
-          </section>
+                <div className="tab-list" aria-label="Open tabs">
+                  {tabs.map((tab) => (
+                    <div className={`sidebar-tab ${tab.id === activeTabId && view === "browser" ? "active" : ""}`} key={tab.id}>
+                      <button className="sidebar-tab-main" type="button" onClick={() => activateTab(tab.id)}>
+                        <Globe2 size={16} aria-hidden="true" />
+                        <span>{tab.title}</span>
+                      </button>
+                      <button className="sidebar-tab-close" type="button" aria-label={`Delete ${tab.title}`} onClick={() => deleteTab(tab.id)}>
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
 
-          <section className="sidebar-section with-divider history-section" aria-labelledby="history-heading">
-            <button
-              className="history-link"
-              type="button"
-              onClick={openHistoryPage}
-              aria-label="Open history"
-            >
-              <Clock size={16} aria-hidden="true" />
-              <span id="history-heading">History</span>
-            </button>
-          </section>
+              <section className="sidebar-section with-divider" aria-labelledby="bookmarks-heading">
+                <div className="sidebar-heading-row">
+                  <p className="sidebar-heading" id="bookmarks-heading">
+                    Bookmarks
+                  </p>
+                  <Bookmark size={14} aria-hidden="true" />
+                </div>
+                {bookmarkSources.length > 0 && (
+                  <div className={`bookmark-import ${bookmarkImportOpen ? "open" : ""}`}>
+                    <button className="bookmark-import-toggle" type="button" onClick={() => setBookmarkImportOpen((isOpen) => !isOpen)}>
+                      <FolderOpen size={15} aria-hidden="true" />
+                      <span>
+                        <strong>Browser imports</strong>
+                        <small>{selectedBookmarkSourceLabels || "Choose browsers"}</small>
+                      </span>
+                      <ChevronDown size={15} aria-hidden="true" />
+                    </button>
+                    {bookmarkImportOpen && (
+                      <div className="bookmark-import-panel">
+                        <div className="bookmark-source-list">
+                          {bookmarkSources.map((source) => (
+                            <label className="bookmark-source-option" key={source.id}>
+                              <input
+                                type="checkbox"
+                                checked={draftBookmarkSources.includes(source.id)}
+                                onChange={() => toggleDraftBookmarkSource(source.id)}
+                              />
+                              <span>
+                                <strong>{source.label}</strong>
+                                <small>{source.profileCount === 1 ? "1 profile" : `${source.profileCount} profiles`}</small>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                        <button className="bookmark-import-action" type="button" disabled={bookmarkImportBusy} onClick={applyBookmarkSources}>
+                          {draftBookmarkSources.length > 0 ? "Pull selected" : "Use none"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <nav className="bookmark-list" aria-label="Bookmarks" onContextMenu={(event) => openBookmarkContextMenu(event, null)}>
+                  <BookmarkTree
+                    nodes={bookmarks}
+                    openFolders={openBookmarkFolders}
+                    parentId="bookmarks"
+                    onNavigate={navigateTo}
+                    onToggleFolder={toggleBookmarkFolder}
+                    onContextMenu={openBookmarkContextMenu}
+                  />
+                </nav>
+              </section>
+
+              <section className="sidebar-section with-divider history-section" aria-labelledby="history-heading">
+                <button
+                  className="history-link"
+                  type="button"
+                  onClick={openHistoryPage}
+                  aria-label="Open history"
+                >
+                  <Clock size={16} aria-hidden="true" />
+                  <span id="history-heading">History</span>
+                </button>
+              </section>
+            </>
+          )}
         </div>
 
         <div className="sidebar-footer">
-          <button className="sidebar-action" type="button" onClick={() => deleteTab()} aria-label="Delete active tab">
-            <Trash2 size={16} />
-            <span>Delete tab</span>
-          </button>
+          {view === "browser" ? (
+            <button className="sidebar-action" type="button" onClick={() => deleteTab()} aria-label="Delete active tab">
+              <Trash2 size={16} />
+              <span>Delete tab</span>
+            </button>
+          ) : (
+            <button className="sidebar-action" type="button" onClick={() => setView("browser")} aria-label="Open browser workspace">
+              <Globe2 size={16} />
+              <span>Open browsing</span>
+            </button>
+          )}
           <button
             className={`sidebar-action ${view === "settings" ? "active" : ""}`}
             type="button"
@@ -1195,25 +1314,95 @@ export function App(): JSX.Element {
           {view === "productivity" && (
             <section className="productivity-page" aria-labelledby="productivity-heading">
               <header className="productivity-hero">
-                <div>
-                  <p className="panel-kicker">Productivity</p>
-                  <h1 id="productivity-heading">Action items</h1>
+                <div className="productivity-hero-copy">
+                  <p className="panel-kicker">{todayLabel}</p>
+                  <h1 id="productivity-heading">
+                    {openActionItems.length} {openActionItems.length === 1 ? "thing needs" : "things need"} action,{" "}
+                    {urgentActionCount} {urgentActionCount === 1 ? "is" : "are"} urgent.
+                  </h1>
+                  <p>
+                    Email, web, chat, and note signals are ranked into a practical queue. Browser tabs stay saved while this workspace handles the work list.
+                  </p>
                 </div>
                 <div className="productivity-stats" aria-label="Action item summary">
                   <span>
-                    <strong>{openActionItems.length}</strong>
-                    <small>Open</small>
+                    <strong>{focusTimeLabel}</strong>
+                    <small>Focus time</small>
                   </span>
                   <span>
-                    <strong>{emailActionCount}</strong>
-                    <small>Email</small>
+                    <strong>{waitingActionCount}</strong>
+                    <small>Waiting</small>
                   </span>
                   <span>
-                    <strong>{completedActionItems.length}</strong>
-                    <small>Done</small>
+                    <strong>{activeSourceCount}</strong>
+                    <small>Sources</small>
                   </span>
                 </div>
               </header>
+
+              <section className="priority-callout" aria-label="Today's priority call">
+                <div>
+                  <p className="panel-kicker">Today's call</p>
+                  <h2>
+                    {urgentActionCount > 0
+                      ? "Close the urgent thread first, then move the next priority actions."
+                      : openActionItems.length > 0
+                        ? "Start with the next useful move, then clear the queue."
+                        : "No urgent work is waiting."}
+                  </h2>
+                  <p>
+                    Reviewed {actionItems.length} saved signals and condensed them into the next useful moves without disturbing your browser tabs.
+                  </p>
+                  <ol>
+                    {topPriorityActionItems.length > 0 ? (
+                      topPriorityActionItems.map((item) => (
+                        <li key={item.id}>
+                          <span>{item.title}</span>
+                        </li>
+                      ))
+                    ) : (
+                      <li>
+                        <span>Add an action or pull from the current page to build today's plan.</span>
+                      </li>
+                    )}
+                  </ol>
+                </div>
+                <button
+                  className="callout-action"
+                  type="button"
+                  disabled={!nextActionItem}
+                  onClick={() => nextActionItem && setSelectedActionSource(nextActionItem.source)}
+                >
+                  Start next task
+                  <ArrowRight size={17} aria-hidden="true" />
+                </button>
+              </section>
+
+              <div className="source-strip" aria-label="Productivity sources">
+                {actionSourceMetadata
+                  .filter((source) => source.source !== "Manual")
+                  .map((source) => {
+                    const Icon = source.icon;
+                    const count = actionSourceCounts.get(source.source) ?? 0;
+                    return (
+                      <button
+                        className={`source-card ${selectedActionSource === source.source ? "active" : ""}`}
+                        key={source.source}
+                        type="button"
+                        onClick={() => setSelectedActionSource(source.source)}
+                      >
+                        <span className="source-card-icon">
+                          <Icon size={17} aria-hidden="true" />
+                        </span>
+                        <span>
+                          <strong>{source.label}</strong>
+                          <small>{source.detail}</small>
+                        </span>
+                        <b>{count}</b>
+                      </button>
+                    );
+                  })}
+              </div>
 
               <div className="productivity-grid">
                 <section className="action-panel" aria-label="Create action item">
@@ -1272,14 +1461,26 @@ export function App(): JSX.Element {
                 </section>
 
                 <section className="action-list-panel" aria-label="Action items">
-                  {openActionItems.length === 0 ? (
+                  <div className="action-list-heading">
+                    <div>
+                      <p className="panel-kicker">Queue</p>
+                      <h2>{selectedActionSource === "All" ? "Open actions" : `${selectedActionSource} actions`}</h2>
+                    </div>
+                    {selectedActionSource !== "All" && (
+                      <button className="clear-source-filter" type="button" onClick={() => setSelectedActionSource("All")}>
+                        Show all
+                      </button>
+                    )}
+                  </div>
+
+                  {visibleOpenActionItems.length === 0 ? (
                     <div className="action-empty">
                       <Check size={22} aria-hidden="true" />
-                      <span>No open action items</span>
+                      <span>{selectedActionSource === "All" ? "No open action items" : `No open ${selectedActionSource.toLowerCase()} actions`}</span>
                     </div>
                   ) : (
                     <div className="action-list">
-                      {openActionItems.map((item) => (
+                      {visibleOpenActionItems.map((item) => (
                         <article className="action-item" key={item.id}>
                           <button className="action-check" type="button" aria-label={`Mark ${item.title} done`} onClick={() => toggleActionItem(item.id)}>
                             <Check size={15} />
@@ -1299,10 +1500,10 @@ export function App(): JSX.Element {
                     </div>
                   )}
 
-                  {completedActionItems.length > 0 && (
+                  {visibleCompletedActionItems.length > 0 && (
                     <details className="completed-actions">
                       <summary>Completed</summary>
-                      {completedActionItems.map((item) => (
+                      {visibleCompletedActionItems.map((item) => (
                         <article className="action-item completed" key={item.id}>
                           <button className="action-check" type="button" aria-label={`Reopen ${item.title}`} onClick={() => toggleActionItem(item.id)}>
                             <Check size={15} />
