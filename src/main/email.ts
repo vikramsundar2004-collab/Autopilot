@@ -202,7 +202,7 @@ export class EmailService {
         configured: false,
         connected: false,
         accountEmail: account?.accountEmail ?? null,
-        reason: "Paste AUTOPILOT_GOOGLE_CLIENT_ID and AUTOPILOT_GOOGLE_CLIENT_SECRET into .env.local to enable Gmail sync."
+        reason: "Paste AUTOPILOT_GOOGLE_CLIENT_ID into .env.local, then rebuild or restart Autopilot to enable Gmail sync."
       };
     }
 

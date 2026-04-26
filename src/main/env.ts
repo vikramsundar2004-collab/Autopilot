@@ -27,21 +27,49 @@ export function parseEnvText(text: string): Record<string, string> {
   return entries;
 }
 
+function readAppConfig(filePath: string): Record<string, string> {
+  if (!existsSync(filePath)) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as {
+      gmail?: {
+        clientId?: unknown;
+      };
+    };
+    const clientId = typeof parsed.gmail?.clientId === "string" ? parsed.gmail.clientId.trim() : "";
+    return clientId ? { AUTOPILOT_GOOGLE_CLIENT_ID: clientId } : {};
+  } catch {
+    return {};
+  }
+}
+
 export function loadAutopilotEnv(): void {
   const projectRootFromDist = path.resolve(__dirname, "../..");
-  const candidates = [
+  const envCandidates = [
     path.join(process.cwd(), ".env.local"),
     path.join(process.cwd(), ".env"),
     path.join(projectRootFromDist, ".env.local"),
     path.join(projectRootFromDist, ".env")
   ];
+  const configCandidates = [
+    path.join(process.cwd(), "public", "autopilot-config.json"),
+    path.join(projectRootFromDist, "public", "autopilot-config.json"),
+    path.join(__dirname, "../renderer/autopilot-config.json")
+  ];
 
-  for (const candidate of [...new Set(candidates)]) {
-    if (!existsSync(candidate)) {
-      continue;
+  for (const candidate of [...new Set(envCandidates)]) {
+    const entries = existsSync(candidate) ? parseEnvText(readFileSync(candidate, "utf8")) : {};
+    for (const [key, value] of Object.entries(entries)) {
+      if (process.env[key] === undefined) {
+        process.env[key] = value;
+      }
     }
+  }
 
-    const entries = parseEnvText(readFileSync(candidate, "utf8"));
+  for (const candidate of [...new Set(configCandidates)]) {
+    const entries = readAppConfig(candidate);
     for (const [key, value] of Object.entries(entries)) {
       if (process.env[key] === undefined) {
         process.env[key] = value;
@@ -49,4 +77,3 @@ export function loadAutopilotEnv(): void {
     }
   }
 }
-
