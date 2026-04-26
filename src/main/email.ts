@@ -38,9 +38,16 @@ type GmailMessageResponse = {
   labelIds?: string[];
   snippet?: string;
   internalDate?: string;
-  payload?: {
-    headers?: Array<{ name: string; value: string }>;
+  payload?: GmailMessagePart;
+};
+
+type GmailMessagePart = {
+  mimeType?: string;
+  headers?: Array<{ name: string; value: string }>;
+  body?: {
+    data?: string;
   };
+  parts?: GmailMessagePart[];
 };
 
 type StoredEmailAccount = {
@@ -260,6 +267,70 @@ function getHeader(message: GmailMessageResponse, headerName: string): string {
   return header?.value?.trim() || "";
 }
 
+function decodeBase64Url(value: string): string {
+  try {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    return Buffer.from(normalized, "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function stripHtmlToText(value: string): string {
+  return value
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function collectBodyParts(part: GmailMessagePart | undefined, plainTextParts: string[], htmlParts: string[]): void {
+  if (!part) {
+    return;
+  }
+
+  const data = part.body?.data ? decodeBase64Url(part.body.data) : "";
+  if (data && part.mimeType === "text/plain") {
+    plainTextParts.push(data);
+  }
+
+  if (data && part.mimeType === "text/html") {
+    htmlParts.push(stripHtmlToText(data));
+  }
+
+  for (const childPart of part.parts ?? []) {
+    collectBodyParts(childPart, plainTextParts, htmlParts);
+  }
+}
+
+function getMessageActionText(message: GmailMessageResponse): string {
+  const plainTextParts: string[] = [];
+  const htmlParts: string[] = [];
+  collectBodyParts(message.payload, plainTextParts, htmlParts);
+  const bodyText = (plainTextParts.length > 0 ? plainTextParts : htmlParts)
+    .join("\n")
+    .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+
+  return bodyText.slice(0, 6000);
+}
+
+function stripActionTextForCache(message: EmailMessageSummary): EmailMessageSummary {
+  const { actionText: _actionText, ...summary } = message;
+  return summary;
+}
+
 function toMessageSummary(message: GmailMessageResponse): EmailMessageSummary | null {
   if (!message.id || !message.threadId) {
     return null;
@@ -278,6 +349,7 @@ function toMessageSummary(message: GmailMessageResponse): EmailMessageSummary | 
     fromEmail: sender.email,
     subject: getHeader(message, "Subject") || "(No subject)",
     snippet: message.snippet || "",
+    actionText: getMessageActionText(message),
     receivedAt,
     unread: message.labelIds?.includes("UNREAD") ?? false,
     url: `https://mail.google.com/mail/u/0/#inbox/${message.threadId}`
@@ -418,7 +490,7 @@ export class EmailService {
         await Promise.all(
           messageRefs.map((message) =>
             getJson<GmailMessageResponse>(
-              `${GMAIL_API_BASE}/messages/${message.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+              `${GMAIL_API_BASE}/messages/${message.id}?format=full`,
               accessToken
             )
           )
@@ -428,7 +500,7 @@ export class EmailService {
         .filter((message): message is EmailMessageSummary => Boolean(message))
         .sort((left, right) => right.receivedAt - left.receivedAt);
 
-      this.writeCache(messages);
+      this.writeCache(messages.map(stripActionTextForCache));
       return {
         success: true,
         status: this.getStatus(),

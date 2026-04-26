@@ -17,6 +17,7 @@ export type EmailMessageSummary = {
   fromEmail: string;
   subject: string;
   snippet: string;
+  actionText?: string;
   receivedAt: number;
   unread: boolean;
   url: string;
@@ -52,4 +53,3 @@ export function parseEmailSender(value: string): { name: string; email: string }
     email: match[2].trim()
   };
 }
-

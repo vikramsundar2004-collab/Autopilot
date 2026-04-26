@@ -961,7 +961,7 @@ export function App(): JSX.Element {
 
     for (const message of messages) {
       const context = getEmailContext(message);
-      const titles = extractActionItemTitles(`${message.subject}. ${message.snippet}`);
+      const titles = extractActionItemTitles(`${message.subject}.\n${message.snippet}\n${message.actionText ?? ""}`);
       for (const title of titles) {
         const item = createActionItem(title, "Email", context);
         const key = `${item.source}:${item.context}:${item.title}`.toLowerCase();
