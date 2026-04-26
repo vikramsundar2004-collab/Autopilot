@@ -23,7 +23,6 @@ import {
   Search,
   Settings,
   ShieldCheck,
-  Sparkles,
   Star,
   Trash2,
   X
@@ -122,6 +121,26 @@ function loadSidebarWidth(): number {
 
 function getFolderCreationParent(target: BookmarkNodeTarget | null): BookmarkNodeTarget | null {
   return target?.kind === "folder" && target.source === "Autopilot" ? target : null;
+}
+
+type AutopilotNeedleProps = {
+  className?: string;
+  label?: string;
+};
+
+function AutopilotNeedle({ className = "", label }: AutopilotNeedleProps): JSX.Element {
+  const ariaProps = label ? { role: "img", "aria-label": label } : { "aria-hidden": true };
+
+  return (
+    <svg className={`autopilot-needle ${className}`.trim()} viewBox="0 0 64 96" focusable="false" {...ariaProps}>
+      <circle className="needle-disc" cx="32" cy="51" r="31" />
+      <path className="needle-wing needle-wing-left" d="M32 6 59 89 32 72 5 89Z" />
+      <path className="needle-wing needle-wing-right" d="M32 6 59 89 32 72Z" />
+      <path className="needle-core-shadow" d="M32 22 45 64 32 56 19 64Z" />
+      <path className="needle-core" d="M32 22 45 64 32 56 19 64Z" />
+      <path className="needle-ridge" d="M32 6 32 72" />
+    </svg>
+  );
 }
 
 type BookmarkTreeProps = {
@@ -265,6 +284,7 @@ export function App(): JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth());
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
+  const [iconPreviewOpen, setIconPreviewOpen] = useState(false);
   const webAreaRef = useRef<HTMLDivElement | null>(null);
   const sidebarWidthRef = useRef(sidebarWidth);
 
@@ -396,6 +416,21 @@ export function App(): JSX.Element {
       setRevealedPasswords({});
     }
   }, [view]);
+
+  useEffect(() => {
+    if (!iconPreviewOpen) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === "Escape") {
+        setIconPreviewOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [iconPreviewOpen]);
 
   useEffect(() => {
     if (!bookmarkContextMenu) {
@@ -749,7 +784,9 @@ export function App(): JSX.Element {
       <aside className="sidebar" aria-label="Autopilot navigation">
         <div className="sidebar-scroll">
           <section className="sidebar-brand" aria-label="Autopilot">
-            <img className="brand-logo" src="./autopilot-logo.svg" alt="" />
+            <button className="icon-preview-trigger brand-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+              <img className="brand-logo" src="./autopilot-logo.svg" alt="" />
+            </button>
             <span>
               <strong>Autopilot</strong>
               <small>Browser workspaces</small>
@@ -766,13 +803,16 @@ export function App(): JSX.Element {
                 const isActive = index === 0 && view === "browser";
                 return (
                   <button
-                    className={`workspace-item ${isActive ? "active" : ""}`}
+                    className={`workspace-item ${item.color} ${isActive ? "active" : ""}`}
                     key={item.label}
                     onClick={() => setView("browser")}
                     type="button"
                   >
                     <span className={`workspace-icon ${item.color}`} aria-hidden="true">
-                      <Icon size={12} />
+                      <AutopilotNeedle className="workspace-needle" />
+                      <span className="workspace-glyph">
+                        <Icon size={11} />
+                      </span>
                     </span>
                     <span className="workspace-label">{item.label}</span>
                   </button>
@@ -948,11 +988,9 @@ export function App(): JSX.Element {
       <section className="browser-shell" aria-label="Browser workspace">
         <header className="titlebar">
           <div className="app-title">
-            <img
-              className="app-logo"
-              src="./autopilot-logo.svg"
-              alt="Autopilot logo for coding, productivity, browsing, designing, and chatting"
-            />
+            <button className="icon-preview-trigger app-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+              <img className="app-logo" src="./autopilot-logo.svg" alt="" />
+            </button>
             <strong>Autopilot Browser</strong>
           </div>
         </header>
@@ -987,6 +1025,7 @@ export function App(): JSX.Element {
           </div>
 
           <label className="address-bar">
+            <AutopilotNeedle className="address-needle" />
             <LockKeyhole size={16} aria-hidden="true" />
             <input
               value={addressDraft}
@@ -1004,7 +1043,9 @@ export function App(): JSX.Element {
             <div className="web-content-placeholder">
               {isBrowserPreview ? (
                 <section className="empty-state" aria-label="Autopilot start page">
-                  <Sparkles size={46} strokeWidth={2.4} aria-hidden="true" />
+                  <button className="icon-preview-trigger empty-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+                    <AutopilotNeedle className="empty-needle" />
+                  </button>
                   <h1>Ready to browse</h1>
                   <p>Search or enter an address to get started</p>
                   <form className="empty-search" onSubmit={navigate}>
@@ -1030,9 +1071,14 @@ export function App(): JSX.Element {
           {view === "settings" && (
             <section className="settings-page" aria-labelledby="settings-heading">
               <div className="settings-heading">
-                <div>
-                  <p className="panel-kicker">Color system</p>
-                  <h1 id="settings-heading">Autopilot settings</h1>
+                <div className="settings-title-lockup">
+                  <button className="icon-preview-trigger settings-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+                    <AutopilotNeedle className="settings-needle" />
+                  </button>
+                  <div>
+                    <p className="panel-kicker">Color system</p>
+                    <h1 id="settings-heading">Autopilot settings</h1>
+                  </div>
                 </div>
                 <button className="primary-action" type="button" onClick={handleResetTheme}>
                   Reset colors
@@ -1067,7 +1113,9 @@ export function App(): JSX.Element {
 
                 <section className="theme-preview" aria-label="Theme preview">
                   <div className="preview-titlebar">
-                    <Sparkles size={15} />
+                    <button className="icon-preview-trigger preview-title-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+                      <AutopilotNeedle className="preview-title-needle" />
+                    </button>
                     <strong>Autopilot Browser</strong>
                   </div>
                   <div className="preview-toolbar">
@@ -1076,7 +1124,9 @@ export function App(): JSX.Element {
                     <div>{AUTOPILOT_HOME_LABEL}</div>
                   </div>
                   <div className="preview-content">
-                    <Sparkles size={28} />
+                    <button className="icon-preview-trigger preview-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+                      <AutopilotNeedle className="preview-needle" />
+                    </button>
                     <h2>Ready to browse</h2>
                     <p>The shell, tabs, and settings all follow this palette.</p>
                     <button type="button">Primary action</button>
@@ -1155,6 +1205,26 @@ export function App(): JSX.Element {
           )}
         </section>
       </section>
+
+      {iconPreviewOpen && (
+        <div className="icon-preview-backdrop" onPointerDown={() => setIconPreviewOpen(false)}>
+          <section
+            className="icon-preview-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="icon-preview-heading"
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button className="icon-preview-close" type="button" aria-label="Close icon preview" onClick={() => setIconPreviewOpen(false)}>
+              <X size={18} />
+            </button>
+            <div className="icon-preview-art">
+              <img className="icon-preview-logo" src="./autopilot-logo.svg" alt="" />
+            </div>
+            <h2 id="icon-preview-heading">Autopilot</h2>
+          </section>
+        </div>
+      )}
 
       {passwordPrompt && (
         <aside className="password-save-prompt" role="dialog" aria-label="Save password">
