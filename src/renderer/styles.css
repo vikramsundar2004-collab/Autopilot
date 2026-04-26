@@ -64,7 +64,7 @@ input:focus-visible,
   --needle-disc: var(--primary);
   --needle-cream: #fffaf2;
   --needle-cream-shadow: #e5d0b5;
-  --needle-orange: #d97955;
+  --needle-orange: #df9b55;
   --needle-stroke: color-mix(in srgb, var(--primary) 82%, #11251a);
 }
 

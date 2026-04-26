@@ -181,7 +181,7 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
     fill: #fffaf2;
   }
   .title-compass .core {
-    fill: #d97955;
+    fill: #df9b55;
     stroke: color-mix(in srgb, var(--primary) 82%, #11251a);
     stroke-linejoin: round;
     stroke-width: 2;
@@ -400,48 +400,60 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
 </main>
 <div class="icon-preview-backdrop" id="icon-preview" hidden>
   <section class="icon-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="icon-preview-heading">
-    <button class="icon-preview-close" type="button" id="close-icon-preview" aria-label="Close icon preview">×</button>
+    <button class="icon-preview-close" type="button" id="close-icon-preview" aria-label="Close icon preview">X</button>
     <div class="icon-preview-art">
       <svg class="icon-preview-logo" viewBox="0 0 256 256" aria-hidden="true">
         <defs>
-          <linearGradient id="homeIconBg" x1="48" y1="24" x2="218" y2="232" gradientUnits="userSpaceOnUse">
-            <stop offset="0" stop-color="#265a43"/>
-            <stop offset=".58" stop-color="#1f4a37"/>
-            <stop offset="1" stop-color="#143425"/>
+          <linearGradient id="homeIconBg" x1="36" y1="18" x2="224" y2="242" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#24583f"/>
+            <stop offset=".6" stop-color="#1f4d37"/>
+            <stop offset="1" stop-color="#173b2b"/>
           </linearGradient>
-          <linearGradient id="homeIconNeedle" x1="98" y1="54" x2="158" y2="196" gradientUnits="userSpaceOnUse">
+          <linearGradient id="homeIconNeedle" x1="93" y1="68" x2="162" y2="198" gradientUnits="userSpaceOnUse">
             <stop offset="0" stop-color="#fffaf2"/>
-            <stop offset=".56" stop-color="#f2e5d0"/>
-            <stop offset="1" stop-color="#d8c4a8"/>
+            <stop offset=".58" stop-color="#f2e3cc"/>
+            <stop offset="1" stop-color="#d9c3a3"/>
+          </linearGradient>
+          <linearGradient id="homeIconRoseGold" x1="118" y1="98" x2="141" y2="156" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#f4c46e"/>
+            <stop offset=".58" stop-color="#df9b55"/>
+            <stop offset="1" stop-color="#c96f42"/>
           </linearGradient>
           <filter id="homeIconShadow" x="-25%" y="-25%" width="150%" height="150%">
-            <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#0b1c14" flood-opacity=".28"/>
+            <feDropShadow dx="0" dy="10" stdDeviation="9" flood-color="#0b1c14" flood-opacity=".28"/>
+          </filter>
+          <filter id="homeIconBadgeShadow" x="-35%" y="-35%" width="170%" height="170%">
+            <feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#0b1c14" flood-opacity=".22"/>
           </filter>
         </defs>
-        <rect width="256" height="256" rx="58" fill="url(#homeIconBg)"/>
-        <path d="M43 71c24-33 59-48 104-43 27 3 48 13 65 30" fill="none" stroke="#fffaf2" stroke-width="2" opacity=".18" stroke-linecap="round"/>
-        <circle cx="128" cy="128" r="82" fill="none" stroke="#fffaf2" stroke-width="7" opacity=".18"/>
-        <circle cx="128" cy="128" r="59" fill="#fffaf2" opacity=".96" filter="url(#homeIconShadow)"/>
-        <circle cx="128" cy="43" r="12" fill="#9a765b"/>
-        <circle cx="205" cy="98" r="12" fill="#2f6b4f"/>
-        <circle cx="176" cy="206" r="12" fill="#b96f34"/>
-        <circle cx="80" cy="206" r="12" fill="#b35c83"/>
-        <circle cx="51" cy="98" r="12" fill="#4d8a63"/>
-        <circle cx="128" cy="43" r="5" fill="#fffaf2"/>
-        <circle cx="205" cy="98" r="5" fill="#fffaf2"/>
-        <circle cx="176" cy="206" r="5" fill="#fffaf2"/>
-        <circle cx="80" cy="206" r="5" fill="#fffaf2"/>
-        <circle cx="51" cy="98" r="5" fill="#fffaf2"/>
+        <rect width="256" height="256" rx="42" fill="url(#homeIconBg)"/>
+        <path d="M42 70c24-28 55-42 93-42 32 0 59 10 81 29" fill="none" stroke="#fffaf2" stroke-width="2" opacity=".16" stroke-linecap="round"/>
+        <circle cx="128" cy="132" r="88" fill="none" stroke="#fffaf2" stroke-width="7" opacity=".2"/>
+        <circle cx="128" cy="132" r="68" fill="none" stroke="#fffaf2" stroke-width="5" opacity=".1"/>
+        <circle cx="128" cy="132" r="60" fill="#fffaf2" filter="url(#homeIconShadow)"/>
         <g filter="url(#homeIconShadow)">
-          <path d="M128 55 164 194 128 169 92 194Z" fill="url(#homeIconNeedle)"/>
-          <path d="M128 55 164 194 128 169Z" fill="#fffaf2" opacity=".92"/>
-          <path d="M128 55 128 169 92 194Z" fill="#e4d2b8"/>
-          <path d="M128 88 145 153 128 142 111 153Z" fill="#d97955"/>
-          <path d="M128 55 164 194 128 169 92 194Z" fill="none" stroke="#143425" stroke-width="8" stroke-linejoin="round"/>
-          <path d="M128 83 146 154 128 142 110 154Z" fill="#d97955"/>
+          <path d="M128 66 166 199 128 176 90 199Z" fill="url(#homeIconNeedle)" stroke="#143425" stroke-width="8" stroke-linejoin="round"/>
+          <path d="M128 66 166 199 128 176Z" fill="#fffaf2" opacity=".94"/>
+          <path d="M128 66 128 176 90 199Z" fill="#e4d1b7"/>
+          <path d="M128 101 145 154 128 143 111 154Z" fill="url(#homeIconRoseGold)"/>
+          <path d="M128 101 137 145 128 139Z" fill="#ffd88a" opacity=".72"/>
         </g>
-        <circle cx="128" cy="128" r="18" fill="#1f4a37"/>
-        <path d="M128 116 133 134 128 131 123 134Z" fill="#fffaf2"/>
+        <g filter="url(#homeIconBadgeShadow)">
+          <circle cx="128" cy="52" r="24" fill="#9a765b"/>
+          <path d="M120 44 112 52 120 60" fill="none" stroke="#fffaf2" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M136 44 144 52 136 60" fill="none" stroke="#fffaf2" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M132 42 124 62" fill="none" stroke="#fffaf2" stroke-width="5" stroke-linecap="round"/>
+          <circle cx="50" cy="101" r="24" fill="#5a9f6d"/>
+          <path d="M37 101 47 111 65 91" fill="none" stroke="#fffaf2" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="205" cy="101" r="22" fill="#4d8a63"/>
+          <circle cx="205" cy="101" r="11" fill="none" stroke="#fffaf2" stroke-width="4"/>
+          <path d="M194 101h22M205 90c4 5 4 17 0 22M205 90c-4 5-4 17 0 22" fill="none" stroke="#fffaf2" stroke-width="4" stroke-linecap="round"/>
+          <circle cx="78" cy="209" r="24" fill="#b85a86"/>
+          <path d="M67 219 72 205 91 186 100 195 81 214Z" fill="none" stroke="#fffaf2" stroke-width="5" stroke-linejoin="round"/>
+          <path d="M86 191 95 200" fill="none" stroke="#fffaf2" stroke-width="5" stroke-linecap="round"/>
+          <circle cx="178" cy="209" r="24" fill="#c47a38"/>
+          <path d="M162 198h32c6 0 10 4 10 10v8c0 6-4 10-10 10h-18l-12 8v-8h-2c-6 0-10-4-10-10v-8c0-6 4-10 10-10Z" fill="none" stroke="#fffaf2" stroke-width="5" stroke-linejoin="round"/>
+        </g>
       </svg>
     </div>
     <h2 id="icon-preview-heading">Autopilot</h2>
