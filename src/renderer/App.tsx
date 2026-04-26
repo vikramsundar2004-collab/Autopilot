@@ -58,8 +58,6 @@ import type { PasswordAvailability, PasswordCredentialSummary, PendingPasswordSa
 import { getAutopilotApi } from "./autopilotApi";
 import { addHistoryEntry, loadHistoryEntries, saveHistoryEntries, type BrowserHistoryEntry } from "./history";
 import {
-  createActionItem,
-  extractActionItemTitles,
   loadActionItems,
   loadProductivitySources,
   sanitizeActionItems,
@@ -120,39 +118,8 @@ const productivitySourceOptions: Array<{
   { id: "gmail", label: "Gmail", detail: "Pull action items from inbox threads", source: "Email", icon: Mail, status: "soon" },
   { id: "outlook", label: "Outlook", detail: "Rank Microsoft mail when connected", source: "Email", icon: Mail, status: "soon" },
   { id: "google-calendar", label: "Google Calendar", detail: "Turn events and deadlines into work", source: "Calendar", icon: Clock, status: "soon" },
-  { id: "slack", label: "Slack", detail: "Find asks buried in messages", source: "Chat", icon: MessageCircle, status: "soon" },
-  { id: "browser", label: "Current browser page", detail: "Read the active tab locally today", source: "Web", icon: Globe2, status: "ready" }
+  { id: "slack", label: "Slack", detail: "Find asks buried in messages", source: "Chat", icon: MessageCircle, status: "soon" }
 ];
-
-function inferActionSourceFromPage(url: string, title: string): ActionItemSource {
-  const pageKey = `${url} ${title}`.toLowerCase();
-  if (/\b(gmail|mail\.google|outlook|office365|inbox|email)\b/.test(pageKey)) {
-    return "Email";
-  }
-
-  if (/\b(calendar|cal\.google|schedule|meeting|event)\b/.test(pageKey)) {
-    return "Calendar";
-  }
-
-  if (/\b(slack|discord|teams|chat)\b/.test(pageKey)) {
-    return "Chat";
-  }
-
-  return "Web";
-}
-
-function getActionContextFromPage(title: string, url: string): string {
-  const trimmedTitle = title.trim();
-  if (trimmedTitle) {
-    return trimmedTitle;
-  }
-
-  try {
-    return new URL(url).hostname || "Current page";
-  } catch {
-    return "Current page";
-  }
-}
 
 function isUrgentActionItem(item: ActionItem): boolean {
   return /\b(urgent|today|deadline|due|overdue|priority|password|lose|blocked|asap|by friday|by monday)\b/i.test(
@@ -945,54 +912,7 @@ export function App(): JSX.Element {
     });
   }
 
-  async function pullCurrentPageActions(): Promise<void> {
-    if (!activeTabId || !activeTab) {
-      setCaptureStatus("Open a page in the browser workspace first.");
-      return;
-    }
-
-    if (isHomeUrl(activeTab.url) || isHistoryPageUrl(activeTab.url) || activeTab.url.startsWith("autopilot://")) {
-      setCaptureStatus("Autopilot pages do not create action items. Open an email, calendar event, chat, or task page first.");
-      return;
-    }
-
-    setCaptureStatus("Reading the current page...");
-    const page = await autopilot.tabs.readPageText(activeTabId).catch(() => ({
-      success: false as const,
-      reason: "The current page could not be read."
-    }));
-    if (!page.success) {
-      setCaptureStatus(page.reason);
-      return;
-    }
-
-    if (isHomeUrl(page.url) || isHistoryPageUrl(page.url) || page.url.startsWith("autopilot://")) {
-      setCaptureStatus("Autopilot pages do not create action items. Open an email, calendar event, chat, or task page first.");
-      return;
-    }
-
-    const titles = extractActionItemTitles(`${page.title}\n${page.text}`);
-    if (titles.length === 0) {
-      setCaptureStatus("No actionable requests were found on the current page.");
-      return;
-    }
-
-    const pageSource = inferActionSourceFromPage(page.url, page.title);
-    const context = getActionContextFromPage(page.title, page.url);
-    setActionItems((currentItems) => [...titles.map((title) => createActionItem(title, pageSource, context)), ...currentItems]);
-    const browserSource = productivitySourceOptions.find((source) => source.id === "browser");
-    if (browserSource && !selectedProductivitySources.includes(browserSource.id)) {
-      setSelectedProductivitySources((currentSources) => [...currentSources, browserSource.id]);
-    }
-    setCaptureStatus(`Pulled ${titles.length} action ${titles.length === 1 ? "item" : "items"} from ${context}.`);
-  }
-
-  async function syncSelectedProductivitySources(): Promise<void> {
-    if (selectedProductivitySources.includes("browser")) {
-      await pullCurrentPageActions();
-      return;
-    }
-
+  function syncSelectedProductivitySources(): void {
     const selectedLabels = productivitySourceOptions
       .filter((source) => selectedProductivitySources.includes(source.id))
       .map((source) => source.label)
@@ -1108,7 +1028,7 @@ export function App(): JSX.Element {
               </div>
               <div className="productivity-sidebar-note">
                 <strong>Sources live in the workspace</strong>
-                <span>Choose Gmail, Calendar, Slack, or the current browser page there.</span>
+                <span>Choose Gmail, Calendar, Outlook, or Slack there.</span>
               </div>
             </section>
           ) : (

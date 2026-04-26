@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractActionItemTitles, sanitizeActionItems, type ActionItem } from "../src/renderer/productivity";
+import { extractActionItemTitles, sanitizeActionItems, sanitizeProductivitySources, type ActionItem } from "../src/renderer/productivity";
 
 describe("extractActionItemTitles", () => {
   it("extracts actionable lines from email-like text", () => {
@@ -47,5 +47,10 @@ Thanks!`)
     ];
 
     expect(sanitizeActionItems(items)).toEqual([items[2]]);
+  });
+
+  it("removes the old browser source from productivity source selections", () => {
+    expect(sanitizeProductivitySources(["browser", "gmail", "google-calendar", "browser"])).toEqual(["gmail", "google-calendar"]);
+    expect(sanitizeProductivitySources(["browser"])).toEqual(["gmail", "google-calendar"]);
   });
 });

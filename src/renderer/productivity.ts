@@ -1,5 +1,5 @@
 export type ActionItemSource = "Email" | "Calendar" | "Web" | "Notes" | "Chat" | "Manual";
-export type ProductivitySourceId = "gmail" | "outlook" | "google-calendar" | "slack" | "browser";
+export type ProductivitySourceId = "gmail" | "outlook" | "google-calendar" | "slack";
 
 export type ActionItem = {
   id: string;
@@ -12,7 +12,8 @@ export type ActionItem = {
 
 const ACTION_ITEMS_STORAGE_KEY = "autopilot:action-items";
 const PRODUCTIVITY_SOURCES_STORAGE_KEY = "autopilot:productivity-sources";
-const DEFAULT_PRODUCTIVITY_SOURCES: ProductivitySourceId[] = ["gmail", "google-calendar", "browser"];
+const DEFAULT_PRODUCTIVITY_SOURCES: ProductivitySourceId[] = ["gmail", "google-calendar"];
+const VALID_PRODUCTIVITY_SOURCES = new Set<ProductivitySourceId>(["gmail", "outlook", "google-calendar", "slack"]);
 const ACTIONABLE_PATTERNS = [
   /\b(todo|action item|follow up|need to|needs to|please|can you|could you|remind|deadline|due|by friday|by monday)\b/i,
   /^(review|send|share|submit|finish|complete|schedule|call|reply|respond|prepare|create|update|fix|read|draft|pay|sign|upload|download)\b/i,
@@ -124,17 +125,23 @@ export function loadProductivitySources(): ProductivitySourceId[] {
       return DEFAULT_PRODUCTIVITY_SOURCES;
     }
 
-    const validSources = new Set<ProductivitySourceId>(["gmail", "outlook", "google-calendar", "slack", "browser"]);
-    const selectedSources = parsed.filter((source): source is ProductivitySourceId => typeof source === "string" && validSources.has(source as ProductivitySourceId));
-    return selectedSources.length > 0 ? selectedSources : DEFAULT_PRODUCTIVITY_SOURCES;
+    return sanitizeProductivitySources(parsed);
   } catch {
     return DEFAULT_PRODUCTIVITY_SOURCES;
   }
 }
 
+export function sanitizeProductivitySources(sources: unknown[]): ProductivitySourceId[] {
+  const selectedSources = sources.filter(
+    (source): source is ProductivitySourceId => typeof source === "string" && VALID_PRODUCTIVITY_SOURCES.has(source as ProductivitySourceId)
+  );
+  const uniqueSources = [...new Set(selectedSources)];
+  return uniqueSources.length > 0 ? uniqueSources : DEFAULT_PRODUCTIVITY_SOURCES;
+}
+
 export function saveProductivitySources(sources: ProductivitySourceId[]): void {
   try {
-    window.localStorage.setItem(PRODUCTIVITY_SOURCES_STORAGE_KEY, JSON.stringify([...new Set(sources)]));
+    window.localStorage.setItem(PRODUCTIVITY_SOURCES_STORAGE_KEY, JSON.stringify(sanitizeProductivitySources(sources)));
   } catch {
     // Source selection is best-effort local UI state.
   }
