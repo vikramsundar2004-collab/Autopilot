@@ -1,5 +1,8 @@
 import { app, safeStorage, shell } from "electron";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createServer, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 
 import {
@@ -10,16 +13,6 @@ import {
   type EmailProviderId,
   type EmailSyncResult
 } from "../shared/email.js";
-
-type GmailDeviceCodeResponse = {
-  device_code: string;
-  user_code: string;
-  verification_url?: string;
-  verification_uri?: string;
-  verification_uri_complete?: string;
-  expires_in: number;
-  interval?: number;
-};
 
 type GmailTokenResponse = {
   access_token?: string;
@@ -73,9 +66,11 @@ type EmailInboxCacheFile = {
 const STORE_VERSION = 1;
 const GMAIL_PROVIDER: EmailProviderId = "gmail";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
-const GMAIL_DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code";
+const GMAIL_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+const GMAIL_REDIRECT_PATH = "/oauth/gmail/callback";
+const DEFAULT_GMAIL_REDIRECT_PORT = 53682;
 
 function getGoogleClientId(): string {
   return (process.env.AUTOPILOT_GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "").trim();
@@ -85,9 +80,111 @@ function getGoogleClientSecret(): string {
   return (process.env.AUTOPILOT_GOOGLE_CLIENT_SECRET || process.env.VITE_GOOGLE_CLIENT_SECRET || "").trim();
 }
 
+function getGoogleRedirectPort(): number {
+  const value = Number.parseInt(process.env.AUTOPILOT_GOOGLE_REDIRECT_PORT || "", 10);
+  return Number.isInteger(value) && value > 1024 && value < 65536 ? value : DEFAULT_GMAIL_REDIRECT_PORT;
+}
+
 function getGoogleOAuthForm(input: Record<string, string>): Record<string, string> {
   const clientSecret = getGoogleClientSecret();
   return clientSecret ? { ...input, client_secret: clientSecret } : input;
+}
+
+function base64Url(buffer: Buffer): string {
+  return buffer.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function createPkceChallenge(): { verifier: string; challenge: string } {
+  const verifier = base64Url(randomBytes(32));
+  const challenge = base64Url(createHash("sha256").update(verifier).digest());
+  return { verifier, challenge };
+}
+
+function writeOAuthResponse(response: ServerResponse, title: string, message: string): void {
+  response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  response.end(`<!doctype html><html><head><title>${title}</title></head><body style="font-family: system-ui; padding: 32px;"><h1>${title}</h1><p>${message}</p></body></html>`);
+}
+
+async function requestGmailAuthorizationCode(clientId: string, challenge: string): Promise<{ code: string; redirectUri: string }> {
+  const state = base64Url(randomBytes(16));
+  const server = createServer();
+
+  const codePromise = new Promise<{ code: string; redirectUri: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error("Google sign-in timed out."));
+    }, 1000 * 60 * 5);
+
+    server.on("request", (request, response) => {
+      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (requestUrl.pathname !== GMAIL_REDIRECT_PATH) {
+        response.writeHead(404);
+        response.end("Not found");
+        return;
+      }
+
+      const error = requestUrl.searchParams.get("error");
+      if (error) {
+        clearTimeout(timeout);
+        writeOAuthResponse(response, "Autopilot Gmail sign-in failed", "Google did not complete the sign-in.");
+        server.close();
+        reject(new Error(error));
+        return;
+      }
+
+      if (requestUrl.searchParams.get("state") !== state) {
+        clearTimeout(timeout);
+        writeOAuthResponse(response, "Autopilot Gmail sign-in failed", "The sign-in response did not match this Autopilot session.");
+        server.close();
+        reject(new Error("Google sign-in state did not match."));
+        return;
+      }
+
+      const code = requestUrl.searchParams.get("code");
+      if (!code) {
+        clearTimeout(timeout);
+        writeOAuthResponse(response, "Autopilot Gmail sign-in failed", "Google did not return an authorization code.");
+        server.close();
+        reject(new Error("Google did not return an authorization code."));
+        return;
+      }
+
+      const address = server.address() as AddressInfo;
+      clearTimeout(timeout);
+      writeOAuthResponse(response, "Autopilot Gmail connected", "You can close this tab and return to Autopilot.");
+      server.close();
+      resolve({
+        code,
+        redirectUri: `http://127.0.0.1:${address.port}${GMAIL_REDIRECT_PATH}`
+      });
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.listen(getGoogleRedirectPort(), "127.0.0.1", () => resolve());
+    server.on("error", reject);
+  });
+
+  const address = server.address() as AddressInfo;
+  const redirectUri = `http://127.0.0.1:${address.port}${GMAIL_REDIRECT_PATH}`;
+  const authUrl = new URL(GMAIL_AUTH_URL);
+  authUrl.search = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: GMAIL_SCOPE,
+    access_type: "offline",
+    prompt: "consent",
+    state,
+    code_challenge: challenge,
+    code_challenge_method: "S256"
+  }).toString();
+
+  await shell.openExternal(authUrl.toString());
+  return codePromise.then((result) => ({
+    ...result,
+    redirectUri
+  }));
 }
 
 function isStoredAccount(value: unknown): value is StoredEmailAccount {
@@ -251,12 +348,18 @@ export class EmailService {
     }
 
     try {
-      const device = await postForm<GmailDeviceCodeResponse>(GMAIL_DEVICE_CODE_URL, {
-        client_id: clientId,
-        scope: GMAIL_SCOPE
-      });
-      await shell.openExternal(device.verification_uri_complete || device.verification_uri || device.verification_url || "https://www.google.com/device");
-      const token = await this.pollForToken(clientId, device);
+      const pkce = createPkceChallenge();
+      const authorization = await requestGmailAuthorizationCode(clientId, pkce.challenge);
+      const token = await postForm<GmailTokenResponse>(
+        GMAIL_TOKEN_URL,
+        getGoogleOAuthForm({
+          client_id: clientId,
+          code: authorization.code,
+          code_verifier: pkce.verifier,
+          grant_type: "authorization_code",
+          redirect_uri: authorization.redirectUri
+        })
+      );
       if (!token.access_token) {
         return {
           success: false,
@@ -345,36 +448,6 @@ export class EmailService {
     this.writeAccounts([]);
     this.writeCache([]);
     return this.getStatus();
-  }
-
-  private async pollForToken(clientId: string, device: GmailDeviceCodeResponse): Promise<GmailTokenResponse> {
-    const startedAt = Date.now();
-    let interval = Math.max(device.interval ?? 5, 5);
-
-    while (Date.now() - startedAt < device.expires_in * 1000) {
-      await new Promise((resolve) => setTimeout(resolve, interval * 1000));
-      const token = await postForm<GmailTokenResponse>(
-        GMAIL_TOKEN_URL,
-        getGoogleOAuthForm({
-          client_id: clientId,
-          device_code: device.device_code,
-          grant_type: "urn:ietf:params:oauth:grant-type:device_code"
-        })
-      ).catch((error) => ({ error: error instanceof Error ? error.message : "authorization_pending" }));
-
-      if (token.error === "authorization_pending") {
-        continue;
-      }
-
-      if (token.error === "slow_down") {
-        interval += 5;
-        continue;
-      }
-
-      return token;
-    }
-
-    return { error: "expired_token", error_description: "Google sign-in timed out." };
   }
 
   private async getValidAccessToken(account: StoredEmailAccount): Promise<string> {

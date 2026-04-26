@@ -16,11 +16,20 @@ Create or edit `.env.local` in the project root:
 ```bash
 AUTOPILOT_GOOGLE_CLIENT_ID=your-client-id
 AUTOPILOT_GOOGLE_CLIENT_SECRET=optional-local-development-secret
+AUTOPILOT_GOOGLE_REDIRECT_PORT=53682
 ```
 
 Restart Autopilot after changing those values. `.env.local` is ignored by git, and `.env.example` shows the expected keys.
 
 When you run `npm run build` or `npm run dev`, Autopilot generates `public/autopilot-config.json` from the client ID. That generated file is copied into the built app, so people who receive that build can connect Gmail without creating their own `.env.local`. The client secret is never written to the generated public config.
+
+If your Google OAuth client type is `Web application`, add this Authorized redirect URI in Google Cloud:
+
+```bash
+http://127.0.0.1:53682/oauth/gmail/callback
+```
+
+If your Google OAuth client type is `Desktop app`, the loopback redirect is handled by Google automatically.
 
 ## Scripts
 
