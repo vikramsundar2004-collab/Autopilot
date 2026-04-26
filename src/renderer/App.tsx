@@ -62,6 +62,7 @@ import {
   extractActionItemTitles,
   loadActionItems,
   loadProductivitySources,
+  sanitizeActionItems,
   saveActionItems,
   saveProductivitySources,
   type ActionItem,
@@ -455,6 +456,7 @@ export function App(): JSX.Element {
     [sourcedOpenActionItems]
   );
   const nextActionItem = topPriorityActionItems[0] ?? null;
+  const remainingPriorityActionItems = topPriorityActionItems.slice(1);
   const selectedBookmarkSourceLabels = useMemo(() => {
     const labels = new Map(bookmarkSources.map((source) => [source.id, source.label]));
     return selectedBookmarkSources.map((sourceId) => labels.get(sourceId) ?? sourceId).join(", ");
@@ -472,6 +474,13 @@ export function App(): JSX.Element {
   useEffect(() => {
     saveActionItems(actionItems);
   }, [actionItems]);
+
+  useEffect(() => {
+    setActionItems((currentItems) => {
+      const cleanedItems = sanitizeActionItems(currentItems);
+      return cleanedItems.length === currentItems.length ? currentItems : cleanedItems;
+    });
+  }, []);
 
   useEffect(() => {
     saveProductivitySources(selectedProductivitySources);
@@ -937,8 +946,13 @@ export function App(): JSX.Element {
   }
 
   async function pullCurrentPageActions(): Promise<void> {
-    if (!activeTabId) {
+    if (!activeTabId || !activeTab) {
       setCaptureStatus("Open a page in the browser workspace first.");
+      return;
+    }
+
+    if (isHomeUrl(activeTab.url) || isHistoryPageUrl(activeTab.url) || activeTab.url.startsWith("autopilot://")) {
+      setCaptureStatus("Autopilot pages do not create action items. Open an email, calendar event, chat, or task page first.");
       return;
     }
 
@@ -952,9 +966,14 @@ export function App(): JSX.Element {
       return;
     }
 
+    if (isHomeUrl(page.url) || isHistoryPageUrl(page.url) || page.url.startsWith("autopilot://")) {
+      setCaptureStatus("Autopilot pages do not create action items. Open an email, calendar event, chat, or task page first.");
+      return;
+    }
+
     const titles = extractActionItemTitles(`${page.title}\n${page.text}`);
     if (titles.length === 0) {
-      setCaptureStatus("No action items were found on the current page.");
+      setCaptureStatus("No actionable requests were found on the current page.");
       return;
     }
 
@@ -1386,31 +1405,36 @@ export function App(): JSX.Element {
               <section className="priority-callout" aria-label="Today's priority call">
                 <div>
                   <p className="panel-kicker">Today's call</p>
-                  <h2>
-                    {nextActionItem ? `Do this first: ${getActionInstruction(nextActionItem)}` : "No urgent work is waiting."}
-                  </h2>
-                  <p>
-                    {nextActionItem
-                      ? `Source: ${getActionSourceSummary(nextActionItem)}. Then work through the next ${
-                          Math.max(topPriorityActionItems.length - 1, 0)
-                        } ${topPriorityActionItems.length === 2 ? "task" : "tasks"} below in order.`
-                      : "Choose sources to build a clear, exact plan for what to handle next."}
-                  </p>
-                  <ol>
-                    {topPriorityActionItems.length > 0 ? (
-                      topPriorityActionItems.map((item, index) => (
-                        <li key={item.id}>
-                          <strong>{index === 0 ? "Do first" : `Step ${index + 1}`}</strong>
-                          <span>{getActionInstruction(item)}</span>
-                        </li>
-                      ))
-                    ) : (
+                  <h2>{nextActionItem ? "Start here" : "No action items yet."}</h2>
+                  {nextActionItem ? (
+                    <>
+                      <div className="callout-brief">
+                        <span>Do first</span>
+                        <strong>{getActionInstruction(nextActionItem)}</strong>
+                        <small>Source: {getActionSourceSummary(nextActionItem)}</small>
+                      </div>
+                      {remainingPriorityActionItems.length > 0 && (
+                        <ol aria-label="Next priority actions">
+                          {remainingPriorityActionItems.map((item, index) => (
+                            <li key={item.id}>
+                              <strong>{`Step ${index + 2}`}</strong>
+                              <span>{getActionInstruction(item)}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    </>
+                  ) : (
+                    <p>Sync a real source, like an email thread, calendar event, chat, or task page, to build today's plan.</p>
+                  )}
+                  {!nextActionItem && (
+                    <ol aria-label="How to add action items">
                       <li>
                         <strong>Start here</strong>
-                        <span>Choose sources to build today's plan.</span>
+                        <span>Open a page with real requests, then run Sync selected from Sources.</span>
                       </li>
-                    )}
-                  </ol>
+                    </ol>
+                  )}
                 </div>
                 <button
                   className="callout-action"

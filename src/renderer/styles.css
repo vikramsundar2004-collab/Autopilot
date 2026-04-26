@@ -1354,7 +1354,6 @@ input:focus-visible,
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 22px;
-  overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
   border-radius: 20px;
   background:
@@ -1371,11 +1370,11 @@ input:focus-visible,
 
 .priority-callout h2 {
   max-width: 760px;
-  margin: 10px 0 12px;
+  margin: 8px 0 14px;
   color: #fffaf2;
-  font-size: clamp(23px, 3vw, 32px);
+  font-size: clamp(22px, 2.4vw, 28px);
   letter-spacing: 0;
-  line-height: 1.08;
+  line-height: 1.12;
 }
 
 .priority-callout p {
@@ -1386,11 +1385,40 @@ input:focus-visible,
   line-height: 1.55;
 }
 
+.callout-brief {
+  display: grid;
+  gap: 7px;
+  max-width: 860px;
+  border: 1px solid color-mix(in srgb, var(--surface) 14%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 8%, transparent);
+  padding: 13px 14px;
+}
+
+.callout-brief span,
+.callout-brief small {
+  color: color-mix(in srgb, var(--surface) 76%, transparent);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.callout-brief span {
+  color: color-mix(in srgb, var(--clay) 82%, white);
+  text-transform: uppercase;
+}
+
+.callout-brief strong {
+  color: #fffaf2;
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
 .priority-callout ol {
   display: grid;
   gap: 10px;
   max-width: 860px;
-  margin: 0;
+  margin: 12px 0 0;
   padding-left: 0;
   list-style: none;
 }

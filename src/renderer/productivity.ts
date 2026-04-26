@@ -15,28 +15,12 @@ const PRODUCTIVITY_SOURCES_STORAGE_KEY = "autopilot:productivity-sources";
 const DEFAULT_PRODUCTIVITY_SOURCES: ProductivitySourceId[] = ["gmail", "google-calendar", "browser"];
 const ACTIONABLE_PATTERNS = [
   /\b(todo|action item|follow up|need to|needs to|please|can you|could you|remind|deadline|due|by friday|by monday)\b/i,
+  /^(review|send|share|submit|finish|complete|schedule|call|reply|respond|prepare|create|update|fix|read|draft|pay|sign|upload|download)\b/i,
   /^\s*(?:[-*]|\d+[.)])\s+/,
   /^\s*\[\s?\]\s+/
 ];
 
-const DEFAULT_ACTION_ITEMS: ActionItem[] = [
-  {
-    id: "welcome-email-follow-up",
-    title: "Follow up on unread email requests",
-    source: "Email",
-    context: "Inbox",
-    createdAt: Date.now() - 1000 * 60 * 60,
-    completedAt: null
-  },
-  {
-    id: "collect-open-tab-tasks",
-    title: "Turn useful browser tabs into next actions",
-    source: "Web",
-    context: "Browser workspace",
-    createdAt: Date.now() - 1000 * 60 * 25,
-    completedAt: null
-  }
-];
+const DEFAULT_ACTION_ITEMS: ActionItem[] = [];
 
 function isActionItem(value: unknown): value is ActionItem {
   if (typeof value !== "object" || value === null) {
@@ -63,6 +47,24 @@ function cleanActionTitle(value: string): string {
     .slice(0, 120);
 }
 
+function isInternalAutopilotActionItem(item: ActionItem): boolean {
+  const searchable = `${item.title} ${item.context}`.toLowerCase();
+  return (
+    item.id === "welcome-email-follow-up" ||
+    item.id === "collect-open-tab-tasks" ||
+    searchable.includes("autopilot://") ||
+    searchable.includes("autopilot home") ||
+    searchable.includes("autopilot history") ||
+    searchable.includes("autopilot settings") ||
+    searchable.includes("turn useful browser tabs into next actions") ||
+    searchable.includes("follow up on unread email requests")
+  );
+}
+
+export function sanitizeActionItems(items: ActionItem[]): ActionItem[] {
+  return items.filter((item) => !isInternalAutopilotActionItem(item));
+}
+
 export function createActionItem(title: string, source: ActionItemSource, context = ""): ActionItem {
   return {
     id: crypto.randomUUID(),
@@ -80,9 +82,8 @@ export function extractActionItemTitles(text: string): string[] {
     .map(cleanActionTitle)
     .filter(Boolean);
   const actionable = chunks.filter((chunk) => ACTIONABLE_PATTERNS.some((pattern) => pattern.test(chunk)));
-  const selected = actionable.length > 0 ? actionable : chunks.slice(0, 3);
 
-  return [...new Set(selected)].slice(0, 8);
+  return [...new Set(actionable)].slice(0, 8);
 }
 
 export function loadActionItems(): ActionItem[] {
@@ -97,7 +98,7 @@ export function loadActionItems(): ActionItem[] {
       return DEFAULT_ACTION_ITEMS;
     }
 
-    return parsed.filter(isActionItem);
+    return sanitizeActionItems(parsed.filter(isActionItem));
   } catch {
     return DEFAULT_ACTION_ITEMS;
   }
@@ -105,7 +106,7 @@ export function loadActionItems(): ActionItem[] {
 
 export function saveActionItems(items: ActionItem[]): void {
   try {
-    window.localStorage.setItem(ACTION_ITEMS_STORAGE_KEY, JSON.stringify(items));
+    window.localStorage.setItem(ACTION_ITEMS_STORAGE_KEY, JSON.stringify(sanitizeActionItems(items)));
   } catch {
     // Local persistence is best-effort; the workspace should keep working in memory.
   }
