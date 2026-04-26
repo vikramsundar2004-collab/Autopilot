@@ -1,4 +1,5 @@
-export type ActionItemSource = "Email" | "Web" | "Notes" | "Chat" | "Manual";
+export type ActionItemSource = "Email" | "Calendar" | "Web" | "Notes" | "Chat" | "Manual";
+export type ProductivitySourceId = "gmail" | "outlook" | "google-calendar" | "slack" | "browser";
 
 export type ActionItem = {
   id: string;
@@ -10,6 +11,8 @@ export type ActionItem = {
 };
 
 const ACTION_ITEMS_STORAGE_KEY = "autopilot:action-items";
+const PRODUCTIVITY_SOURCES_STORAGE_KEY = "autopilot:productivity-sources";
+const DEFAULT_PRODUCTIVITY_SOURCES: ProductivitySourceId[] = ["gmail", "google-calendar", "browser"];
 const ACTIONABLE_PATTERNS = [
   /\b(todo|action item|follow up|need to|needs to|please|can you|could you|remind|deadline|due|by friday|by monday)\b/i,
   /^\s*(?:[-*]|\d+[.)])\s+/,
@@ -44,7 +47,7 @@ function isActionItem(value: unknown): value is ActionItem {
   return (
     typeof item.id === "string" &&
     typeof item.title === "string" &&
-    ["Email", "Web", "Notes", "Chat", "Manual"].includes(item.source ?? "") &&
+    ["Email", "Calendar", "Web", "Notes", "Chat", "Manual"].includes(item.source ?? "") &&
     typeof item.context === "string" &&
     typeof item.createdAt === "number" &&
     (typeof item.completedAt === "number" || item.completedAt === null)
@@ -105,5 +108,33 @@ export function saveActionItems(items: ActionItem[]): void {
     window.localStorage.setItem(ACTION_ITEMS_STORAGE_KEY, JSON.stringify(items));
   } catch {
     // Local persistence is best-effort; the workspace should keep working in memory.
+  }
+}
+
+export function loadProductivitySources(): ProductivitySourceId[] {
+  try {
+    const stored = window.localStorage.getItem(PRODUCTIVITY_SOURCES_STORAGE_KEY);
+    if (!stored) {
+      return DEFAULT_PRODUCTIVITY_SOURCES;
+    }
+
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed)) {
+      return DEFAULT_PRODUCTIVITY_SOURCES;
+    }
+
+    const validSources = new Set<ProductivitySourceId>(["gmail", "outlook", "google-calendar", "slack", "browser"]);
+    const selectedSources = parsed.filter((source): source is ProductivitySourceId => typeof source === "string" && validSources.has(source as ProductivitySourceId));
+    return selectedSources.length > 0 ? selectedSources : DEFAULT_PRODUCTIVITY_SOURCES;
+  } catch {
+    return DEFAULT_PRODUCTIVITY_SOURCES;
+  }
+}
+
+export function saveProductivitySources(sources: ProductivitySourceId[]): void {
+  try {
+    window.localStorage.setItem(PRODUCTIVITY_SOURCES_STORAGE_KEY, JSON.stringify([...new Set(sources)]));
+  } catch {
+    // Source selection is best-effort local UI state.
   }
 }

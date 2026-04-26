@@ -18,7 +18,6 @@ import {
   LockKeyhole,
   Mail,
   MessageCircle,
-  NotepadText,
   Palette,
   Plus,
   Printer,
@@ -62,9 +61,12 @@ import {
   createActionItem,
   extractActionItemTitles,
   loadActionItems,
+  loadProductivitySources,
   saveActionItems,
+  saveProductivitySources,
   type ActionItem,
-  type ActionItemSource
+  type ActionItemSource,
+  type ProductivitySourceId
 } from "./productivity";
 import { applyTheme, getThemeWarnings, loadTheme, resetTheme, saveTheme } from "./theme";
 
@@ -106,19 +108,29 @@ const workspaceItems: Array<{ label: string; color: string; icon: LucideIcon; vi
   { label: "design", color: "pink", icon: Palette, view: "browser" }
 ];
 
-const actionSourceOptions: ActionItemSource[] = ["Email", "Web", "Notes", "Chat", "Manual"];
-const actionSourceMetadata: Array<{ source: ActionItemSource; label: string; detail: string; icon: LucideIcon }> = [
-  { source: "Email", label: "Email", detail: "Inbox pages and pasted emails", icon: Mail },
-  { source: "Web", label: "Web", detail: "Current page tasks", icon: Globe2 },
-  { source: "Notes", label: "Notes", detail: "Class notes and meeting notes", icon: NotepadText },
-  { source: "Chat", label: "Chat", detail: "Messages and threads", icon: MessageCircle },
-  { source: "Manual", label: "Manual", detail: "Actions you add yourself", icon: ListChecks }
+const productivitySourceOptions: Array<{
+  id: ProductivitySourceId;
+  label: string;
+  detail: string;
+  source: ActionItemSource;
+  icon: LucideIcon;
+  status: "ready" | "soon";
+}> = [
+  { id: "gmail", label: "Gmail", detail: "Pull action items from inbox threads", source: "Email", icon: Mail, status: "soon" },
+  { id: "outlook", label: "Outlook", detail: "Rank Microsoft mail when connected", source: "Email", icon: Mail, status: "soon" },
+  { id: "google-calendar", label: "Google Calendar", detail: "Turn events and deadlines into work", source: "Calendar", icon: Clock, status: "soon" },
+  { id: "slack", label: "Slack", detail: "Find asks buried in messages", source: "Chat", icon: MessageCircle, status: "soon" },
+  { id: "browser", label: "Current browser page", detail: "Read the active tab locally today", source: "Web", icon: Globe2, status: "ready" }
 ];
 
 function inferActionSourceFromPage(url: string, title: string): ActionItemSource {
   const pageKey = `${url} ${title}`.toLowerCase();
   if (/\b(gmail|mail\.google|outlook|office365|inbox|email)\b/.test(pageKey)) {
     return "Email";
+  }
+
+  if (/\b(calendar|cal\.google|schedule|meeting|event)\b/.test(pageKey)) {
+    return "Calendar";
   }
 
   if (/\b(slack|discord|teams|chat)\b/.test(pageKey)) {
@@ -346,12 +358,8 @@ export function App(): JSX.Element {
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, string>>({});
   const [historyEntries, setHistoryEntries] = useState<BrowserHistoryEntry[]>(() => loadHistoryEntries());
   const [actionItems, setActionItems] = useState<ActionItem[]>(() => loadActionItems());
-  const [actionDraft, setActionDraft] = useState("");
-  const [actionSource, setActionSource] = useState<ActionItemSource>("Manual");
-  const [actionContext, setActionContext] = useState("");
-  const [captureText, setCaptureText] = useState("");
-  const [captureSource, setCaptureSource] = useState<ActionItemSource>("Email");
   const [captureStatus, setCaptureStatus] = useState("");
+  const [selectedProductivitySources, setSelectedProductivitySources] = useState<ProductivitySourceId[]>(() => loadProductivitySources());
   const [selectedActionSource, setSelectedActionSource] = useState<ActionItemSource | "All">("All");
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [addressDraft, setAddressDraft] = useState("");
@@ -368,10 +376,29 @@ export function App(): JSX.Element {
   const warnings = useMemo(() => getThemeWarnings(theme), [theme]);
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
   const completedActionItems = useMemo(() => actionItems.filter((item) => item.completedAt), [actionItems]);
-  const urgentActionCount = useMemo(() => openActionItems.filter(isUrgentActionItem).length, [openActionItems]);
-  const waitingActionCount = useMemo(() => openActionItems.filter(isWaitingActionItem).length, [openActionItems]);
-  const focusTimeLabel = useMemo(() => formatFocusMinutes(openActionItems.length * 18), [openActionItems.length]);
-  const activeSourceCount = useMemo(() => new Set(openActionItems.map((item) => item.source)).size, [openActionItems]);
+  const selectedProductivitySourceSet = useMemo(() => new Set(selectedProductivitySources), [selectedProductivitySources]);
+  const enabledActionSources = useMemo(() => {
+    const sources = new Set<ActionItemSource>();
+    for (const source of productivitySourceOptions) {
+      if (selectedProductivitySourceSet.has(source.id)) {
+        sources.add(source.source);
+      }
+    }
+
+    return sources;
+  }, [selectedProductivitySourceSet]);
+  const sourcedOpenActionItems = useMemo(
+    () => openActionItems.filter((item) => enabledActionSources.has(item.source)),
+    [enabledActionSources, openActionItems]
+  );
+  const sourcedCompletedActionItems = useMemo(
+    () => completedActionItems.filter((item) => enabledActionSources.has(item.source)),
+    [completedActionItems, enabledActionSources]
+  );
+  const urgentActionCount = useMemo(() => sourcedOpenActionItems.filter(isUrgentActionItem).length, [sourcedOpenActionItems]);
+  const waitingActionCount = useMemo(() => sourcedOpenActionItems.filter(isWaitingActionItem).length, [sourcedOpenActionItems]);
+  const focusTimeLabel = useMemo(() => formatFocusMinutes(sourcedOpenActionItems.length * 18), [sourcedOpenActionItems.length]);
+  const activeSourceCount = selectedProductivitySources.length;
   const todayLabel = useMemo(
     () =>
       new Intl.DateTimeFormat(undefined, {
@@ -382,24 +409,24 @@ export function App(): JSX.Element {
     []
   );
   const visibleOpenActionItems = useMemo(
-    () => (selectedActionSource === "All" ? openActionItems : openActionItems.filter((item) => item.source === selectedActionSource)),
-    [openActionItems, selectedActionSource]
+    () => (selectedActionSource === "All" ? sourcedOpenActionItems : sourcedOpenActionItems.filter((item) => item.source === selectedActionSource)),
+    [selectedActionSource, sourcedOpenActionItems]
   );
   const visibleCompletedActionItems = useMemo(
-    () => (selectedActionSource === "All" ? completedActionItems : completedActionItems.filter((item) => item.source === selectedActionSource)),
-    [completedActionItems, selectedActionSource]
+    () => (selectedActionSource === "All" ? sourcedCompletedActionItems : sourcedCompletedActionItems.filter((item) => item.source === selectedActionSource)),
+    [selectedActionSource, sourcedCompletedActionItems]
   );
   const actionSourceCounts = useMemo(() => {
     const counts = new Map<ActionItemSource, number>();
-    for (const item of openActionItems) {
+    for (const item of sourcedOpenActionItems) {
       counts.set(item.source, (counts.get(item.source) ?? 0) + 1);
     }
 
     return counts;
-  }, [openActionItems]);
+  }, [sourcedOpenActionItems]);
   const topPriorityActionItems = useMemo(
-    () => [...openActionItems].sort((left, right) => Number(isUrgentActionItem(right)) - Number(isUrgentActionItem(left))).slice(0, 5),
-    [openActionItems]
+    () => [...sourcedOpenActionItems].sort((left, right) => Number(isUrgentActionItem(right)) - Number(isUrgentActionItem(left))).slice(0, 5),
+    [sourcedOpenActionItems]
   );
   const nextActionItem = topPriorityActionItems[0] ?? null;
   const selectedBookmarkSourceLabels = useMemo(() => {
@@ -419,6 +446,16 @@ export function App(): JSX.Element {
   useEffect(() => {
     saveActionItems(actionItems);
   }, [actionItems]);
+
+  useEffect(() => {
+    saveProductivitySources(selectedProductivitySources);
+  }, [selectedProductivitySources]);
+
+  useEffect(() => {
+    if (selectedActionSource !== "All" && !enabledActionSources.has(selectedActionSource)) {
+      setSelectedActionSource("All");
+    }
+  }, [enabledActionSources, selectedActionSource]);
 
   useEffect(() => {
     sidebarWidthRef.current = sidebarWidth;
@@ -863,34 +900,17 @@ export function App(): JSX.Element {
       .catch(() => setPasswordStatus("Saved password could not be removed."));
   }
 
-  function addManualActionItem(event: FormEvent<HTMLFormElement>): void {
-    event.preventDefault();
-    const title = actionDraft.trim();
-    if (!title) {
-      return;
-    }
+  function toggleProductivitySource(sourceId: ProductivitySourceId): void {
+    setSelectedProductivitySources((currentSources) => {
+      const nextSources = currentSources.includes(sourceId)
+        ? currentSources.filter((currentSource) => currentSource !== sourceId)
+        : [...currentSources, sourceId];
 
-    setActionItems((currentItems) => [createActionItem(title, actionSource, actionContext), ...currentItems]);
-    setActionDraft("");
-    setActionContext("");
+      return nextSources.length > 0 ? nextSources : currentSources;
+    });
   }
 
-  function importCapturedActions(): void {
-    const titles = extractActionItemTitles(captureText);
-    if (titles.length === 0) {
-      setCaptureStatus("No action items were found in that source.");
-      return;
-    }
-
-    setActionItems((currentItems) => [
-      ...titles.map((title) => createActionItem(title, captureSource, captureSource === "Email" ? "Inbox" : captureSource)),
-      ...currentItems
-    ]);
-    setCaptureText("");
-    setCaptureStatus(`Pulled ${titles.length} action ${titles.length === 1 ? "item" : "items"} from ${captureSource}.`);
-  }
-
-  async function importCurrentPageActions(): Promise<void> {
+  async function pullCurrentPageActions(): Promise<void> {
     if (!activeTabId) {
       setCaptureStatus("Open a page in the browser workspace first.");
       return;
@@ -915,8 +935,24 @@ export function App(): JSX.Element {
     const pageSource = inferActionSourceFromPage(page.url, page.title);
     const context = getActionContextFromPage(page.title, page.url);
     setActionItems((currentItems) => [...titles.map((title) => createActionItem(title, pageSource, context)), ...currentItems]);
-    setCaptureSource(pageSource);
+    const browserSource = productivitySourceOptions.find((source) => source.id === "browser");
+    if (browserSource && !selectedProductivitySources.includes(browserSource.id)) {
+      setSelectedProductivitySources((currentSources) => [...currentSources, browserSource.id]);
+    }
     setCaptureStatus(`Pulled ${titles.length} action ${titles.length === 1 ? "item" : "items"} from ${context}.`);
+  }
+
+  async function syncSelectedProductivitySources(): Promise<void> {
+    if (selectedProductivitySources.includes("browser")) {
+      await pullCurrentPageActions();
+      return;
+    }
+
+    const selectedLabels = productivitySourceOptions
+      .filter((source) => selectedProductivitySources.includes(source.id))
+      .map((source) => source.label)
+      .join(", ");
+    setCaptureStatus(`${selectedLabels || "These sources"} will start syncing when Google and app integrations are connected.`);
   }
 
   function toggleActionItem(itemId: string): void {
@@ -1009,44 +1045,25 @@ export function App(): JSX.Element {
           {view === "productivity" ? (
             <section className="sidebar-section with-divider productivity-sidebar" aria-labelledby="productivity-sidebar-heading">
               <p className="sidebar-heading" id="productivity-sidebar-heading">
-                Action sources
+                Today
               </p>
-              <button
-                className={`source-filter ${selectedActionSource === "All" ? "active" : ""}`}
-                type="button"
-                onClick={() => setSelectedActionSource("All")}
-              >
-                <span className="source-filter-icon">
-                  <ListChecks size={15} aria-hidden="true" />
-                </span>
+              <div className="productivity-sidebar-stat">
+                <ListChecks size={16} aria-hidden="true" />
                 <span>
-                  <strong>All actions</strong>
-                  <small>{openActionItems.length} open</small>
+                  <strong>{sourcedOpenActionItems.length}</strong>
+                  <small>Open actions</small>
                 </span>
-              </button>
-              {actionSourceMetadata.map((source) => {
-                const Icon = source.icon;
-                const count = actionSourceCounts.get(source.source) ?? 0;
-                return (
-                  <button
-                    className={`source-filter ${selectedActionSource === source.source ? "active" : ""}`}
-                    key={source.source}
-                    type="button"
-                    onClick={() => setSelectedActionSource(source.source)}
-                  >
-                    <span className="source-filter-icon">
-                      <Icon size={15} aria-hidden="true" />
-                    </span>
-                    <span>
-                      <strong>{source.label}</strong>
-                      <small>{count} open</small>
-                    </span>
-                  </button>
-                );
-              })}
+              </div>
+              <div className="productivity-sidebar-stat">
+                <Clock size={16} aria-hidden="true" />
+                <span>
+                  <strong>{urgentActionCount}</strong>
+                  <small>Urgent</small>
+                </span>
+              </div>
               <div className="productivity-sidebar-note">
-                <strong>{activeTab ? "Current page ready" : "Open a browser page"}</strong>
-                <span>{activeTab ? activeTab.title : "Use Browsing, then pull actions here."}</span>
+                <strong>Sources live in the workspace</strong>
+                <span>Choose Gmail, Calendar, Slack, or the current browser page there.</span>
               </div>
             </section>
           ) : (
@@ -1317,11 +1334,11 @@ export function App(): JSX.Element {
                 <div className="productivity-hero-copy">
                   <p className="panel-kicker">{todayLabel}</p>
                   <h1 id="productivity-heading">
-                    {openActionItems.length} {openActionItems.length === 1 ? "thing needs" : "things need"} action,{" "}
+                    {sourcedOpenActionItems.length} {sourcedOpenActionItems.length === 1 ? "thing needs" : "things need"} action,{" "}
                     {urgentActionCount} {urgentActionCount === 1 ? "is" : "are"} urgent.
                   </h1>
                   <p>
-                    Email, web, chat, and note signals are ranked into a practical queue. Browser tabs stay saved while this workspace handles the work list.
+                    Connected sources become a ranked day plan. Gmail and Google Calendar will feed this directly once integration is connected.
                   </p>
                 </div>
                 <div className="productivity-stats" aria-label="Action item summary">
@@ -1346,12 +1363,12 @@ export function App(): JSX.Element {
                   <h2>
                     {urgentActionCount > 0
                       ? "Close the urgent thread first, then move the next priority actions."
-                      : openActionItems.length > 0
+                      : sourcedOpenActionItems.length > 0
                         ? "Start with the next useful move, then clear the queue."
                         : "No urgent work is waiting."}
                   </h2>
                   <p>
-                    Reviewed {actionItems.length} saved signals and condensed them into the next useful moves without disturbing your browser tabs.
+                    Reviewed {sourcedOpenActionItems.length} active signals from selected sources and condensed them into the next useful moves.
                   </p>
                   <ol>
                     {topPriorityActionItems.length > 0 ? (
@@ -1362,7 +1379,7 @@ export function App(): JSX.Element {
                       ))
                     ) : (
                       <li>
-                        <span>Add an action or pull from the current page to build today's plan.</span>
+                        <span>Choose sources to build today's plan.</span>
                       </li>
                     )}
                   </ol>
@@ -1378,86 +1395,45 @@ export function App(): JSX.Element {
                 </button>
               </section>
 
-              <div className="source-strip" aria-label="Productivity sources">
-                {actionSourceMetadata
-                  .filter((source) => source.source !== "Manual")
-                  .map((source) => {
-                    const Icon = source.icon;
-                    const count = actionSourceCounts.get(source.source) ?? 0;
-                    return (
-                      <button
-                        className={`source-card ${selectedActionSource === source.source ? "active" : ""}`}
-                        key={source.source}
-                        type="button"
-                        onClick={() => setSelectedActionSource(source.source)}
-                      >
-                        <span className="source-card-icon">
-                          <Icon size={17} aria-hidden="true" />
-                        </span>
-                        <span>
-                          <strong>{source.label}</strong>
-                          <small>{source.detail}</small>
-                        </span>
-                        <b>{count}</b>
-                      </button>
-                    );
-                  })}
-              </div>
-
               <div className="productivity-grid">
-                <section className="action-panel" aria-label="Create action item">
-                  <form className="action-compose" onSubmit={addManualActionItem}>
-                    <label>
-                      <span>Action</span>
-                      <input value={actionDraft} onChange={(event) => setActionDraft(event.target.value)} placeholder="Follow up with..." />
-                    </label>
-                    <div className="action-compose-row">
-                      <label>
-                        <span>Source</span>
-                        <select value={actionSource} onChange={(event) => setActionSource(event.target.value as ActionItemSource)}>
-                          {actionSourceOptions.map((source) => (
-                            <option key={source} value={source}>
-                              {source}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        <span>Context</span>
-                        <input value={actionContext} onChange={(event) => setActionContext(event.target.value)} placeholder="Inbox, tab, class..." />
-                      </label>
+                <section className="sources-panel" aria-label="Productivity sources">
+                  <div className="sources-heading">
+                    <div>
+                      <p className="panel-kicker">Sources</p>
+                      <h2>Choose what Autopilot reads</h2>
                     </div>
-                    <button className="primary-action" type="submit" disabled={actionDraft.trim().length === 0}>
-                      Add action
+                    <button className="secondary-action" type="button" onClick={() => void syncSelectedProductivitySources()}>
+                      Sync selected
                     </button>
-                  </form>
-
-                  <div className="source-capture">
-                    <div className="source-capture-heading">
-                      <strong>Source intake</strong>
-                      <select value={captureSource} onChange={(event) => setCaptureSource(event.target.value as ActionItemSource)} aria-label="Capture source">
-                        {actionSourceOptions
-                          .filter((source) => source !== "Manual")
-                          .map((source) => (
-                            <option key={source} value={source}>
-                              {source}
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-                    <button className="secondary-action" type="button" onClick={() => void importCurrentPageActions()} disabled={!activeTabId}>
-                      Pull from current page
-                    </button>
-                    <textarea
-                      value={captureText}
-                      onChange={(event) => setCaptureText(event.target.value)}
-                      placeholder="Paste an email, message, page note, or meeting note"
-                    />
-                    <button className="secondary-action" type="button" onClick={importCapturedActions} disabled={captureText.trim().length === 0}>
-                      Pull from pasted text
-                    </button>
-                    {captureStatus ? <p className="capture-status">{captureStatus}</p> : null}
                   </div>
+                  <div className="source-grid">
+                    {productivitySourceOptions.map((source) => {
+                      const Icon = source.icon;
+                      const isSelected = selectedProductivitySourceSet.has(source.id);
+                      const count = actionSourceCounts.get(source.source) ?? 0;
+                      return (
+                        <button
+                          className={`source-card ${isSelected ? "selected" : ""}`}
+                          key={source.id}
+                          type="button"
+                          onClick={() => toggleProductivitySource(source.id)}
+                        >
+                          <span className="source-card-icon">
+                            <Icon size={17} aria-hidden="true" />
+                          </span>
+                          <span className="source-card-copy">
+                            <strong>{source.label}</strong>
+                            <small>{source.detail}</small>
+                          </span>
+                          <span className={`source-status ${source.status}`}>
+                            {isSelected ? "Selected" : source.status === "ready" ? "Local" : "Connect later"}
+                          </span>
+                          <b>{count}</b>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {captureStatus ? <p className="capture-status">{captureStatus}</p> : null}
                 </section>
 
                 <section className="action-list-panel" aria-label="Action items">
