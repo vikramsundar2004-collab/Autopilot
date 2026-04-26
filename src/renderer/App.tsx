@@ -1368,6 +1368,43 @@ export function App(): JSX.Element {
               </section>
 
               <div className="productivity-grid">
+                <section className="action-checklist-panel" aria-label="Action item checklist">
+                  <div className="action-checklist-heading">
+                    <div>
+                      <p className="panel-kicker">Checklist</p>
+                      <h2>Action items</h2>
+                    </div>
+                    <span>{sourcedOpenActionItems.length} open</span>
+                  </div>
+
+                  {sourcedOpenActionItems.length === 0 ? (
+                    <div className="checklist-empty">
+                      <Check size={20} aria-hidden="true" />
+                      <span>No action items yet.</span>
+                    </div>
+                  ) : (
+                    <div className="action-checklist">
+                      {sourcedOpenActionItems.map((item) => (
+                        <label className="checklist-item" key={item.id}>
+                          <input
+                            type="checkbox"
+                            checked={false}
+                            onChange={() => toggleActionItem(item.id)}
+                            aria-label={`Mark ${item.title} done`}
+                          />
+                          <span className="checklist-copy">
+                            <strong>{item.title}</strong>
+                            <small>
+                              {item.source}
+                              {item.context ? ` - ${item.context}` : ""}
+                            </small>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
                 <section className="sources-panel" aria-label="Productivity sources">
                   <div className="sources-heading">
                     <div>
