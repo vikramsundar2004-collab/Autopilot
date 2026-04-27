@@ -159,17 +159,17 @@ const CHROMIUM_NAVIGATION_ERROR_COPY: Record<number, { reason: string; guidance:
 };
 
 export const DEFAULT_THEME: BrowserTheme = {
-  bg: "#f4ebdd",
-  surface: "#fffaf2",
-  surface2: "#efe3d1",
-  primary: "#1f4a37",
-  primaryHover: "#17392a",
-  sage: "#b9c8aa",
-  sageMuted: "#edf3e8",
-  clay: "#9a765b",
-  text: "#17231d",
-  textMuted: "#6f6257",
-  border: "#deccb5",
+  bg: "#eadfce",
+  surface: "#fff8ed",
+  surface2: "#deccb3",
+  primary: "#123c2b",
+  primaryHover: "#0b2b20",
+  sage: "#92aa7c",
+  sageMuted: "#eef3df",
+  clay: "#b67349",
+  text: "#10231a",
+  textMuted: "#6b5d4d",
+  border: "#cdb99f",
   danger: "#9d3b2f",
   focus: "#2f6b4f"
 };
