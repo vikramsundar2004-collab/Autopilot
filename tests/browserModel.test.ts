@@ -115,6 +115,13 @@ describe("describeNavigationError", () => {
     expect(error.description).toBe("ERR_CONNECTION_REFUSED");
   });
 
+  it("uses factual timeout copy for Chromium connection timeouts", () => {
+    const error = describeNavigationError(-118, "ERR_CONNECTION_TIMED_OUT", "https://slow.example");
+
+    expect(error.reason).toBe("Connection timed out");
+    expect(error.guidance).toBe("The server did not respond before Chromium's network timeout.");
+  });
+
   it("keeps the original Chromium description for unmapped failures", () => {
     const error = describeNavigationError(-9999, "ERR_CUSTOM_FAILURE", "https://example.com");
 

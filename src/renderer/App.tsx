@@ -746,6 +746,15 @@ export function App(): JSX.Element {
     navigateTo(addressDraft);
   }
 
+  function retryNavigationError(): void {
+    if (!activeTabId || !activeNavigationError) {
+      return;
+    }
+
+    void autopilot.tabs.navigate(activeTabId, activeNavigationError.url);
+    setView("browser");
+  }
+
   function addTab(): void {
     void autopilot.tabs.create();
     setView("browser");
@@ -1435,6 +1444,9 @@ export function App(): JSX.Element {
                 <code>
                   {activeNavigationError.description} ({activeNavigationError.code})
                 </code>
+                <button type="button" onClick={retryNavigationError}>
+                  Try again
+                </button>
               </div>
             )}
           </form>
@@ -1442,8 +1454,8 @@ export function App(): JSX.Element {
 
         <section className="workspace">
           <div className={`web-content-frame ${view !== "browser" ? "hidden" : ""}`} ref={webAreaRef}>
-            <div className="web-content-placeholder">
-              {isBrowserPreview ? (
+            {isBrowserPreview && (
+              <div className="web-content-placeholder">
                 <section className="empty-state" aria-label="Autopilot start page">
                   <h1 className="home-wordmark">
                     <span>Autopilot</span>
@@ -1466,10 +1478,8 @@ export function App(): JSX.Element {
                     Currently in <b>Browser</b> workspace
                   </span>
                 </section>
-              ) : (
-                <span className="loading-ring" aria-label="Loading page" />
-              )}
-            </div>
+              </div>
+            )}
           </div>
 
           {view === "productivity" && (

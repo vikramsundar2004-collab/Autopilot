@@ -1077,7 +1077,7 @@ input:focus-visible,
 .navigation-error-message {
   grid-column: 2;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   min-width: 0;
@@ -1123,6 +1123,24 @@ input:focus-visible,
   font-size: 11px;
   font-weight: 800;
   padding: 4px 8px;
+}
+
+.navigation-error-message button {
+  min-height: 28px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 76%, white);
+  color: var(--primary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 0 11px;
+  white-space: nowrap;
+}
+
+.navigation-error-message button:hover {
+  border-color: color-mix(in srgb, var(--primary) 46%, var(--border));
+  background: color-mix(in srgb, var(--sage-muted) 64%, var(--surface));
 }
 
 .nav-actions {
@@ -2869,7 +2887,8 @@ input:focus-visible,
   }
 
   .navigation-error-message span,
-  .navigation-error-message code {
+  .navigation-error-message code,
+  .navigation-error-message button {
     grid-column: 2;
   }
 

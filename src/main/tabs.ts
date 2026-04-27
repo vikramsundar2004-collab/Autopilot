@@ -75,6 +75,23 @@ function describeUnsafeNavigation(input: string, normalizedUrl: string) {
   return describeNavigationError(-300, "ERR_INVALID_URL", input.trim() || normalizedUrl);
 }
 
+function parseLoadUrlFailure(error: unknown): { code: number; description: string } | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("ERR_ABORTED")) {
+    return null;
+  }
+
+  const match = message.match(/\b(ERR_[A-Z0-9_]+)\s+\((-?\d+)\)/);
+  if (!match) {
+    return { code: -1, description: message || "ERR_FAILED" };
+  }
+
+  return {
+    description: match[1],
+    code: Number(match[2])
+  };
+}
+
 function isExternalPdfUrl(url: string): boolean {
   try {
     const protocol = new URL(url).protocol;
@@ -643,7 +660,7 @@ export class TabController {
 
     this.tabs.set(id, tab);
     this.activeTabId = id;
-    void view.webContents.loadURL(initialUrl);
+    this.loadTabUrl(id, initialUrl);
     this.refreshMemoryMetrics();
     if (shouldOpenPdfExternally) {
       openPdfInSystem(safeUrl);
@@ -720,7 +737,7 @@ export class TabController {
     tab.url = url;
     tab.isLoading = true;
     tab.navigationError = undefined;
-    void tab.view.webContents.loadURL(url);
+    this.loadTabUrl(tabId, url);
     this.refreshMemoryMetrics();
     this.emit();
     return this.getSnapshot();
@@ -906,7 +923,7 @@ export class TabController {
     tab.url = noticeUrl;
     tab.isLoading = false;
     tab.navigationError = undefined;
-    void tab.view.webContents.loadURL(noticeUrl);
+    this.loadTabUrl(tabId, noticeUrl);
     openPdfInSystem(pdfUrl);
     this.emit();
   }
@@ -970,6 +987,22 @@ export class TabController {
     tab.canGoBack = tab.view.webContents.canGoBack();
     tab.canGoForward = tab.view.webContents.canGoForward();
     this.emit();
+  }
+
+  private loadTabUrl(tabId: string, url: string): void {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+      return;
+    }
+
+    void tab.view.webContents.loadURL(url).catch((error: unknown) => {
+      const failure = parseLoadUrlFailure(error);
+      if (!failure) {
+        return;
+      }
+
+      this.markNavigationFailure(tabId, failure.code, failure.description, url);
+    });
   }
 
   private refreshMemoryMetrics(): void {
