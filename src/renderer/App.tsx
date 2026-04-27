@@ -212,7 +212,6 @@ function AutopilotNeedle({ className = "", label }: AutopilotNeedleProps): JSX.E
       <circle className="needle-disc" cx="32" cy="51" r="31" />
       <path className="needle-wing needle-wing-left" d="M32 6 59 89 32 72 5 89Z" />
       <path className="needle-wing needle-wing-right" d="M32 6 59 89 32 72Z" />
-      <path className="needle-core-shadow" d="M32 22 45 64 32 56 19 64Z" />
       <path className="needle-core" d="M32 22 45 64 32 56 19 64Z" />
       <path className="needle-ridge" d="M32 6 32 72" />
     </svg>
@@ -391,7 +390,6 @@ export function App(): JSX.Element {
   const sidebarWidthRef = useRef(sidebarWidth);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
-  const activeTabMemoryLabel = formatTabMemory(activeTab?.memoryBytes);
   const isBrowserPreview = autopilot.runtime === "browser-preview";
   const warnings = useMemo(() => getThemeWarnings(theme), [theme]);
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
@@ -1220,6 +1218,9 @@ export function App(): JSX.Element {
                       <button className="sidebar-tab-main" type="button" onClick={() => activateTab(tab.id)}>
                         <Globe2 size={16} aria-hidden="true" />
                         <span>{tab.title}</span>
+                        <span className={`sidebar-tab-memory ${tab.memoryBytes ? "" : "pending"}`} title="Memory used by this tab">
+                          {tab.memoryBytes ? formatTabMemory(tab.memoryBytes) : "--"}
+                        </span>
                       </button>
                       <button className="sidebar-tab-close" type="button" aria-label={`Delete ${tab.title}`} onClick={() => deleteTab(tab.id)}>
                         <X size={14} />
@@ -1430,10 +1431,6 @@ export function App(): JSX.Element {
               />
               <Search size={17} aria-hidden="true" />
             </label>
-            <span className={`tab-memory-badge ${activeTab?.memoryBytes ? "" : "pending"}`} title="Memory used by the active browser tab">
-              <strong>{activeTabMemoryLabel}</strong>
-              <small>tab memory</small>
-            </span>
           </form>
         )}
 
