@@ -1586,9 +1586,30 @@ input:focus-visible,
 
 .productivity-grid {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 20px;
+  grid-template-areas:
+    "checklist inbox"
+    "sources inbox"
+    "queue queue";
+  grid-template-columns: minmax(340px, 0.92fr) minmax(420px, 1.08fr);
+  align-items: start;
+  gap: 18px;
   min-height: 0;
+}
+
+.email-inbox-panel {
+  grid-area: inbox;
+}
+
+.action-checklist-panel {
+  grid-area: checklist;
+}
+
+.sources-panel {
+  grid-area: sources;
+}
+
+.action-list-panel {
+  grid-area: queue;
 }
 
 .sources-panel,
@@ -1696,8 +1717,8 @@ input:focus-visible,
 
 .email-message-list {
   display: grid;
-  gap: 8px;
-  max-height: 320px;
+  gap: 10px;
+  max-height: min(560px, 54vh);
   overflow: auto;
   padding-right: 2px;
   scrollbar-color: var(--sage-muted) transparent;
@@ -1726,16 +1747,17 @@ input:focus-visible,
 
 .email-message-summary {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr);
   align-items: start;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
+  min-height: 86px;
   min-width: 0;
   border: 0;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  padding: 11px;
+  padding: 13px;
   text-align: left;
 }
 
@@ -1746,8 +1768,8 @@ input:focus-visible,
 .email-message-icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   border-radius: 11px;
   background: color-mix(in srgb, var(--primary) 12%, var(--surface-2));
   color: var(--primary);
@@ -1755,40 +1777,58 @@ input:focus-visible,
 
 .email-message-copy {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
 }
 
-.email-message-copy strong,
-.email-message-copy span,
+.email-message-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.email-message-topline strong,
+.email-message-topline time,
+.email-message-copy > span:not(.email-message-topline),
 .email-message-copy p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.email-message-copy strong {
+.email-message-topline strong {
   color: var(--text);
   font-size: 14px;
   font-weight: 900;
+  line-height: 1.25;
 }
 
-.email-message-copy span,
-.email-message-summary time {
+.email-message-copy > span:not(.email-message-topline),
+.email-message-topline time {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 750;
 }
 
 .email-message-copy p {
+  display: -webkit-box;
   margin: 0;
   color: color-mix(in srgb, var(--text-muted) 86%, var(--text));
   font-size: 12px;
   line-height: 1.35;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.email-message-summary time {
+.email-message-topline time {
   justify-self: end;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 42%, var(--surface));
+  padding: 4px 8px;
   white-space: nowrap;
 }
 
@@ -2653,6 +2693,15 @@ input:focus-visible,
     align-items: start;
   }
 
+  .productivity-grid {
+    grid-template-areas:
+      "checklist"
+      "inbox"
+      "sources"
+      "queue";
+    grid-template-columns: 1fr;
+  }
+
   .productivity-stats {
     justify-content: start;
     flex-wrap: wrap;
@@ -2818,11 +2867,15 @@ input:focus-visible,
   }
 
   .email-message-summary {
-    grid-template-columns: 34px minmax(0, 1fr);
+    grid-template-columns: 38px minmax(0, 1fr);
   }
 
-  .email-message-summary time {
-    grid-column: 2;
+  .email-message-topline {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .email-message-topline time {
     justify-self: start;
   }
 

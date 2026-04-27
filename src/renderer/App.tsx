@@ -1593,14 +1593,16 @@ export function App(): JSX.Element {
                               <Mail size={16} />
                             </span>
                             <div className="email-message-copy">
-                              <strong>{message.subject}</strong>
+                              <span className="email-message-topline">
+                                <strong>{message.subject}</strong>
+                                <time dateTime={new Date(message.receivedAt).toISOString()}>{formatCredentialDate(message.receivedAt)}</time>
+                              </span>
                               <span>
                                 {message.from}
                                 {message.fromEmail ? ` - ${message.fromEmail}` : ""}
                               </span>
                               <p>{message.snippet}</p>
                             </div>
-                            <time dateTime={new Date(message.receivedAt).toISOString()}>{formatCredentialDate(message.receivedAt)}</time>
                           </button>
                           {selectedEmailId === message.id && (
                             <div className="email-message-preview">
