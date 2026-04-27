@@ -16,6 +16,7 @@ export type Tab = {
   isLoading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  memoryBytes?: number;
 };
 
 export type BrowserSnapshot = {

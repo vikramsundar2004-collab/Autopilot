@@ -338,6 +338,19 @@ function getEmailContext(message: EmailMessageSummary): string {
   return `${message.from} - ${message.subject}`.slice(0, 80);
 }
 
+function formatTabMemory(memoryBytes: number | undefined): string {
+  if (typeof memoryBytes !== "number" || !Number.isFinite(memoryBytes) || memoryBytes <= 0) {
+    return "Measuring";
+  }
+
+  const megabytes = memoryBytes / (1024 * 1024);
+  if (megabytes >= 1024) {
+    return `${(megabytes / 1024).toFixed(1)} GB`;
+  }
+
+  return `${Math.max(1, Math.round(megabytes))} MB`;
+}
+
 export function App(): JSX.Element {
   const autopilot = useMemo(() => getAutopilotApi(), []);
   const [theme, setTheme] = useState<BrowserTheme>(() => loadTheme());
@@ -364,6 +377,7 @@ export function App(): JSX.Element {
   const [emailMessages, setEmailMessages] = useState<EmailMessageSummary[]>([]);
   const [emailSyncStatus, setEmailSyncStatus] = useState("");
   const [emailBusy, setEmailBusy] = useState(false);
+  const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [selectedProductivitySources, setSelectedProductivitySources] = useState<ProductivitySourceId[]>(() => loadProductivitySources());
   const [selectedActionSource, setSelectedActionSource] = useState<ActionItemSource | "All">("All");
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -377,6 +391,7 @@ export function App(): JSX.Element {
   const sidebarWidthRef = useRef(sidebarWidth);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const activeTabMemoryLabel = formatTabMemory(activeTab?.memoryBytes);
   const isBrowserPreview = autopilot.runtime === "browser-preview";
   const warnings = useMemo(() => getThemeWarnings(theme), [theme]);
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
@@ -439,6 +454,12 @@ export function App(): JSX.Element {
     const labels = new Map(bookmarkSources.map((source) => [source.id, source.label]));
     return selectedBookmarkSources.map((sourceId) => labels.get(sourceId) ?? sourceId).join(", ");
   }, [bookmarkSources, selectedBookmarkSources]);
+
+  useEffect(() => {
+    if (selectedEmailId && !emailMessages.some((message) => message.id === selectedEmailId)) {
+      setSelectedEmailId(null);
+    }
+  }, [emailMessages, selectedEmailId]);
 
   const applyBookmarks = useCallback((nextBookmarks: BrowserBookmarkNode[]) => {
     setBookmarks(nextBookmarks);
@@ -733,6 +754,16 @@ export function App(): JSX.Element {
 
   function addTab(): void {
     void autopilot.tabs.create();
+    setView("browser");
+  }
+
+  async function openEmailInBrowser(message: EmailMessageSummary): Promise<void> {
+    setEmailSyncStatus(`Opening ${message.subject || "email"} in a browser tab...`);
+    const snapshot = await autopilot.tabs.create();
+    const tabId = snapshot.activeTabId;
+    if (tabId) {
+      await autopilot.tabs.navigate(tabId, message.url);
+    }
     setView("browser");
   }
 
@@ -1043,6 +1074,7 @@ export function App(): JSX.Element {
     const status = await autopilot.email.disconnect();
     setEmailStatus(status);
     setEmailMessages([]);
+    setSelectedEmailId(null);
     setEmailSyncStatus("Gmail disconnected.");
     setEmailBusy(false);
   }
@@ -1398,6 +1430,10 @@ export function App(): JSX.Element {
               />
               <Search size={17} aria-hidden="true" />
             </label>
+            <span className={`tab-memory-badge ${activeTab?.memoryBytes ? "" : "pending"}`} title="Memory used by the active browser tab">
+              <strong>{activeTabMemoryLabel}</strong>
+              <small>tab memory</small>
+            </span>
           </form>
         )}
 
@@ -1549,19 +1585,36 @@ export function App(): JSX.Element {
                   ) : (
                     <div className="email-message-list">
                       {emailMessages.slice(0, 8).map((message) => (
-                        <article className={`email-message ${message.unread ? "unread" : ""}`} key={message.id}>
-                          <span className="email-message-icon" aria-hidden="true">
-                            <Mail size={16} />
-                          </span>
-                          <div className="email-message-copy">
-                            <strong>{message.subject}</strong>
-                            <span>
-                              {message.from}
-                              {message.fromEmail ? ` - ${message.fromEmail}` : ""}
+                        <article className={`email-message ${message.unread ? "unread" : ""} ${selectedEmailId === message.id ? "selected" : ""}`} key={message.id}>
+                          <button
+                            className="email-message-summary"
+                            type="button"
+                            aria-expanded={selectedEmailId === message.id}
+                            onClick={() => setSelectedEmailId((currentId) => (currentId === message.id ? null : message.id))}
+                          >
+                            <span className="email-message-icon" aria-hidden="true">
+                              <Mail size={16} />
                             </span>
-                            <p>{message.snippet}</p>
-                          </div>
-                          <time dateTime={new Date(message.receivedAt).toISOString()}>{formatCredentialDate(message.receivedAt)}</time>
+                            <div className="email-message-copy">
+                              <strong>{message.subject}</strong>
+                              <span>
+                                {message.from}
+                                {message.fromEmail ? ` - ${message.fromEmail}` : ""}
+                              </span>
+                              <p>{message.snippet}</p>
+                            </div>
+                            <time dateTime={new Date(message.receivedAt).toISOString()}>{formatCredentialDate(message.receivedAt)}</time>
+                          </button>
+                          {selectedEmailId === message.id && (
+                            <div className="email-message-preview">
+                              <p>{message.snippet || "No preview text was included with this email."}</p>
+                              {message.actionText && message.actionText !== message.snippet ? <p>{message.actionText}</p> : null}
+                              <button className="secondary-action email-full-button" type="button" onClick={() => void openEmailInBrowser(message)}>
+                                Show full email
+                                <ArrowRight size={16} aria-hidden="true" />
+                              </button>
+                            </div>
+                          )}
                         </article>
                       ))}
                     </div>

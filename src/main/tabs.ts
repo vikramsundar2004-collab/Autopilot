@@ -1,4 +1,4 @@
-import { BrowserWindow, WebContentsView, session, shell, type PrinterInfo, type Rectangle } from "electron";
+import { app, BrowserWindow, WebContentsView, session, shell, type PrinterInfo, type ProcessMetric, type Rectangle } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +39,18 @@ type PrintPreviewRecord = {
 const EMPTY_BOUNDS: Rectangle = { x: 0, y: 0, width: 0, height: 0 };
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BROWSER_PARTITION = "persist:autopilot";
+const MEMORY_REFRESH_INTERVAL_MS = 4_000;
+
+function metricMemoryBytes(metric: ProcessMetric | undefined): number | undefined {
+  const rawMemory = metric?.memory.privateBytes ?? metric?.memory.workingSetSize;
+  if (typeof rawMemory !== "number" || !Number.isFinite(rawMemory) || rawMemory <= 0) {
+    return undefined;
+  }
+
+  // Electron has reported this structure as kilobytes in docs while keeping
+  // the Windows field name privateBytes. Normalize plausible values to bytes.
+  return Math.round(rawMemory > 10_000_000 ? rawMemory : rawMemory * 1024);
+}
 
 function isSafeBrowserUrl(url: string): boolean {
   try {
@@ -506,10 +518,18 @@ export class TabController {
   private attachedViewId: string | null = null;
   private bounds: Rectangle = EMPTY_BOUNDS;
   private visible = false;
+  private memoryRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(window: BrowserWindow) {
     this.window = window;
     this.registerPdfResponseHandler();
+    this.memoryRefreshTimer = setInterval(() => this.refreshMemoryMetrics(), MEMORY_REFRESH_INTERVAL_MS);
+    this.window.on("closed", () => {
+      if (this.memoryRefreshTimer) {
+        clearInterval(this.memoryRefreshTimer);
+        this.memoryRefreshTimer = null;
+      }
+    });
   }
 
   getSnapshot(): BrowserSnapshot {
@@ -599,6 +619,7 @@ export class TabController {
     this.tabs.set(id, tab);
     this.activeTabId = id;
     void view.webContents.loadURL(initialUrl);
+    this.refreshMemoryMetrics();
     if (shouldOpenPdfExternally) {
       openPdfInSystem(url);
     }
@@ -642,6 +663,7 @@ export class TabController {
     if (this.tabs.has(tabId)) {
       this.activeTabId = tabId;
       this.reconcileAttachedView();
+      this.refreshMemoryMetrics();
       this.emit();
     }
 
@@ -667,6 +689,7 @@ export class TabController {
     tab.url = url;
     tab.isLoading = true;
     void tab.view.webContents.loadURL(url);
+    this.refreshMemoryMetrics();
     this.emit();
     return this.getSnapshot();
   }
@@ -877,6 +900,7 @@ export class TabController {
     tab.isLoading = tab.view.webContents.isLoading();
     tab.canGoBack = tab.view.webContents.canGoBack();
     tab.canGoForward = tab.view.webContents.canGoForward();
+    this.refreshMemoryMetrics();
     this.emit();
   }
 
@@ -888,6 +912,31 @@ export class TabController {
 
     Object.assign(tab, patch);
     this.emit();
+  }
+
+  private refreshMemoryMetrics(): void {
+    if (!app.isReady()) {
+      return;
+    }
+
+    const metrics = app.getAppMetrics();
+    let didChange = false;
+    for (const tab of this.tabs.values()) {
+      if (tab.view.webContents.isDestroyed()) {
+        continue;
+      }
+
+      const rendererPid = tab.view.webContents.getOSProcessId();
+      const memoryBytes = metricMemoryBytes(metrics.find((metric) => metric.pid === rendererPid));
+      if (tab.memoryBytes !== memoryBytes) {
+        tab.memoryBytes = memoryBytes;
+        didChange = true;
+      }
+    }
+
+    if (didChange) {
+      this.emit();
+    }
   }
 
   private reconcileAttachedView(): void {
