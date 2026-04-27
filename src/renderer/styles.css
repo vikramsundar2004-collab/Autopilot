@@ -1005,7 +1005,7 @@ input:focus-visible,
 
 .browser-shell {
   display: grid;
-  grid-template-rows: 48px 68px minmax(0, 1fr);
+  grid-template-rows: 48px auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1072,6 +1072,57 @@ input:focus-visible,
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 64%, transparent);
   padding: 12px 24px;
+}
+
+.navigation-error-message {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-2) 42%, var(--surface));
+  color: var(--text);
+  padding: 9px 12px;
+  box-shadow: 0 12px 30px rgba(51, 39, 31, 0.08);
+}
+
+.navigation-error-message svg {
+  color: var(--danger);
+}
+
+.navigation-error-message strong {
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.navigation-error-message span,
+.navigation-error-message code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navigation-error-message span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.navigation-error-message code {
+  justify-self: end;
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 72%, white);
+  color: color-mix(in srgb, var(--text-muted) 74%, var(--text));
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 8px;
 }
 
 .nav-actions {
@@ -2786,7 +2837,7 @@ input:focus-visible,
 
   .browser-shell {
     grid-row: 1;
-    grid-template-rows: 44px 104px minmax(0, 1fr);
+    grid-template-rows: 44px auto minmax(0, 1fr);
   }
 
   .browser-shell.app-view {
@@ -2805,6 +2856,21 @@ input:focus-visible,
 
   .nav-actions {
     justify-content: center;
+  }
+
+  .navigation-error-message {
+    grid-column: 1;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .navigation-error-message strong,
+  .navigation-error-message code {
+    justify-self: start;
+  }
+
+  .navigation-error-message span,
+  .navigation-error-message code {
+    grid-column: 2;
   }
 
   .empty-state {

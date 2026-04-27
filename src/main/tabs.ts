@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   AUTOPILOT_PDF_NOTICE_MARKER,
   createHomeUrl,
+  describeNavigationError,
   isPdfResponseHeaders,
   isPdfUrl,
   normalizeAddressInput,
@@ -59,6 +60,19 @@ function isSafeBrowserUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function describeUnsafeNavigation(input: string, normalizedUrl: string) {
+  try {
+    const protocol = new URL(normalizedUrl).protocol;
+    if (!["http:", "https:", "data:"].includes(protocol)) {
+      return describeNavigationError(-301, "ERR_DISALLOWED_URL_SCHEME", normalizedUrl);
+    }
+  } catch {
+    return describeNavigationError(-300, "ERR_INVALID_URL", input.trim() || normalizedUrl);
+  }
+
+  return describeNavigationError(-300, "ERR_INVALID_URL", input.trim() || normalizedUrl);
 }
 
 function isExternalPdfUrl(url: string): boolean {
@@ -586,7 +600,7 @@ export class TabController {
     });
 
     view.webContents.on("did-start-loading", () => {
-      this.patchTab(id, { isLoading: true });
+      this.patchTab(id, { isLoading: true, navigationError: undefined });
     });
 
     view.webContents.on("did-stop-loading", () => {
@@ -598,24 +612,33 @@ export class TabController {
     });
 
     view.webContents.on("did-navigate", (_event, navigatedUrl) => {
-      this.patchTab(id, { url: navigatedUrl });
+      this.patchTab(id, { url: navigatedUrl, navigationError: undefined });
       this.syncTabFromView(id);
     });
 
     view.webContents.on("did-navigate-in-page", (_event, navigatedUrl) => {
-      this.patchTab(id, { url: navigatedUrl });
+      this.patchTab(id, { url: navigatedUrl, navigationError: undefined });
       this.syncTabFromView(id);
     });
 
-    view.webContents.on("did-fail-load", (_event, errorCode) => {
+    view.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
       if (errorCode === -3) {
         return;
       }
 
-      this.patchTab(id, {
-        title: "Load failed",
-        isLoading: false
-      });
+      if (isMainFrame === false) {
+        return;
+      }
+
+      this.markNavigationFailure(id, errorCode, errorDescription, validatedUrl);
+    });
+
+    view.webContents.on("did-fail-provisional-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      if (errorCode === -3 || isMainFrame === false) {
+        return;
+      }
+
+      this.markNavigationFailure(id, errorCode, errorDescription, validatedUrl);
     });
 
     this.tabs.set(id, tab);
@@ -680,6 +703,12 @@ export class TabController {
 
     const url = normalizeAddressInput(input, createHomeUrl());
     if (!isSafeBrowserUrl(url)) {
+      const navigationError = describeUnsafeNavigation(input, url);
+      tab.title = navigationError.reason;
+      tab.url = navigationError.url;
+      tab.isLoading = false;
+      tab.navigationError = navigationError;
+      this.emit();
       return this.getSnapshot();
     }
 
@@ -690,6 +719,7 @@ export class TabController {
 
     tab.url = url;
     tab.isLoading = true;
+    tab.navigationError = undefined;
     void tab.view.webContents.loadURL(url);
     this.refreshMemoryMetrics();
     this.emit();
@@ -875,6 +905,7 @@ export class TabController {
     tab.title = "PDF opened externally";
     tab.url = noticeUrl;
     tab.isLoading = false;
+    tab.navigationError = undefined;
     void tab.view.webContents.loadURL(noticeUrl);
     openPdfInSystem(pdfUrl);
     this.emit();
@@ -897,6 +928,15 @@ export class TabController {
     }
 
     const url = tab.view.webContents.getURL();
+    if (tab.navigationError) {
+      tab.isLoading = tab.view.webContents.isLoading();
+      tab.canGoBack = tab.view.webContents.canGoBack();
+      tab.canGoForward = tab.view.webContents.canGoForward();
+      this.refreshMemoryMetrics();
+      this.emit();
+      return;
+    }
+
     tab.url = url;
     tab.title = readableTitle(tab.view.webContents.getTitle(), url);
     tab.isLoading = tab.view.webContents.isLoading();
@@ -913,6 +953,22 @@ export class TabController {
     }
 
     Object.assign(tab, patch);
+    this.emit();
+  }
+
+  private markNavigationFailure(tabId: string, errorCode: number, errorDescription: string, failedUrl: string): void {
+    const tab = this.tabs.get(tabId);
+    if (!tab) {
+      return;
+    }
+
+    const navigationError = describeNavigationError(errorCode, errorDescription, failedUrl || tab.url);
+    tab.title = navigationError.reason;
+    tab.url = navigationError.url;
+    tab.isLoading = false;
+    tab.navigationError = navigationError;
+    tab.canGoBack = tab.view.webContents.canGoBack();
+    tab.canGoForward = tab.view.webContents.canGoForward();
     this.emit();
   }
 

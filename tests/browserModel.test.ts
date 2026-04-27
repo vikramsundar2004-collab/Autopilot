@@ -10,6 +10,7 @@ import {
   createHomeUrl,
   closeTab,
   createTab,
+  describeNavigationError,
   getDisplayUrl,
   isHistoryPageUrl,
   isHomeUrl,
@@ -92,6 +93,34 @@ describe("PDF detection", () => {
     expect(readableTitle("", historyUrl)).toBe("History");
     expect(decodeURIComponent(historyUrl)).toContain(AUTOPILOT_HISTORY_PAGE_MARKER);
     expect(decodeURIComponent(historyUrl)).toContain("Example");
+  });
+});
+
+describe("describeNavigationError", () => {
+  it("uses factual DNS failure copy for Chromium name resolution errors", () => {
+    expect(describeNavigationError(-105, "ERR_NAME_NOT_RESOLVED", "https://missing.example")).toEqual({
+      code: -105,
+      description: "ERR_NAME_NOT_RESOLVED",
+      url: "https://missing.example",
+      reason: "DNS lookup failed",
+      guidance: "Chromium could not find an IP address for this domain. Check the domain name."
+    });
+  });
+
+  it("separates refused connections from invalid URLs", () => {
+    const error = describeNavigationError(-102, "ERR_CONNECTION_REFUSED", "http://localhost:65535");
+
+    expect(error.reason).toBe("Connection refused");
+    expect(error.guidance).toContain("nothing accepted the connection");
+    expect(error.description).toBe("ERR_CONNECTION_REFUSED");
+  });
+
+  it("keeps the original Chromium description for unmapped failures", () => {
+    const error = describeNavigationError(-9999, "ERR_CUSTOM_FAILURE", "https://example.com");
+
+    expect(error.reason).toBe("custom failure");
+    expect(error.guidance).toBe("Chromium reported this network error while trying to load the page.");
+    expect(error.description).toBe("ERR_CUSTOM_FAILURE");
   });
 });
 

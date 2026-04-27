@@ -17,6 +17,15 @@ export type Tab = {
   canGoBack: boolean;
   canGoForward: boolean;
   memoryBytes?: number;
+  navigationError?: BrowserNavigationError;
+};
+
+export type BrowserNavigationError = {
+  code: number;
+  description: string;
+  url: string;
+  reason: string;
+  guidance: string;
 };
 
 export type BrowserSnapshot = {
@@ -46,6 +55,109 @@ export type BrowserHistoryEntry = {
   visitedAt: number;
 };
 
+const CHROMIUM_NAVIGATION_ERROR_COPY: Record<number, { reason: string; guidance: string }> = {
+  [-501]: {
+    reason: "Insecure response",
+    guidance: "Chromium blocked the response because the connection could not be trusted."
+  },
+  [-324]: {
+    reason: "Empty response",
+    guidance: "The server accepted the request but did not send any data back."
+  },
+  [-320]: {
+    reason: "Invalid server response",
+    guidance: "The server replied with data Chromium could not parse as a valid web response."
+  },
+  [-310]: {
+    reason: "Too many redirects",
+    guidance: "The page kept redirecting in a loop, so Chromium stopped loading it."
+  },
+  [-303]: {
+    reason: "Unsupported URL scheme",
+    guidance: "Autopilot can open http, https, and internal data pages. This address uses a scheme Chromium will not load here."
+  },
+  [-302]: {
+    reason: "Unknown URL scheme",
+    guidance: "Chromium does not know how to open this kind of address."
+  },
+  [-301]: {
+    reason: "Unsupported URL scheme",
+    guidance: "Autopilot can open http, https, and internal data pages. This address uses a different scheme."
+  },
+  [-300]: {
+    reason: "Invalid URL",
+    guidance: "The address is not a valid URL. Check the spelling, punctuation, and protocol."
+  },
+  [-210]: {
+    reason: "Certificate revoked",
+    guidance: "The site's certificate has been revoked, so Chromium blocked the connection."
+  },
+  [-207]: {
+    reason: "Certificate invalid",
+    guidance: "The site presented a client certificate Chromium could not accept."
+  },
+  [-202]: {
+    reason: "Certificate authority not trusted",
+    guidance: "The site's certificate was issued by an authority Chromium does not trust."
+  },
+  [-201]: {
+    reason: "Certificate date invalid",
+    guidance: "The site's certificate is expired or not valid yet."
+  },
+  [-200]: {
+    reason: "Certificate name mismatch",
+    guidance: "The certificate does not match the domain you opened."
+  },
+  [-138]: {
+    reason: "Network access denied",
+    guidance: "Chromium was not allowed to access the network for this request."
+  },
+  [-137]: {
+    reason: "Proxy connection failed",
+    guidance: "Chromium could not connect through the configured proxy."
+  },
+  [-130]: {
+    reason: "Proxy authentication required",
+    guidance: "The configured proxy needs authentication before this page can load."
+  },
+  [-118]: {
+    reason: "Connection timed out",
+    guidance: "The server did not respond before Chromium's network timeout."
+  },
+  [-109]: {
+    reason: "Address unreachable",
+    guidance: "Chromium could not reach the network address for this site."
+  },
+  [-106]: {
+    reason: "Internet disconnected",
+    guidance: "Chromium reported that the network connection is offline."
+  },
+  [-105]: {
+    reason: "DNS lookup failed",
+    guidance: "Chromium could not find an IP address for this domain. Check the domain name."
+  },
+  [-104]: {
+    reason: "Connection failed",
+    guidance: "Chromium could not establish a connection to the server."
+  },
+  [-103]: {
+    reason: "Connection aborted",
+    guidance: "The connection was aborted before the page finished loading."
+  },
+  [-102]: {
+    reason: "Connection refused",
+    guidance: "The address is reachable, but nothing accepted the connection on that host and port."
+  },
+  [-101]: {
+    reason: "Connection reset",
+    guidance: "The connection was reset while Chromium was loading the page."
+  },
+  [-100]: {
+    reason: "Connection closed",
+    guidance: "The connection closed before Chromium received a complete response."
+  }
+};
+
 export const DEFAULT_THEME: BrowserTheme = {
   bg: "#f4ebdd",
   surface: "#fffaf2",
@@ -61,6 +173,19 @@ export const DEFAULT_THEME: BrowserTheme = {
   danger: "#9d3b2f",
   focus: "#2f6b4f"
 };
+
+export function describeNavigationError(code: number, description: string, url: string): BrowserNavigationError {
+  const normalizedDescription = description.trim() || `Chromium navigation error ${code}`;
+  const knownError = CHROMIUM_NAVIGATION_ERROR_COPY[code];
+
+  return {
+    code,
+    description: normalizedDescription,
+    url,
+    reason: knownError?.reason ?? normalizedDescription.replace(/^ERR_/, "").replace(/_/g, " ").toLowerCase(),
+    guidance: knownError?.guidance ?? "Chromium reported this network error while trying to load the page."
+  };
+}
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {

@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Bookmark,
@@ -389,6 +390,8 @@ export function App(): JSX.Element {
   const sidebarWidthRef = useRef(sidebarWidth);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null;
+  const activeNavigationError = activeTab?.navigationError ?? null;
+  const activeNavigationErrorKey = activeNavigationError ? `${activeNavigationError.code}:${activeNavigationError.url}` : "";
   const isBrowserPreview = autopilot.runtime === "browser-preview";
   const warnings = useMemo(() => getThemeWarnings(theme), [theme]);
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
@@ -672,7 +675,7 @@ export function App(): JSX.Element {
   }, [activeTab?.id, activeTab?.url]);
 
   useEffect(() => {
-    if (!activeTab || activeTab.isLoading || isHomeUrl(activeTab.url) || isHistoryPageUrl(activeTab.url)) {
+    if (!activeTab || activeTab.isLoading || activeTab.navigationError || isHomeUrl(activeTab.url) || isHistoryPageUrl(activeTab.url)) {
       return;
     }
 
@@ -689,7 +692,7 @@ export function App(): JSX.Element {
       saveHistoryEntries(nextEntries);
       return nextEntries;
     });
-  }, [activeTab?.isLoading, activeTab?.title, activeTab?.url]);
+  }, [activeTab?.isLoading, activeTab?.navigationError, activeTab?.title, activeTab?.url]);
 
   const sendWebArea = useCallback(() => {
     const node = webAreaRef.current;
@@ -722,7 +725,7 @@ export function App(): JSX.Element {
       resizeObserver.disconnect();
       window.removeEventListener("resize", sendWebArea);
     };
-  }, [sendWebArea, tabs.length, activeTabId, sidebarOpen, sidebarWidth]);
+  }, [sendWebArea, tabs.length, activeTabId, activeNavigationErrorKey, sidebarOpen, sidebarWidth]);
 
   function navigateTo(input: string): void {
     if (!activeTabId) {
@@ -1424,6 +1427,16 @@ export function App(): JSX.Element {
               />
               <Search size={17} aria-hidden="true" />
             </label>
+            {activeNavigationError && (
+              <div className="navigation-error-message" role="status">
+                <AlertTriangle size={16} aria-hidden="true" />
+                <strong>{activeNavigationError.reason}</strong>
+                <span>{activeNavigationError.guidance}</span>
+                <code>
+                  {activeNavigationError.description} ({activeNavigationError.code})
+                </code>
+              </div>
+            )}
           </form>
         )}
 
