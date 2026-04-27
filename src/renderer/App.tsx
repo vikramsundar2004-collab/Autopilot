@@ -89,10 +89,16 @@ const SIDEBAR_WIDTH_STORAGE_KEY = "autopilot:sidebar-width";
 
 const colorControls: Array<{ key: keyof BrowserTheme; label: string }> = [
   { key: "bg", label: "Background" },
-  { key: "surface", label: "Sidebar surface" },
+  { key: "surface", label: "Page surface" },
   { key: "surface2", label: "Raised surface" },
   { key: "primary", label: "Forest accent" },
   { key: "primaryHover", label: "Accent hover" },
+  { key: "sidebarBg", label: "Sidebar base" },
+  { key: "sidebarBgSoft", label: "Sidebar highlight" },
+  { key: "sidebarText", label: "Sidebar text" },
+  { key: "sidebarTextMuted", label: "Sidebar muted text" },
+  { key: "sidebarBorder", label: "Sidebar border" },
+  { key: "titlebarBg", label: "Top bar" },
   { key: "sage", label: "Sage accent" },
   { key: "sageMuted", label: "Pale sage" },
   { key: "clay", label: "Clay accent" },
@@ -1833,6 +1839,14 @@ export function App(): JSX.Element {
                 </section>
 
                 <section className="theme-preview" aria-label="Theme preview">
+                  <div className="preview-chrome-sample" aria-hidden="true">
+                    <span>
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                    <b />
+                  </div>
                   <div className="preview-titlebar">
                     <button className="icon-preview-trigger preview-title-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
                       <AutopilotNeedle className="preview-title-needle" />

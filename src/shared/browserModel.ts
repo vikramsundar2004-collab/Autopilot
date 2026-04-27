@@ -39,6 +39,12 @@ export type BrowserTheme = {
   surface2: string;
   primary: string;
   primaryHover: string;
+  sidebarBg: string;
+  sidebarBgSoft: string;
+  sidebarText: string;
+  sidebarTextMuted: string;
+  sidebarBorder: string;
+  titlebarBg: string;
   sage: string;
   sageMuted: string;
   clay: string;
@@ -159,11 +165,17 @@ const CHROMIUM_NAVIGATION_ERROR_COPY: Record<number, { reason: string; guidance:
 };
 
 export const DEFAULT_THEME: BrowserTheme = {
-  bg: "#eadfce",
+  bg: "#eee2d1",
   surface: "#fff8ed",
-  surface2: "#deccb3",
+  surface2: "#eadcc8",
   primary: "#123c2b",
   primaryHover: "#0b2b20",
+  sidebarBg: "#0b3324",
+  sidebarBgSoft: "#315b45",
+  sidebarText: "#fff8ed",
+  sidebarTextMuted: "#c8d6c8",
+  sidebarBorder: "#57745f",
+  titlebarBg: "#113c2b",
   sage: "#92aa7c",
   sageMuted: "#eef3df",
   clay: "#b67349",

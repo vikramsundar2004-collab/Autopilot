@@ -10,6 +10,12 @@ const LEGACY_DARK_THEME: BrowserTheme = {
   surface2: "#111a2d",
   primary: "#4f9cff",
   primaryHover: "#2f7eea",
+  sidebarBg: "#081020",
+  sidebarBgSoft: "#111a2d",
+  sidebarText: "#f5f8ff",
+  sidebarTextMuted: "#8492ad",
+  sidebarBorder: "#1b2840",
+  titlebarBg: "#081020",
   sage: "#2fe38a",
   sageMuted: "#263754",
   clay: "#a873ff",
@@ -40,7 +46,23 @@ export function loadTheme(storage: Storage = localStorage): BrowserTheme {
 
   try {
     const theme = sanitizeTheme(JSON.parse(raw) as Partial<BrowserTheme>);
-    const isLegacyDefault = themeEntries.every((key) => theme[key].toLowerCase() === LEGACY_DARK_THEME[key].toLowerCase());
+    const legacyTheme = JSON.parse(raw) as Partial<BrowserTheme>;
+    const legacyKeys: Array<keyof BrowserTheme> = [
+      "bg",
+      "surface",
+      "surface2",
+      "primary",
+      "primaryHover",
+      "sage",
+      "sageMuted",
+      "clay",
+      "text",
+      "textMuted",
+      "border",
+      "danger",
+      "focus"
+    ];
+    const isLegacyDefault = legacyKeys.every((key) => legacyTheme[key]?.toLowerCase() === LEGACY_DARK_THEME[key].toLowerCase());
     return isLegacyDefault ? DEFAULT_THEME : theme;
   } catch {
     return DEFAULT_THEME;
@@ -62,6 +84,12 @@ export function applyTheme(theme: BrowserTheme, root: HTMLElement = document.doc
   root.style.setProperty("--surface-2", theme.surface2);
   root.style.setProperty("--primary", theme.primary);
   root.style.setProperty("--primary-hover", theme.primaryHover);
+  root.style.setProperty("--sidebar-bg", theme.sidebarBg);
+  root.style.setProperty("--sidebar-bg-soft", theme.sidebarBgSoft);
+  root.style.setProperty("--sidebar-text", theme.sidebarText);
+  root.style.setProperty("--sidebar-text-muted", theme.sidebarTextMuted);
+  root.style.setProperty("--sidebar-border", theme.sidebarBorder);
+  root.style.setProperty("--titlebar-bg", theme.titlebarBg);
   root.style.setProperty("--sage", theme.sage);
   root.style.setProperty("--sage-muted", theme.sageMuted);
   root.style.setProperty("--clay", theme.clay);
@@ -101,6 +129,10 @@ export function getThemeWarnings(theme: BrowserTheme): string[] {
 
   if (contrastRatio(theme.surface, theme.primary) < 4.5) {
     warnings.push("Primary button contrast is below 4.5:1.");
+  }
+
+  if (contrastRatio(theme.sidebarText, theme.sidebarBg) < 4.5) {
+    warnings.push("Sidebar text and sidebar background contrast is below 4.5:1.");
   }
 
   return warnings;
