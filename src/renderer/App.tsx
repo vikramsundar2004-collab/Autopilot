@@ -1473,6 +1473,9 @@ export function App(): JSX.Element {
                       placeholder="Search Google or enter an address"
                     />
                     <LockKeyhole size={19} aria-hidden="true" />
+                    <button className="empty-search-submit" type="submit">
+                      Search
+                    </button>
                   </form>
                   <span className="workspace-status">
                     Currently in <b>Browser</b> workspace
