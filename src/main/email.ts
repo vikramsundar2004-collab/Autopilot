@@ -5,6 +5,7 @@ import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 
+import { mapWithConcurrency } from "../shared/async.js";
 import {
   parseEmailSender,
   type EmailConnectResult,
@@ -78,6 +79,9 @@ const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 const GMAIL_REDIRECT_PATH = "/oauth/gmail/callback";
 const DEFAULT_GMAIL_REDIRECT_PORT = 53682;
+const DEFAULT_GMAIL_REQUEST_TIMEOUT_MS = 15_000;
+const DEFAULT_GMAIL_RETRY_ATTEMPTS = 2;
+const DEFAULT_GMAIL_MESSAGE_FETCH_CONCURRENCY = 4;
 
 function getGoogleClientId(): string {
   return (process.env.AUTOPILOT_GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "").trim();
@@ -90,6 +94,21 @@ function getGoogleClientSecret(): string {
 function getGoogleRedirectPort(): number {
   const value = Number.parseInt(process.env.AUTOPILOT_GOOGLE_REDIRECT_PORT || "", 10);
   return Number.isInteger(value) && value > 1024 && value < 65536 ? value : DEFAULT_GMAIL_REDIRECT_PORT;
+}
+
+function getGmailRequestTimeoutMs(): number {
+  const value = Number.parseInt(process.env.AUTOPILOT_GMAIL_REQUEST_TIMEOUT_MS || "", 10);
+  return Number.isInteger(value) && value >= 3000 && value <= 60000 ? value : DEFAULT_GMAIL_REQUEST_TIMEOUT_MS;
+}
+
+function getGmailRetryAttempts(): number {
+  const value = Number.parseInt(process.env.AUTOPILOT_GMAIL_RETRY_ATTEMPTS || "", 10);
+  return Number.isInteger(value) && value >= 0 && value <= 5 ? value : DEFAULT_GMAIL_RETRY_ATTEMPTS;
+}
+
+function getGmailMessageFetchConcurrency(): number {
+  const value = Number.parseInt(process.env.AUTOPILOT_GMAIL_MESSAGE_CONCURRENCY || "", 10);
+  return Number.isInteger(value) && value >= 1 && value <= 8 ? value : DEFAULT_GMAIL_MESSAGE_FETCH_CONCURRENCY;
 }
 
 function getGoogleOAuthForm(input: Record<string, string>): Record<string, string> {
@@ -232,7 +251,7 @@ function isMessageSummary(value: unknown): value is EmailMessageSummary {
 }
 
 async function postForm<T>(url: string, form: Record<string, string>): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded"
@@ -249,7 +268,7 @@ async function postForm<T>(url: string, form: Record<string, string>): Promise<T
 }
 
 async function getJson<T>(url: string, accessToken: string): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     headers: {
       authorization: `Bearer ${accessToken}`
     }
@@ -260,6 +279,76 @@ async function getJson<T>(url: string, accessToken: string): Promise<T> {
   }
 
   return body;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function getRetryDelayMs(response: Response | null, attempt: number): number {
+  const retryAfter = response?.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number.parseInt(retryAfter, 10);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(seconds * 1000, 30_000);
+    }
+
+    const dateMs = Date.parse(retryAfter);
+    if (Number.isFinite(dateMs)) {
+      return Math.min(Math.max(0, dateMs - Date.now()), 30_000);
+    }
+  }
+
+  return Math.min(500 * 2 ** attempt, 5_000);
+}
+
+function normalizeFetchError(error: unknown, url: string): Error {
+  if (error instanceof Error && error.name === "AbortError") {
+    return new Error(`Request to ${new URL(url).hostname} timed out after ${Math.round(getGmailRequestTimeoutMs() / 1000)} seconds.`);
+  }
+
+  return error instanceof Error ? error : new Error("Network request failed.");
+}
+
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  const maxAttempts = getGmailRetryAttempts() + 1;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), getGmailRequestTimeoutMs());
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal
+      });
+
+      if (!isRetryableStatus(response.status) || attempt === maxAttempts - 1) {
+        return response;
+      }
+
+      await response.body?.cancel().catch(() => undefined);
+      clearTimeout(timeout);
+      await delay(getRetryDelayMs(response, attempt));
+    } catch (error) {
+      lastError = normalizeFetchError(error, url);
+      clearTimeout(timeout);
+      if (attempt === maxAttempts - 1) {
+        throw lastError;
+      }
+
+      await delay(getRetryDelayMs(null, attempt));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw lastError ?? new Error("Network request failed.");
 }
 
 function getHeader(message: GmailMessageResponse, headerName: string): string {
@@ -487,13 +576,11 @@ export class EmailService {
       );
       const messageRefs = list.messages ?? [];
       const messages = (
-        await Promise.all(
-          messageRefs.map((message) =>
-            getJson<GmailMessageResponse>(
-              `${GMAIL_API_BASE}/messages/${message.id}?format=full`,
-              accessToken
-            )
-          )
+        await mapWithConcurrency(
+          messageRefs,
+          getGmailMessageFetchConcurrency(),
+          (message) =>
+            getJson<GmailMessageResponse>(`${GMAIL_API_BASE}/messages/${message.id}?format=full`, accessToken)
         )
       )
         .map(toMessageSummary)
