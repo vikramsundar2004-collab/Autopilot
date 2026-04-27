@@ -75,4 +75,18 @@ describe("browser preview autopilot api", () => {
     const afterClose = await api.tabs.close(activeId as string);
     expect(afterClose.tabs).toHaveLength(initial.tabs.length);
   });
+
+  it("can create a new tab directly at a requested url", async () => {
+    const api = createPreviewAutopilotApi();
+    const afterCreate = await api.tabs.create("https://mail.google.com/mail/u/0/#inbox/thread-1");
+
+    const activeTab = afterCreate.tabs.find((tab) => tab.id === afterCreate.activeTabId);
+
+    expect(activeTab).toEqual(
+      expect.objectContaining({
+        title: "mail.google.com",
+        url: "https://mail.google.com/mail/u/0/#inbox/thread-1"
+      })
+    );
+  });
 });

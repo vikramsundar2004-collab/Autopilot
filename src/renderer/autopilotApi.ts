@@ -35,7 +35,7 @@ type ViewBounds = {
 
 type TabsApi = {
   getSnapshot: () => Promise<BrowserSnapshot>;
-  create: () => Promise<BrowserSnapshot>;
+  create: (url?: string) => Promise<BrowserSnapshot>;
   close: (tabId: string) => Promise<BrowserSnapshot>;
   activate: (tabId: string) => Promise<BrowserSnapshot>;
   navigate: (tabId: string, input: string) => Promise<BrowserSnapshot>;
@@ -284,8 +284,9 @@ export function createPreviewAutopilotApi(): AutopilotApi {
     },
     tabs: {
       getSnapshot: async () => cloneSnapshot(snapshot),
-      create: async () => {
-        const nextTab = createTab(createHomeUrl(), "Preview tab");
+      create: async (url = createHomeUrl()) => {
+        const normalizedUrl = normalizeAddressInput(url, createHomeUrl());
+        const nextTab = createTab(normalizedUrl, readableTitle("", normalizedUrl));
         return publish({
           tabs: [...snapshot.tabs, nextTab],
           activeTabId: nextTab.id

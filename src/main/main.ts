@@ -48,7 +48,7 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   }
 
   ipcMain.handle("tabs:snapshot", () => controller.getSnapshot());
-  ipcMain.handle("tabs:create", () => controller.createTab());
+  ipcMain.handle("tabs:create", (_event, url?: string) => controller.createTab(url));
   ipcMain.handle("tabs:close", (_event, tabId: string) => controller.closeTab(tabId));
   ipcMain.handle("tabs:activate", (_event, tabId: string) => controller.activateTab(tabId));
   ipcMain.handle("tabs:navigate", (_event, tabId: string, input: string) => controller.navigate(tabId, input));

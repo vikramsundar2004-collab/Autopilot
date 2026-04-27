@@ -25,7 +25,7 @@ type ViewBounds = {
 
 type TabsApi = {
   getSnapshot: () => Promise<BrowserSnapshot>;
-  create: () => Promise<BrowserSnapshot>;
+  create: (url?: string) => Promise<BrowserSnapshot>;
   close: (tabId: string) => Promise<BrowserSnapshot>;
   activate: (tabId: string) => Promise<BrowserSnapshot>;
   navigate: (tabId: string, input: string) => Promise<BrowserSnapshot>;

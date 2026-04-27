@@ -376,7 +376,6 @@ export function App(): JSX.Element {
   const [emailMessages, setEmailMessages] = useState<EmailMessageSummary[]>([]);
   const [emailSyncStatus, setEmailSyncStatus] = useState("");
   const [emailBusy, setEmailBusy] = useState(false);
-  const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [selectedProductivitySources, setSelectedProductivitySources] = useState<ProductivitySourceId[]>(() => loadProductivitySources());
   const [selectedActionSource, setSelectedActionSource] = useState<ActionItemSource | "All">("All");
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -452,12 +451,6 @@ export function App(): JSX.Element {
     const labels = new Map(bookmarkSources.map((source) => [source.id, source.label]));
     return selectedBookmarkSources.map((sourceId) => labels.get(sourceId) ?? sourceId).join(", ");
   }, [bookmarkSources, selectedBookmarkSources]);
-
-  useEffect(() => {
-    if (selectedEmailId && !emailMessages.some((message) => message.id === selectedEmailId)) {
-      setSelectedEmailId(null);
-    }
-  }, [emailMessages, selectedEmailId]);
 
   const applyBookmarks = useCallback((nextBookmarks: BrowserBookmarkNode[]) => {
     setBookmarks(nextBookmarks);
@@ -756,13 +749,14 @@ export function App(): JSX.Element {
   }
 
   async function openEmailInBrowser(message: EmailMessageSummary): Promise<void> {
-    setEmailSyncStatus(`Opening ${message.subject || "email"} in a browser tab...`);
-    const snapshot = await autopilot.tabs.create();
-    const tabId = snapshot.activeTabId;
-    if (tabId) {
-      await autopilot.tabs.navigate(tabId, message.url);
+    try {
+      setEmailSyncStatus(`Opening ${message.subject || "email"} in a browser tab...`);
+      await autopilot.tabs.create(message.url);
+      setView("browser");
+      setEmailSyncStatus(`Opened ${message.subject || "email"} in a new tab.`);
+    } catch {
+      setEmailSyncStatus("Autopilot could not open that email. Sync Gmail again and try once more.");
     }
-    setView("browser");
   }
 
   function deleteTab(tabId = activeTabId): void {
@@ -1072,7 +1066,6 @@ export function App(): JSX.Element {
     const status = await autopilot.email.disconnect();
     setEmailStatus(status);
     setEmailMessages([]);
-    setSelectedEmailId(null);
     setEmailSyncStatus("Gmail disconnected.");
     setEmailBusy(false);
   }
@@ -1582,12 +1575,12 @@ export function App(): JSX.Element {
                   ) : (
                     <div className="email-message-list">
                       {emailMessages.slice(0, 8).map((message) => (
-                        <article className={`email-message ${message.unread ? "unread" : ""} ${selectedEmailId === message.id ? "selected" : ""}`} key={message.id}>
+                        <article className={`email-message ${message.unread ? "unread" : ""}`} key={message.id}>
                           <button
                             className="email-message-summary"
                             type="button"
-                            aria-expanded={selectedEmailId === message.id}
-                            onClick={() => setSelectedEmailId((currentId) => (currentId === message.id ? null : message.id))}
+                            aria-label={`Open ${message.subject || "email"} in the browser`}
+                            onClick={() => void openEmailInBrowser(message)}
                           >
                             <span className="email-message-icon" aria-hidden="true">
                               <Mail size={16} />
@@ -1604,16 +1597,12 @@ export function App(): JSX.Element {
                               <p>{message.snippet}</p>
                             </div>
                           </button>
-                          {selectedEmailId === message.id && (
-                            <div className="email-message-preview">
-                              <p>{message.snippet || "No preview text was included with this email."}</p>
-                              {message.actionText && message.actionText !== message.snippet ? <p>{message.actionText}</p> : null}
-                              <button className="secondary-action email-full-button" type="button" onClick={() => void openEmailInBrowser(message)}>
-                                Show full email
-                                <ArrowRight size={16} aria-hidden="true" />
-                              </button>
-                            </div>
-                          )}
+                          <div className="email-message-actions">
+                            <button className="secondary-action email-full-button" type="button" onClick={() => void openEmailInBrowser(message)}>
+                              Show full email
+                              <ArrowRight size={16} aria-hidden="true" />
+                            </button>
+                          </div>
                         </article>
                       ))}
                     </div>

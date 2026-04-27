@@ -20,7 +20,7 @@ import type { PageTextCaptureResult } from "../shared/productivity.js";
 
 const tabsApi = {
   getSnapshot: () => ipcRenderer.invoke("tabs:snapshot") as Promise<BrowserSnapshot>,
-  create: () => ipcRenderer.invoke("tabs:create") as Promise<BrowserSnapshot>,
+  create: (url?: string) => ipcRenderer.invoke("tabs:create", url) as Promise<BrowserSnapshot>,
   close: (tabId: string) => ipcRenderer.invoke("tabs:close", tabId) as Promise<BrowserSnapshot>,
   activate: (tabId: string) => ipcRenderer.invoke("tabs:activate", tabId) as Promise<BrowserSnapshot>,
   navigate: (tabId: string, input: string) => ipcRenderer.invoke("tabs:navigate", tabId, input) as Promise<BrowserSnapshot>,

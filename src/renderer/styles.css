@@ -1740,7 +1740,7 @@ input:focus-visible,
   background: color-mix(in srgb, var(--sage-muted) 28%, var(--surface));
 }
 
-.email-message.selected {
+.email-message:focus-within {
   border-color: color-mix(in srgb, var(--primary) 42%, var(--border));
   box-shadow: 0 12px 32px rgba(31, 74, 55, 0.1);
 }
@@ -1832,26 +1832,17 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.email-message-preview {
-  display: grid;
-  gap: 10px;
-  margin: 0 11px 11px 55px;
-  border-top: 1px dashed color-mix(in srgb, var(--border) 86%, transparent);
-  padding-top: 10px;
-}
-
-.email-message-preview p {
-  margin: 0;
-  color: color-mix(in srgb, var(--text-muted) 78%, var(--text));
-  font-size: 13px;
-  line-height: 1.45;
+.email-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 13px 13px 55px;
 }
 
 .email-full-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  justify-self: start;
+  justify-self: end;
   gap: 8px;
   min-height: 36px;
   padding: 0 12px;
@@ -2879,8 +2870,9 @@ input:focus-visible,
     justify-self: start;
   }
 
-  .email-message-preview {
-    margin-left: 11px;
+  .email-message-actions {
+    justify-content: flex-start;
+    padding-left: 11px;
   }
 
   .action-checklist-heading {

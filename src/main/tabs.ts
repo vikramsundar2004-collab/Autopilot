@@ -541,8 +541,10 @@ export class TabController {
 
   createTab(url = createHomeUrl()): BrowserSnapshot {
     const id = crypto.randomUUID();
-    const shouldOpenPdfExternally = isExternalPdfUrl(url);
-    const initialUrl = shouldOpenPdfExternally ? createPdfExternalNoticeUrl(url) : url;
+    const requestedUrl = normalizeAddressInput(typeof url === "string" ? url : "", createHomeUrl());
+    const safeUrl = isSafeBrowserUrl(requestedUrl) ? requestedUrl : createHomeUrl();
+    const shouldOpenPdfExternally = isExternalPdfUrl(safeUrl);
+    const initialUrl = shouldOpenPdfExternally ? createPdfExternalNoticeUrl(safeUrl) : safeUrl;
     const view = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "browserViewPreload.cjs"),
@@ -621,7 +623,7 @@ export class TabController {
     void view.webContents.loadURL(initialUrl);
     this.refreshMemoryMetrics();
     if (shouldOpenPdfExternally) {
-      openPdfInSystem(url);
+      openPdfInSystem(safeUrl);
     }
     this.reconcileAttachedView();
     this.emit();
