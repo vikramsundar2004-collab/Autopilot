@@ -1,5 +1,6 @@
 import { app, dialog, type BrowserWindow } from "electron";
 import { spawn } from "node:child_process";
+import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -23,6 +24,7 @@ const MAX_TREE_CHILDREN = 160;
 const MAX_SEARCH_RESULTS = 80;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 60_000;
 
 const SKIPPED_DIRECTORIES = new Set([
@@ -38,6 +40,7 @@ const SKIPPED_DIRECTORIES = new Set([
 ]);
 
 const TEXT_EXTENSIONS = new Set([
+  ".astro",
   ".c",
   ".cc",
   ".cfg",
@@ -47,33 +50,67 @@ const TEXT_EXTENSIONS = new Set([
   ".css",
   ".csv",
   ".cts",
+  ".dart",
   ".env",
+  ".erb",
   ".go",
   ".graphql",
   ".h",
+  ".hpp",
   ".html",
+  ".ini",
   ".java",
   ".js",
   ".json",
   ".jsx",
+  ".kt",
+  ".kts",
+  ".less",
   ".log",
+  ".lua",
   ".md",
   ".mdx",
   ".mjs",
+  ".mts",
+  ".php",
+  ".pl",
+  ".properties",
   ".py",
+  ".r",
   ".rb",
   ".rs",
+  ".rtf",
+  ".sass",
   ".scss",
   ".sh",
   ".sql",
+  ".svelte",
   ".svg",
+  ".tex",
   ".toml",
   ".ts",
   ".tsx",
   ".txt",
+  ".vue",
   ".xml",
   ".yaml",
   ".yml"
+]);
+
+const TEXT_FILE_NAMES = new Set([
+  ".babelrc",
+  ".dockerignore",
+  ".editorconfig",
+  ".eslintignore",
+  ".eslintrc",
+  ".gitattributes",
+  ".gitignore",
+  ".npmrc",
+  ".prettierrc",
+  "dockerfile",
+  "license",
+  "makefile",
+  "readme"
 ]);
 
 const IMAGE_MIME_BY_EXTENSION = new Map([
@@ -84,6 +121,10 @@ const IMAGE_MIME_BY_EXTENSION = new Map([
   [".jpeg", "image/jpeg"],
   [".png", "image/png"],
   [".webp", "image/webp"]
+]);
+
+const DOCUMENT_MIME_BY_EXTENSION = new Map([
+  [".pdf", "application/pdf"]
 ]);
 
 function getProjectsFilePath(): string {
@@ -127,6 +168,70 @@ function inferLanguage(fileName: string): string {
   }
 
   return extension;
+}
+
+function isTextFilePath(filePath: string): boolean {
+  const extension = path.extname(filePath).toLowerCase();
+  const baseName = path.basename(filePath).toLowerCase();
+  return TEXT_EXTENSIONS.has(extension) || TEXT_FILE_NAMES.has(baseName) || baseName.startsWith(".env.");
+}
+
+function looksLikeTextSample(sample: Buffer): boolean {
+  if (sample.length === 0) {
+    return true;
+  }
+
+  let suspiciousBytes = 0;
+  for (const byte of sample) {
+    if (byte === 0) {
+      return false;
+    }
+
+    if (byte < 7 || (byte > 13 && byte < 32)) {
+      suspiciousBytes += 1;
+    }
+  }
+
+  return suspiciousBytes / sample.length < 0.05;
+}
+
+async function looksLikeTextFile(filePath: string, stats: Stats): Promise<boolean> {
+  if (stats.size > MAX_TEXT_BYTES) {
+    return false;
+  }
+
+  if (isTextFilePath(filePath)) {
+    return true;
+  }
+
+  const sampleSize = Math.min(stats.size, 4096);
+  if (sampleSize === 0) {
+    return true;
+  }
+
+  const handle = await fs.open(filePath, "r");
+  try {
+    const sample = Buffer.alloc(sampleSize);
+    const { bytesRead } = await handle.read(sample, 0, sampleSize, 0);
+    return looksLikeTextSample(sample.subarray(0, bytesRead));
+  } finally {
+    await handle.close();
+  }
+}
+
+function limitDirectoryEntries(entries: Dirent[], limit: number | null): Dirent[] {
+  if (limit === null || entries.length <= limit) {
+    return entries;
+  }
+
+  const folders = entries.filter((entry) => entry.isDirectory());
+  const files = entries.filter((entry) => entry.isFile());
+  const desiredFileSlots = Math.min(files.length, Math.max(Math.ceil(limit / 3), limit - folders.length));
+  const folderSlots = Math.max(0, limit - desiredFileSlots);
+  const selectedFolders = folders.slice(0, folderSlots);
+  const selectedFiles = files.slice(0, limit - selectedFolders.length);
+
+  return [...selectedFolders, ...selectedFiles];
 }
 
 function normalizeResearchInput(input: string): string {
@@ -412,7 +517,7 @@ export class CodingWorkspace {
           name: path.basename(resolvedPath) || activeProject.name,
           path: resolvedPath,
           relativePath,
-          entries: await this.listDirectory(activeProject.rootPath, resolvedPath)
+          entries: await this.listDirectory(activeProject.rootPath, resolvedPath, { limit: null })
         };
       }
 
@@ -450,7 +555,36 @@ export class CodingWorkspace {
         };
       }
 
-      if (!TEXT_EXTENSIONS.has(extension) || stats.size > MAX_TEXT_BYTES) {
+      const documentMime = DOCUMENT_MIME_BY_EXTENSION.get(extension);
+      if (documentMime) {
+        if (stats.size > MAX_DOCUMENT_BYTES) {
+          return {
+            success: true,
+            kind: "binary",
+            name: path.basename(resolvedPath),
+            path: resolvedPath,
+            relativePath,
+            reason: "This document is too large to preview inside the coding workspace.",
+            size: stats.size,
+            modifiedAt: stats.mtimeMs
+          };
+        }
+
+        const data = await fs.readFile(resolvedPath);
+        return {
+          success: true,
+          kind: "document",
+          name: path.basename(resolvedPath),
+          path: resolvedPath,
+          relativePath,
+          dataUrl: `data:${documentMime};base64,${data.toString("base64")}`,
+          mime: documentMime,
+          size: stats.size,
+          modifiedAt: stats.mtimeMs
+        };
+      }
+
+      if (!(await looksLikeTextFile(resolvedPath, stats))) {
         return {
           success: true,
           kind: "binary",
@@ -500,8 +634,7 @@ export class CodingWorkspace {
         return { success: false, reason: "Autopilot can only save text files." };
       }
 
-      const extension = path.extname(resolvedPath).toLowerCase();
-      if (!TEXT_EXTENSIONS.has(extension)) {
+      if (!(await looksLikeTextFile(resolvedPath, stats))) {
         return { success: false, reason: "Autopilot will not overwrite this binary file." };
       }
 
@@ -625,7 +758,12 @@ export class CodingWorkspace {
       const normalizedRelativePath = relativePath.toLowerCase();
       const normalizedName = entry.name.toLowerCase();
       if (normalizedName.includes(query) || normalizedRelativePath.includes(query)) {
-        const stats = await fs.stat(entryPath);
+        let stats;
+        try {
+          stats = await fs.stat(entryPath);
+        } catch {
+          continue;
+        }
         results.push({
           kind: entry.isDirectory() ? "folder" : "file",
           name: entry.name,
@@ -643,7 +781,11 @@ export class CodingWorkspace {
     }
   }
 
-  private async listDirectory(rootPath: string, directoryPath: string): Promise<CodingDirectoryEntry[]> {
+  private async listDirectory(
+    rootPath: string,
+    directoryPath: string,
+    options: { limit: number | null } = { limit: MAX_TREE_CHILDREN }
+  ): Promise<CodingDirectoryEntry[]> {
     const entries = await fs.readdir(directoryPath, { withFileTypes: true });
     const visibleEntries = entries
       .filter((entry) => (entry.isDirectory() || entry.isFile()) && !(entry.isDirectory() && SKIPPED_DIRECTORIES.has(entry.name)))
@@ -654,9 +796,10 @@ export class CodingWorkspace {
 
         return leftEntry.name.localeCompare(rightEntry.name, undefined, { sensitivity: "base" });
       });
-    const truncated = visibleEntries.length > MAX_TREE_CHILDREN;
+    const selectedEntries = limitDirectoryEntries(visibleEntries, options.limit);
+    const truncated = selectedEntries.length < visibleEntries.length;
     const nodes: CodingDirectoryEntry[] = [];
-    for (const entry of visibleEntries.slice(0, MAX_TREE_CHILDREN)) {
+    for (const entry of selectedEntries) {
       const entryPath = path.join(directoryPath, entry.name);
       let stats;
       try {
@@ -694,7 +837,7 @@ export class CodingWorkspace {
       return node;
     }
 
-    const entries = await this.listDirectory(rootPath, targetPath);
+    const entries = await this.listDirectory(rootPath, targetPath, { limit: MAX_TREE_CHILDREN });
     node.children = [];
     for (const entry of entries) {
       if (entry.kind === "folder") {

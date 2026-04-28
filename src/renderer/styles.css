@@ -1852,6 +1852,7 @@ input:focus-visible,
 .coding-folder-view,
 .coding-editor-shell,
 .coding-image-view,
+.coding-document-view,
 .coding-plugin-market,
 .coding-terminal-panel,
 .coding-browser-panel,
@@ -2103,6 +2104,19 @@ input:focus-visible,
   border-radius: 12px;
   object-fit: contain;
   box-shadow: 0 18px 42px rgba(51, 39, 31, 0.14);
+}
+
+.coding-document-view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.coding-document-frame {
+  width: 100%;
+  min-height: 68vh;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 92%, white);
 }
 
 .coding-binary-view {

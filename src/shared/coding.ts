@@ -61,6 +61,17 @@ export type CodingFileReadResult =
     }
   | {
       success: true;
+      kind: "document";
+      name: string;
+      path: string;
+      relativePath: string;
+      dataUrl: string;
+      mime: string;
+      size: number;
+      modifiedAt: number;
+    }
+  | {
+      success: true;
       kind: "binary";
       name: string;
       path: string;

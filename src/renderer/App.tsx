@@ -564,6 +564,10 @@ function getCodingTabIcon(kind: CodingWorkbenchTab["kind"], file?: CodingOpenedF
     return ImageIcon;
   }
 
+  if (file?.kind === "document") {
+    return FileText;
+  }
+
   if (kind === "folder" || file?.kind === "directory") {
     return FolderOpen;
   }
@@ -2507,6 +2511,23 @@ export function App(): JSX.Element {
                       <div className="coding-image-stage">
                         <img src={activeCodingTab.file.dataUrl} alt={activeCodingTab.file.name} />
                       </div>
+                    </section>
+                  )}
+
+                  {activeCodingTab.kind === "file" && activeCodingTab.file?.kind === "document" && (
+                    <section className="coding-document-view" aria-label={`${activeCodingTab.title} document`}>
+                      <div className="coding-content-heading">
+                        <div>
+                          <p className="panel-kicker">Document preview</p>
+                          <h2>{activeCodingTab.file.relativePath}</h2>
+                        </div>
+                        <span>{formatFileSize(activeCodingTab.file.size)}</span>
+                      </div>
+                      <iframe
+                        className="coding-document-frame"
+                        src={activeCodingTab.file.dataUrl}
+                        title={`${activeCodingTab.file.name} preview`}
+                      />
                     </section>
                   )}
 
