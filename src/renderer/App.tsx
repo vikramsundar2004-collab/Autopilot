@@ -73,7 +73,7 @@ import {
 } from "./productivity";
 import { applyTheme, getThemeWarnings, loadTheme, resetTheme, saveTheme } from "./theme";
 
-type AppView = "browser" | "productivity" | "settings";
+type AppView = "browser" | "coding" | "productivity" | "settings";
 
 type BookmarkContextMenu = {
   x: number;
@@ -111,11 +111,110 @@ const colorControls: Array<{ key: keyof BrowserTheme; label: string }> = [
 
 const workspaceItems: Array<{ label: string; color: string; icon: LucideIcon; view: AppView }> = [
   { label: "browsing", color: "blue", icon: Globe2, view: "browser" },
-  { label: "coding", color: "violet", icon: Code2, view: "browser" },
+  { label: "coding", color: "violet", icon: Code2, view: "coding" },
   { label: "productivity", color: "green", icon: Check, view: "productivity" },
   { label: "chatting", color: "orange", icon: MessageCircle, view: "browser" },
   { label: "design", color: "pink", icon: Palette, view: "browser" }
 ];
+
+type CodingFileItem = {
+  name: string;
+  kind: "folder" | "folder-open" | "file";
+  level: number;
+  active?: boolean;
+  status?: string;
+};
+
+type CodingTabItem = {
+  name: string;
+  path: string;
+  status?: string;
+};
+
+const codingFiles: CodingFileItem[] = [
+  { name: ".vscode", kind: "folder", level: 0 },
+  { name: "apps", kind: "folder-open", level: 0 },
+  { name: "api", kind: "folder-open", level: 1 },
+  { name: "src", kind: "folder-open", level: 2 },
+  { name: "controllers", kind: "folder-open", level: 3 },
+  { name: "events.controller.ts", kind: "file", level: 4, active: true, status: "M" },
+  { name: "users.controller.ts", kind: "file", level: 4 },
+  { name: "services", kind: "folder", level: 3 },
+  { name: "event.service.ts", kind: "file", level: 4 },
+  { name: "routes.ts", kind: "file", level: 2 },
+  { name: "packages", kind: "folder", level: 0 },
+  { name: "ui", kind: "folder", level: 1 },
+  { name: "pnpm-workspace.yaml", kind: "file", level: 0 },
+  { name: "README.md", kind: "file", level: 0 }
+];
+
+const codingTabs: CodingTabItem[] = [
+  { name: "events.controller.ts", path: "apps/api/src/controllers", status: "M" },
+  { name: "event.service.ts", path: "apps/api/src/services" },
+  { name: "routes.ts", path: "apps/api/src" },
+  { name: "CreateEventDto.ts", path: "apps/api/src/dto" }
+];
+
+const codingPlugins = [
+  { name: "ESLint", description: "JavaScript and TypeScript diagnostics", vendor: "Microsoft", latency: "112ms", accent: "orange" },
+  { name: "Prettier", description: "Code formatting and save actions", vendor: "Prettier", latency: "46ms", accent: "blue" },
+  { name: "GitLens", description: "Inline blame, history, and branch context", vendor: "GitKraken", latency: "150ms", accent: "pink" },
+  { name: "Tailwind CSS", description: "Class hints and design tokens", vendor: "Tailwind Labs", latency: "78ms", accent: "cyan" }
+] as const;
+
+const codingCodeLines = [
+  "import { Controller, Get, Query, Param, UseGuards } from '@nestjs/common';",
+  "import { EventsService } from '../services/event.service';",
+  "import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';",
+  "import { JwtAuthGuard } from '../../lib/jwt-auth.guard';",
+  "import { ListEventsQueryDto } from '../dto/list-events-query.dto';",
+  "",
+  "@ApiTags('events')",
+  "@ApiBearerAuth()",
+  "@UseGuards(JwtAuthGuard)",
+  "@Controller('events')",
+  "export class EventsController {",
+  "  constructor(private readonly eventsService: EventsService) {}",
+  "",
+  "  @Get()",
+  "  @ApiQuery({ name: 'cursor', required: false, type: String })",
+  "  @ApiQuery({ name: 'limit', required: false, type: Number })",
+  "  async list(@Query() query: ListEventsQueryDto) {",
+  "    return this.eventsService.list(query);",
+  "  }",
+  "",
+  "  @Get(':id')",
+  "  async get(@Param('id') id: string) {",
+  "    return this.eventsService.getById(id);",
+  "  }",
+  "}"
+] as const;
+
+const codingTerminalLines = [
+  "PS C:\\Projects\\aurora-app> pnpm dev",
+  "> aurora-api dev C:\\Projects\\aurora-app",
+  "> nx run-many --target=dev --parallel",
+  "",
+  "api  Local: http://localhost:3001",
+  "web  Local: http://localhost:5173",
+  "api  File change detected. Starting incremental compilation..."
+] as const;
+
+const codingAgentChanges = [
+  { file: "events.controller.ts", path: "apps/api/src/controllers", added: 24, removed: 6 },
+  { file: "list-events-query.dto.ts", path: "apps/api/src/dto", added: 15, removed: 2 }
+] as const;
+
+const codingDiffLines = [
+  "- @ApiQuery({ name: 'page', required: false })",
+  "- @ApiQuery({ name: 'limit', required: false })",
+  "+ @ApiQuery({",
+  "+   name: 'cursor',",
+  "+   required: false,",
+  "+   description: 'Cursor for the next page'",
+  "+ })",
+  "+ @ApiQuery({ name: 'limit', type: Number })"
+] as const;
 
 const productivitySourceOptions: Array<{
   id: ProductivitySourceId;
@@ -1170,7 +1269,7 @@ export function App(): JSX.Element {
             <nav className="workspace-list" aria-label="Workspaces">
               {workspaceItems.map((item, index) => {
                 const Icon = item.icon;
-                const isActive = item.view === "productivity" ? view === "productivity" : index === 0 && view === "browser";
+                const isActive = item.view === "browser" ? index === 0 && view === "browser" : view === item.view;
                 return (
                   <button
                     className={`workspace-item ${item.color} ${isActive ? "active" : ""}`}
@@ -1210,6 +1309,30 @@ export function App(): JSX.Element {
               <div className="productivity-sidebar-note">
                 <strong>Sources live in the workspace</strong>
                 <span>Choose Gmail, Calendar, Outlook, or Slack there.</span>
+              </div>
+            </section>
+          ) : view === "coding" ? (
+            <section className="sidebar-section with-divider coding-sidebar" aria-labelledby="coding-sidebar-heading">
+              <p className="sidebar-heading" id="coding-sidebar-heading">
+                Coding
+              </p>
+              <div className="productivity-sidebar-stat">
+                <Code2 size={16} aria-hidden="true" />
+                <span>
+                  <strong>4</strong>
+                  <small>Open files</small>
+                </span>
+              </div>
+              <div className="productivity-sidebar-stat">
+                <Check size={16} aria-hidden="true" />
+                <span>
+                  <strong>2</strong>
+                  <small>Applied edits</small>
+                </span>
+              </div>
+              <div className="productivity-sidebar-note">
+                <strong>Agent panel is ready</strong>
+                <span>Ask for edits, review diffs, then apply or undo.</span>
               </div>
             </section>
           ) : (
@@ -1396,7 +1519,15 @@ export function App(): JSX.Element {
             <button className="icon-preview-trigger app-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
               <img className="app-logo" src="./autopilot-logo.svg" alt="" />
             </button>
-            <strong>{view === "productivity" ? "Autopilot Productivity" : view === "settings" ? "Autopilot Settings" : "Autopilot Browser"}</strong>
+            <strong>
+              {view === "productivity"
+                ? "Autopilot Productivity"
+                : view === "coding"
+                  ? "Autopilot Coding"
+                  : view === "settings"
+                    ? "Autopilot Settings"
+                    : "Autopilot Browser"}
+            </strong>
           </div>
         </header>
 
@@ -1490,6 +1621,156 @@ export function App(): JSX.Element {
               </div>
             )}
           </div>
+
+          {view === "coding" && (
+            <section className="coding-page" aria-labelledby="coding-heading">
+              <div className="coding-activity-rail" aria-label="Coding tools">
+                {[FolderOpen, Search, Code2, ListChecks, Settings].map((Icon, index) => (
+                  <button className={index === 0 ? "active" : ""} key={index} type="button" aria-label={`Coding tool ${index + 1}`}>
+                    <Icon size={18} />
+                  </button>
+                ))}
+              </div>
+
+              <aside className="coding-explorer" aria-label="Project explorer">
+                <div className="coding-panel-heading">
+                  <div>
+                    <p className="panel-kicker">Explorer</p>
+                    <h2 id="coding-heading">Aurora app</h2>
+                  </div>
+                  <button type="button" aria-label="New file">
+                    <Plus size={15} />
+                  </button>
+                </div>
+                <div className="coding-tree">
+                  {codingFiles.map((file) => {
+                    const FileIcon = file.kind === "folder-open" ? FolderOpen : file.kind === "folder" ? Folder : Code2;
+                    return (
+                      <button
+                        className={`coding-file ${file.active ? "active" : ""}`}
+                        key={`${file.level}-${file.name}`}
+                        style={{ "--file-level": file.level } as CSSProperties}
+                        type="button"
+                      >
+                        <FileIcon size={15} aria-hidden="true" />
+                        <span>{file.name}</span>
+                        {file.status && <b>{file.status}</b>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </aside>
+
+              <aside className="coding-plugins" aria-label="Plugins">
+                <div className="coding-panel-heading">
+                  <div>
+                    <p className="panel-kicker">Plugins</p>
+                    <h2>Installed</h2>
+                  </div>
+                  <span>12</span>
+                </div>
+                <div className="coding-plugin-list">
+                  {codingPlugins.map((plugin) => (
+                    <article className="coding-plugin" key={plugin.name}>
+                      <span className={`coding-plugin-icon ${plugin.accent}`}>{plugin.name.slice(0, 2)}</span>
+                      <div>
+                        <strong>{plugin.name}</strong>
+                        <p>{plugin.description}</p>
+                        <small>{plugin.vendor}</small>
+                      </div>
+                      <time>{plugin.latency}</time>
+                    </article>
+                  ))}
+                </div>
+              </aside>
+
+              <section className="coding-editor" aria-label="Code editor">
+                <div className="coding-editor-tabs" role="tablist" aria-label="Open code files">
+                  {codingTabs.map((tab, index) => (
+                    <button className={index === 0 ? "active" : ""} key={tab.name} type="button" role="tab" aria-selected={index === 0}>
+                      <Code2 size={13} aria-hidden="true" />
+                      <span>{tab.name}</span>
+                      {tab.status && <b>{tab.status}</b>}
+                      {index > 0 && <X size={12} aria-hidden="true" />}
+                    </button>
+                  ))}
+                </div>
+                <div className="coding-breadcrumbs" aria-label="File path">
+                  <span>apps</span>
+                  <span>api</span>
+                  <span>src</span>
+                  <span>controllers</span>
+                  <strong>events.controller.ts</strong>
+                </div>
+                <div className="coding-code" aria-label="events.controller.ts source">
+                  {codingCodeLines.map((line, index) => (
+                    <div className={`coding-code-line ${index >= 14 && index <= 16 ? "changed" : ""}`} key={`${index}-${line}`}>
+                      <span>{index + 1}</span>
+                      <code>{line || " "}</code>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="coding-terminal" aria-label="Terminal">
+                <div className="coding-terminal-tabs">
+                  <button type="button">Problems <b>2</b></button>
+                  <button type="button">Output</button>
+                  <button className="active" type="button">Terminal</button>
+                </div>
+                <pre>{codingTerminalLines.join("\n")}</pre>
+              </section>
+
+              <aside className="coding-agent" aria-label="AI coding agent">
+                <div className="coding-agent-heading">
+                  <div>
+                    <p className="panel-kicker">AI Agent</p>
+                    <h2>GPT-5.5</h2>
+                  </div>
+                  <button type="button" aria-label="New agent task">
+                    <Plus size={15} />
+                  </button>
+                </div>
+                <div className="coding-agent-prompt">Add cursor-based pagination to the events list endpoint.</div>
+                <article className="coding-agent-message">
+                  <AutopilotNeedle className="coding-agent-needle" />
+                  <p>I will update the list endpoint, add a cursor query DTO, and show the diff before applying it.</p>
+                </article>
+                <div className="coding-change-summary">
+                  {codingAgentChanges.map((change) => (
+                    <div key={change.file}>
+                      <Code2 size={13} aria-hidden="true" />
+                      <span>
+                        <strong>{change.file}</strong>
+                        <small>{change.path}</small>
+                      </span>
+                      <b>+{change.added}</b>
+                      <em>-{change.removed}</em>
+                    </div>
+                  ))}
+                </div>
+                <article className="coding-diff-card">
+                  <div>
+                    <strong>events.controller.ts</strong>
+                    <span>+24 -6</span>
+                  </div>
+                  <pre>{codingDiffLines.join("\n")}</pre>
+                </article>
+                <div className="coding-applied">
+                  <Check size={15} aria-hidden="true" />
+                  <span>Cursor pagination added. Review changes carefully.</span>
+                  <button type="button">Undo</button>
+                  <button type="button">View file</button>
+                </div>
+                <label className="coding-agent-input">
+                  <input placeholder="Ask the agent..." aria-label="Ask the coding agent" />
+                  <button type="button" aria-label="Send coding prompt">
+                    <ArrowRight size={16} />
+                  </button>
+                </label>
+              </aside>
+            </section>
+          )}
 
           {view === "productivity" && (
             <section className="productivity-page" aria-labelledby="productivity-heading">
