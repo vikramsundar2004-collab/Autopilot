@@ -1991,10 +1991,10 @@ input:focus-visible,
 .email-message-summary {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr);
-  align-items: start;
+  align-items: center;
   gap: 11px;
   width: 100%;
-  min-height: 76px;
+  min-height: 62px;
   min-width: 0;
   border: 0;
   background: transparent;
@@ -2020,7 +2020,7 @@ input:focus-visible,
 
 .email-message-copy {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -2034,8 +2034,7 @@ input:focus-visible,
 
 .email-message-topline strong,
 .email-message-topline time,
-.email-message-copy > span:not(.email-message-topline),
-.email-message-copy p {
+.email-message-copy > span:not(.email-message-topline) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2055,17 +2054,6 @@ input:focus-visible,
   font-weight: 750;
 }
 
-.email-message-copy p {
-  display: -webkit-box;
-  margin: 0;
-  color: color-mix(in srgb, var(--text-muted) 86%, var(--text));
-  font-size: 12px;
-  line-height: 1.35;
-  white-space: normal;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-}
-
 .email-message-topline time {
   justify-self: end;
   border: 0;
@@ -2080,7 +2068,7 @@ input:focus-visible,
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 12px 14px 12px 0;
+  padding: 10px 14px 10px 0;
 }
 
 .email-full-button {

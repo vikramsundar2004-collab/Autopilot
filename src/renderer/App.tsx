@@ -1626,7 +1626,6 @@ export function App(): JSX.Element {
                                 {message.from}
                                 {message.fromEmail ? ` - ${message.fromEmail}` : ""}
                               </span>
-                              <p>{message.snippet}</p>
                             </div>
                           </button>
                           <div className="email-message-actions">
