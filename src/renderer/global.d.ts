@@ -6,6 +6,7 @@ import type {
   BrowserBookmarkSourceOption
 } from "../shared/bookmarks";
 import type { BrowserSnapshot } from "../shared/browserModel";
+import type { CodingFileReadResult, CodingSnapshot, CodingWriteResult } from "../shared/coding";
 import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email";
 import type {
   PasswordAvailability,
@@ -58,6 +59,15 @@ type EmailApi = {
   disconnect: () => Promise<EmailConnectionStatus>;
 };
 
+type CodingApi = {
+  getSnapshot: () => Promise<CodingSnapshot>;
+  openProject: () => Promise<CodingSnapshot>;
+  createProject: () => Promise<CodingSnapshot>;
+  selectProject: (rootPath: string) => Promise<CodingSnapshot>;
+  readPath: (targetPath: string) => Promise<CodingFileReadResult>;
+  writeFile: (targetPath: string, content: string) => Promise<CodingWriteResult>;
+};
+
 declare global {
   interface Window {
     autopilot?: {
@@ -79,6 +89,7 @@ declare global {
       };
       passwords: PasswordsApi;
       email: EmailApi;
+      coding: CodingApi;
     };
   }
 }

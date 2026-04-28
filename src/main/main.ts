@@ -17,6 +17,7 @@ import { PasswordStore } from "./passwords.js";
 import { TabController } from "./tabs.js";
 import type { AddBookmarkFolderInput, AddBookmarkInput, BookmarkNodeTarget } from "../shared/bookmarks.js";
 import type { PasswordCaptureInput } from "../shared/passwords.js";
+import { CodingWorkspace } from "./coding.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -25,6 +26,7 @@ let tabs: TabController | null = null;
 loadAutopilotEnv();
 const passwordStore = new PasswordStore();
 const emailService = new EmailService();
+const codingWorkspace = new CodingWorkspace();
 
 function getAppIconPath(): string {
   return isDev
@@ -72,6 +74,12 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("email:connect-gmail", () => emailService.connectGmail());
   ipcMain.handle("email:sync", () => emailService.syncInbox());
   ipcMain.handle("email:disconnect", () => emailService.disconnect());
+  ipcMain.handle("coding:snapshot", () => codingWorkspace.getSnapshot());
+  ipcMain.handle("coding:open-project", () => codingWorkspace.openProject(mainWindow));
+  ipcMain.handle("coding:create-project", () => codingWorkspace.createProject(mainWindow));
+  ipcMain.handle("coding:select-project", (_event, rootPath: string) => codingWorkspace.selectProject(rootPath));
+  ipcMain.handle("coding:read-path", (_event, targetPath: string) => codingWorkspace.readPath(targetPath));
+  ipcMain.handle("coding:write-file", (_event, targetPath: string, content: string) => codingWorkspace.writeFile(targetPath, content));
   ipcMain.handle("passwords:stage", (event, input: PasswordCaptureInput) =>
     passwordStore.stage({
       ...input,

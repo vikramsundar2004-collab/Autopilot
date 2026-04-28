@@ -17,6 +17,7 @@ import {
   type BrowserBookmarkSourceOption
 } from "../shared/bookmarks";
 import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email";
+import type { CodingFileReadResult, CodingSnapshot, CodingWriteResult } from "../shared/coding";
 import type {
   PasswordAvailability,
   PasswordCredentialSummary,
@@ -78,6 +79,15 @@ type EmailApi = {
   disconnect: () => Promise<EmailConnectionStatus>;
 };
 
+type CodingApi = {
+  getSnapshot: () => Promise<CodingSnapshot>;
+  openProject: () => Promise<CodingSnapshot>;
+  createProject: () => Promise<CodingSnapshot>;
+  selectProject: (rootPath: string) => Promise<CodingSnapshot>;
+  readPath: (targetPath: string) => Promise<CodingFileReadResult>;
+  writeFile: (targetPath: string, content: string) => Promise<CodingWriteResult>;
+};
+
 export type AutopilotApi = {
   runtime: "electron" | "browser-preview";
   platform: string;
@@ -89,6 +99,7 @@ export type AutopilotApi = {
   bookmarks: BookmarksApi;
   passwords: PasswordsApi;
   email: EmailApi;
+  coding: CodingApi;
 };
 
 let previewApi: AutopilotApi | null = null;
@@ -110,6 +121,56 @@ export function createPreviewAutopilotApi(): AutopilotApi {
   let previewSelectedSources: string[] = [];
   let previewPasswords: PasswordCredentialSummary[] = [];
   let previewEmailMessages: EmailMessageSummary[] = [];
+  let previewCodingSnapshot: CodingSnapshot = {
+    projects: [
+      {
+        name: "Autopilot preview",
+        rootPath: "C:\\Projects\\autopilot-preview",
+        openedAt: Date.now()
+      }
+    ],
+    activeProject: {
+      name: "Autopilot preview",
+      rootPath: "C:\\Projects\\autopilot-preview",
+      openedAt: Date.now()
+    },
+    tree: {
+      kind: "folder",
+      name: "Autopilot preview",
+      path: "C:\\Projects\\autopilot-preview",
+      relativePath: ".",
+      size: 0,
+      modifiedAt: Date.now(),
+      children: [
+        {
+          kind: "folder",
+          name: "src",
+          path: "C:\\Projects\\autopilot-preview\\src",
+          relativePath: "src",
+          size: 0,
+          modifiedAt: Date.now(),
+          children: [
+            {
+              kind: "file",
+              name: "main.tsx",
+              path: "C:\\Projects\\autopilot-preview\\src\\main.tsx",
+              relativePath: "src\\main.tsx",
+              size: 138,
+              modifiedAt: Date.now()
+            }
+          ]
+        },
+        {
+          kind: "file",
+          name: "README.md",
+          path: "C:\\Projects\\autopilot-preview\\README.md",
+          relativePath: "README.md",
+          size: 188,
+          modifiedAt: Date.now()
+        }
+      ]
+    }
+  };
   const listeners = new Set<(snapshot: BrowserSnapshot) => void>();
   const previewEmailStatus: EmailConnectionStatus = {
     provider: "gmail",
@@ -257,6 +318,45 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         previewEmailMessages = [];
         return previewEmailStatus;
       }
+    },
+    coding: {
+      getSnapshot: async () => structuredClone(previewCodingSnapshot),
+      openProject: async () => structuredClone(previewCodingSnapshot),
+      createProject: async () => structuredClone(previewCodingSnapshot),
+      selectProject: async () => structuredClone(previewCodingSnapshot),
+      readPath: async (targetPath: string) => {
+        const name = targetPath.split(/[\\/]/).pop() || "README.md";
+        const isDirectory = targetPath.endsWith("src") || targetPath.endsWith("preview");
+        if (isDirectory) {
+          return {
+            success: true,
+            kind: "directory",
+            name,
+            path: targetPath,
+            relativePath: name,
+            entries: previewCodingSnapshot.tree?.children ?? []
+          };
+        }
+
+        return {
+          success: true,
+          kind: "text",
+          name,
+          path: targetPath,
+          relativePath: name,
+          language: name.endsWith(".md") ? "markdown" : "typescript",
+          content: name.endsWith(".md")
+            ? "# Autopilot preview\n\nOpen the desktop app to edit real files on your computer.\n"
+            : "export function App() {\n  return <main>Autopilot coding preview</main>;\n}\n",
+          size: 96,
+          modifiedAt: Date.now()
+        };
+      },
+      writeFile: async (_targetPath: string, content: string) => ({
+        success: true,
+        savedAt: Date.now(),
+        size: new TextEncoder().encode(content).length
+      })
     },
     passwords: {
       availability: async () => ({

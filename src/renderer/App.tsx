@@ -9,25 +9,33 @@ import {
   Check,
   Clock,
   Code2,
+  Download,
   Eye,
   EyeOff,
+  FileText,
   Folder,
   FolderOpen,
+  Github,
   Globe2,
+  Image as ImageIcon,
   KeyRound,
   ListChecks,
   LockKeyhole,
   Mail,
   MessageCircle,
+  Package,
   Palette,
   Plus,
   Printer,
   RotateCw,
+  Save,
   Search,
   Settings,
   ShieldCheck,
   Star,
+  Terminal,
   Trash2,
+  Wrench,
   X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -55,6 +63,7 @@ import {
   type BrowserTheme,
   type Tab
 } from "../shared/browserModel";
+import type { CodingFileReadResult, CodingPlugin, CodingSnapshot, CodingTreeNode } from "../shared/coding";
 import type { EmailConnectionStatus, EmailMessageSummary } from "../shared/email";
 import type { PasswordAvailability, PasswordCredentialSummary, PendingPasswordSave } from "../shared/passwords";
 import { getAutopilotApi } from "./autopilotApi";
@@ -117,104 +126,81 @@ const workspaceItems: Array<{ label: string; color: string; icon: LucideIcon; vi
   { label: "design", color: "pink", icon: Palette, view: "browser" }
 ];
 
-type CodingFileItem = {
-  name: string;
-  kind: "folder" | "folder-open" | "file";
-  level: number;
-  active?: boolean;
-  status?: string;
+type CodingSection = "files" | "plugins";
+
+type CodingOpenedFile = Extract<CodingFileReadResult, { success: true }>;
+
+type CodingWorkbenchTab = {
+  id: string;
+  kind: "chat" | "file" | "folder" | "picker" | "plugins";
+  title: string;
+  path?: string;
+  file?: CodingOpenedFile;
+  content?: string;
+  dirty?: boolean;
+  savedAt?: number;
 };
 
-type CodingTabItem = {
-  name: string;
-  path: string;
-  status?: string;
+const CODING_CHAT_TAB_ID = "coding-chat-home";
+
+const defaultCodingSnapshot: CodingSnapshot = {
+  projects: [],
+  activeProject: null,
+  tree: null
 };
 
-const codingFiles: CodingFileItem[] = [
-  { name: ".vscode", kind: "folder", level: 0 },
-  { name: "apps", kind: "folder-open", level: 0 },
-  { name: "api", kind: "folder-open", level: 1 },
-  { name: "src", kind: "folder-open", level: 2 },
-  { name: "controllers", kind: "folder-open", level: 3 },
-  { name: "events.controller.ts", kind: "file", level: 4, active: true, status: "M" },
-  { name: "users.controller.ts", kind: "file", level: 4 },
-  { name: "services", kind: "folder", level: 3 },
-  { name: "event.service.ts", kind: "file", level: 4 },
-  { name: "routes.ts", kind: "file", level: 2 },
-  { name: "packages", kind: "folder", level: 0 },
-  { name: "ui", kind: "folder", level: 1 },
-  { name: "pnpm-workspace.yaml", kind: "file", level: 0 },
-  { name: "README.md", kind: "file", level: 0 }
+const initialCodingTabs: CodingWorkbenchTab[] = [
+  {
+    id: CODING_CHAT_TAB_ID,
+    kind: "chat",
+    title: "Current chat"
+  }
 ];
 
-const codingTabs: CodingTabItem[] = [
-  { name: "events.controller.ts", path: "apps/api/src/controllers", status: "M" },
-  { name: "event.service.ts", path: "apps/api/src/services" },
-  { name: "routes.ts", path: "apps/api/src" },
-  { name: "CreateEventDto.ts", path: "apps/api/src/dto" }
+const codingPluginCatalog: CodingPlugin[] = [
+  {
+    id: "node",
+    name: "Node.js CLI",
+    category: "Runtime",
+    description: "Run npm, Vite, TypeScript, and JavaScript tooling from project folders.",
+    command: "winget install OpenJS.NodeJS.LTS"
+  },
+  {
+    id: "git",
+    name: "Git",
+    category: "Source control",
+    description: "Clone repositories, manage branches, and pull code from GitHub projects.",
+    command: "winget install Git.Git"
+  },
+  {
+    id: "python",
+    name: "Python",
+    category: "Runtime",
+    description: "Run Python scripts, virtual environments, notebooks, and package tools.",
+    command: "winget install Python.Python.3.12"
+  },
+  {
+    id: "eslint",
+    name: "ESLint",
+    category: "Quality",
+    description: "Show JavaScript and TypeScript lint checks beside the files you edit.",
+    command: "npm install -D eslint"
+  },
+  {
+    id: "prettier",
+    name: "Prettier",
+    category: "Formatting",
+    description: "Format supported files consistently before saving or committing.",
+    command: "npm install -D prettier"
+  },
+  {
+    id: "gh",
+    name: "GitHub CLI",
+    category: "GitHub",
+    description: "Create pull requests, authenticate GitHub, and inspect repo status.",
+    command: "winget install GitHub.cli"
+  }
 ];
-
-const codingPlugins = [
-  { name: "ESLint", description: "JavaScript and TypeScript diagnostics", vendor: "Microsoft", latency: "112ms", accent: "orange" },
-  { name: "Prettier", description: "Code formatting and save actions", vendor: "Prettier", latency: "46ms", accent: "blue" },
-  { name: "GitLens", description: "Inline blame, history, and branch context", vendor: "GitKraken", latency: "150ms", accent: "pink" },
-  { name: "Tailwind CSS", description: "Class hints and design tokens", vendor: "Tailwind Labs", latency: "78ms", accent: "cyan" }
-] as const;
-
-const codingCodeLines = [
-  "import { Controller, Get, Query, Param, UseGuards } from '@nestjs/common';",
-  "import { EventsService } from '../services/event.service';",
-  "import { ApiBearerAuth, ApiQuery, ApiTags } from '@nestjs/swagger';",
-  "import { JwtAuthGuard } from '../../lib/jwt-auth.guard';",
-  "import { ListEventsQueryDto } from '../dto/list-events-query.dto';",
-  "",
-  "@ApiTags('events')",
-  "@ApiBearerAuth()",
-  "@UseGuards(JwtAuthGuard)",
-  "@Controller('events')",
-  "export class EventsController {",
-  "  constructor(private readonly eventsService: EventsService) {}",
-  "",
-  "  @Get()",
-  "  @ApiQuery({ name: 'cursor', required: false, type: String })",
-  "  @ApiQuery({ name: 'limit', required: false, type: Number })",
-  "  async list(@Query() query: ListEventsQueryDto) {",
-  "    return this.eventsService.list(query);",
-  "  }",
-  "",
-  "  @Get(':id')",
-  "  async get(@Param('id') id: string) {",
-  "    return this.eventsService.getById(id);",
-  "  }",
-  "}"
-] as const;
-
-const codingTerminalLines = [
-  "PS C:\\Projects\\aurora-app> pnpm dev",
-  "> aurora-api dev C:\\Projects\\aurora-app",
-  "> nx run-many --target=dev --parallel",
-  "",
-  "api  Local: http://localhost:3001",
-  "web  Local: http://localhost:5173",
-  "api  File change detected. Starting incremental compilation..."
-] as const;
-
-const codingAgentChanges = [
-  { file: "events.controller.ts", path: "apps/api/src/controllers", added: 24, removed: 6 },
-  { file: "list-events-query.dto.ts", path: "apps/api/src/dto", added: 15, removed: 2 }
-] as const;
-
-const codingDiffLines = [
-  "- @ApiQuery({ name: 'page', required: false })",
-  "- @ApiQuery({ name: 'limit', required: false })",
-  "+ @ApiQuery({",
-  "+   name: 'cursor',",
-  "+   required: false,",
-  "+   description: 'Cursor for the next page'",
-  "+ })",
-  "+ @ApiQuery({ name: 'limit', type: Number })"
-] as const;
 
 const productivitySourceOptions: Array<{
   id: ProductivitySourceId;
@@ -410,6 +396,60 @@ function BookmarkTree({
   );
 }
 
+type CodingTreeProps = {
+  node: CodingTreeNode;
+  openFolders: Record<string, boolean>;
+  activePath: string | null;
+  level?: number;
+  onOpen: (node: CodingTreeNode) => void;
+};
+
+function CodingTree({ node, openFolders, activePath, level = 0, onOpen }: CodingTreeProps): JSX.Element {
+  const isFolder = node.kind === "folder";
+  const isOpen = isFolder && (level === 0 || Boolean(openFolders[node.path]));
+  const Icon = isFolder ? (isOpen ? FolderOpen : Folder) : getCodingFileIcon(node.name);
+  const isActive = activePath === node.path;
+
+  return (
+    <div className="coding-tree-node">
+      <button
+        className={`coding-file ${isActive ? "active" : ""}`}
+        style={{ "--file-level": level } as CSSProperties}
+        type="button"
+        onClick={() => onOpen(node)}
+        title={node.path}
+      >
+        <Icon size={15} aria-hidden="true" />
+        <span>{level === 0 ? node.name : node.name}</span>
+        {node.truncated && <b>More</b>}
+      </button>
+      {isFolder && isOpen && node.children && (
+        <div className="coding-tree-children">
+          {node.children.map((child) => (
+            <CodingTree
+              activePath={activePath}
+              key={child.path}
+              node={child}
+              openFolders={openFolders}
+              level={level + 1}
+              onOpen={onOpen}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getCodingFileIcon(name: string): LucideIcon {
+  const lowerName = name.toLowerCase();
+  if (/\.(png|jpe?g|gif|webp|avif|apng)$/.test(lowerName)) {
+    return ImageIcon;
+  }
+
+  return FileText;
+}
+
 function getBookmarkInitial(title: string, url: string): string {
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, "");
@@ -456,6 +496,61 @@ function formatTabMemory(memoryBytes: number | undefined): string {
   return `${Math.max(1, Math.round(megabytes))} MB`;
 }
 
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  if (bytes >= 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+
+  return `${Math.round(bytes)} B`;
+}
+
+function formatSaveTime(value: number | undefined): string {
+  if (!value) {
+    return "Not saved yet";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function createCodingTabId(kind: CodingWorkbenchTab["kind"], pathValue?: string): string {
+  return `${kind}:${pathValue ?? Date.now().toString(36)}:${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function getCodingTabIcon(kind: CodingWorkbenchTab["kind"], file?: CodingOpenedFile): LucideIcon {
+  if (kind === "chat") {
+    return MessageCircle;
+  }
+
+  if (kind === "picker") {
+    return Plus;
+  }
+
+  if (kind === "plugins") {
+    return Package;
+  }
+
+  if (file?.kind === "image") {
+    return ImageIcon;
+  }
+
+  if (kind === "folder" || file?.kind === "directory") {
+    return FolderOpen;
+  }
+
+  return FileText;
+}
+
 export function App(): JSX.Element {
   const autopilot = useMemo(() => getAutopilotApi(), []);
   const [theme, setTheme] = useState<BrowserTheme>(() => loadTheme());
@@ -491,6 +586,15 @@ export function App(): JSX.Element {
   const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth());
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [iconPreviewOpen, setIconPreviewOpen] = useState(false);
+  const [codingSnapshot, setCodingSnapshot] = useState<CodingSnapshot>(defaultCodingSnapshot);
+  const [codingTabs, setCodingTabs] = useState<CodingWorkbenchTab[]>(initialCodingTabs);
+  const [activeCodingTabId, setActiveCodingTabId] = useState(CODING_CHAT_TAB_ID);
+  const [openCodingFolders, setOpenCodingFolders] = useState<Record<string, boolean>>({});
+  const [codingSection, setCodingSection] = useState<CodingSection>("files");
+  const [codingStatus, setCodingStatus] = useState("Open a folder or create a project to start editing local files.");
+  const [codingBusy, setCodingBusy] = useState(false);
+  const [codingDraftMessage, setCodingDraftMessage] = useState("");
+  const [installedCodingPlugins, setInstalledCodingPlugins] = useState<Record<string, boolean>>({});
   const webAreaRef = useRef<HTMLDivElement | null>(null);
   const sidebarWidthRef = useRef(sidebarWidth);
 
@@ -499,6 +603,9 @@ export function App(): JSX.Element {
   const activeNavigationErrorKey = activeNavigationError ? `${activeNavigationError.code}:${activeNavigationError.url}` : "";
   const isBrowserPreview = autopilot.runtime === "browser-preview";
   const warnings = useMemo(() => getThemeWarnings(theme), [theme]);
+  const activeCodingTab = codingTabs.find((tab) => tab.id === activeCodingTabId) ?? codingTabs[0] ?? initialCodingTabs[0];
+  const activeCodingProject = codingSnapshot.activeProject;
+  const activeCodingPath = activeCodingTab?.path ?? null;
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
   const completedActionItems = useMemo(() => actionItems.filter((item) => item.completedAt), [actionItems]);
   const selectedProductivitySourceSet = useMemo(() => new Set(selectedProductivitySources), [selectedProductivitySources]);
@@ -607,6 +714,78 @@ export function App(): JSX.Element {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void autopilot.coding
+      .getSnapshot()
+      .then((snapshot) => {
+        if (cancelled) {
+          return;
+        }
+
+        setCodingSnapshot(snapshot);
+        if (snapshot.tree) {
+          setOpenCodingFolders((currentFolders) => ({
+            ...currentFolders,
+            [snapshot.tree?.path ?? ""]: true
+          }));
+          setCodingStatus(`Ready in ${snapshot.activeProject?.name ?? "project"}.`);
+        }
+      })
+      .catch(() => setCodingStatus("Coding workspace could not read local project access."));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [autopilot]);
+
+  useEffect(() => {
+    const dirtyTabs = codingTabs.filter((tab) => tab.kind === "file" && tab.file?.kind === "text" && tab.path && tab.dirty);
+    if (dirtyTabs.length === 0) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      for (const tab of dirtyTabs) {
+        if (!tab.path || typeof tab.content !== "string") {
+          continue;
+        }
+
+        void autopilot.coding.writeFile(tab.path, tab.content).then((result) => {
+          if (!result.success) {
+            setCodingStatus(result.reason);
+            return;
+          }
+
+          setCodingTabs((currentTabs) =>
+            currentTabs.map((currentTab) =>
+              currentTab.id === tab.id
+                ? {
+                    ...currentTab,
+                    dirty: false,
+                    savedAt: result.savedAt,
+                    file:
+                      currentTab.file?.kind === "text"
+                        ? {
+                            ...currentTab.file,
+                            content: currentTab.content ?? currentTab.file.content,
+                            size: result.size,
+                            modifiedAt: result.savedAt
+                          }
+                        : currentTab.file
+                  }
+                : currentTab
+            )
+          );
+          setCodingStatus(`Saved ${tab.title} to your computer.`);
+        });
+      }
+    }, 650);
+
+    return () => window.clearTimeout(timeout);
+  }, [autopilot, codingTabs]);
 
   useEffect(() => {
     const unsubscribe = autopilot.tabs.subscribe((snapshot) => {
@@ -1217,6 +1396,177 @@ export function App(): JSX.Element {
     setActionItems((currentItems) => currentItems.filter((item) => item.id !== itemId));
   }
 
+  function applyCodingSnapshot(snapshot: CodingSnapshot, status?: string): void {
+    setCodingSnapshot(snapshot);
+    if (snapshot.tree) {
+      setOpenCodingFolders((currentFolders) => ({
+        ...currentFolders,
+        [snapshot.tree?.path ?? ""]: true
+      }));
+    }
+    if (status) {
+      setCodingStatus(status);
+    }
+  }
+
+  async function openCodingProject(): Promise<void> {
+    setCodingBusy(true);
+    setCodingStatus("Choose a folder on your computer.");
+    const snapshot = await autopilot.coding.openProject().catch(() => defaultCodingSnapshot);
+    applyCodingSnapshot(snapshot, snapshot.activeProject ? `Opened ${snapshot.activeProject.name}.` : "No project selected.");
+    setCodingBusy(false);
+  }
+
+  async function createCodingProject(): Promise<void> {
+    setCodingBusy(true);
+    setCodingStatus("Choose where the new project folder should live.");
+    const snapshot = await autopilot.coding.createProject().catch(() => defaultCodingSnapshot);
+    applyCodingSnapshot(snapshot, snapshot.activeProject ? `Created ${snapshot.activeProject.name}.` : "No project created.");
+    setCodingBusy(false);
+  }
+
+  async function selectCodingProject(rootPath: string): Promise<void> {
+    setCodingBusy(true);
+    const snapshot = await autopilot.coding.selectProject(rootPath).catch(() => codingSnapshot);
+    applyCodingSnapshot(snapshot, snapshot.activeProject ? `Switched to ${snapshot.activeProject.name}.` : undefined);
+    setCodingBusy(false);
+  }
+
+  function upsertCodingTab(tab: CodingWorkbenchTab): void {
+    setCodingTabs((currentTabs) => {
+      const existingTab = currentTabs.find((currentTab) => currentTab.path && currentTab.path === tab.path && currentTab.kind === tab.kind);
+      if (existingTab) {
+        setActiveCodingTabId(existingTab.id);
+        return currentTabs.map((currentTab) => (currentTab.id === existingTab.id ? { ...currentTab, ...tab, id: existingTab.id } : currentTab));
+      }
+
+      setActiveCodingTabId(tab.id);
+      return [...currentTabs, tab];
+    });
+  }
+
+  async function openCodingPath(targetPath: string): Promise<void> {
+    setCodingBusy(true);
+    const result = await autopilot.coding.readPath(targetPath).catch(() => ({ success: false as const, reason: "Could not open that path." }));
+    if (!result.success) {
+      setCodingStatus(result.reason);
+      setCodingBusy(false);
+      return;
+    }
+
+    const tab: CodingWorkbenchTab = {
+      id: createCodingTabId(result.kind === "directory" ? "folder" : "file", result.path),
+      kind: result.kind === "directory" ? "folder" : "file",
+      title: result.name,
+      path: result.path,
+      file: result,
+      content: result.kind === "text" ? result.content : undefined,
+      savedAt: result.kind === "text" ? result.modifiedAt : undefined
+    };
+    upsertCodingTab(tab);
+    setCodingStatus(result.kind === "directory" ? `Opened folder ${result.relativePath}.` : `Opened ${result.relativePath}.`);
+    setCodingBusy(false);
+  }
+
+  function openCodingNode(node: CodingTreeNode): void {
+    if (node.kind === "folder") {
+      setOpenCodingFolders((currentFolders) => ({
+        ...currentFolders,
+        [node.path]: !currentFolders[node.path]
+      }));
+    }
+
+    void openCodingPath(node.path);
+  }
+
+  function openCodingPicker(): void {
+    const tab: CodingWorkbenchTab = {
+      id: createCodingTabId("picker"),
+      kind: "picker",
+      title: "Open file"
+    };
+    setCodingTabs((currentTabs) => [...currentTabs, tab]);
+    setActiveCodingTabId(tab.id);
+  }
+
+  function openCodingPlugins(): void {
+    setCodingSection("plugins");
+    const existingTab = codingTabs.find((tab) => tab.kind === "plugins");
+    if (existingTab) {
+      setActiveCodingTabId(existingTab.id);
+      return;
+    }
+
+    const tab: CodingWorkbenchTab = {
+      id: createCodingTabId("plugins"),
+      kind: "plugins",
+      title: "Plugins"
+    };
+    setCodingTabs((currentTabs) => [...currentTabs, tab]);
+    setActiveCodingTabId(tab.id);
+  }
+
+  function newCodingChat(): void {
+    const tab: CodingWorkbenchTab = {
+      id: createCodingTabId("chat"),
+      kind: "chat",
+      title: `Chat ${codingTabs.filter((currentTab) => currentTab.kind === "chat").length + 1}`
+    };
+    setCodingTabs((currentTabs) => [...currentTabs, tab]);
+    setActiveCodingTabId(tab.id);
+  }
+
+  function closeCodingTab(tabId: string): void {
+    setCodingTabs((currentTabs) => {
+      if (currentTabs.length === 1) {
+        return currentTabs;
+      }
+
+      const closingIndex = currentTabs.findIndex((tab) => tab.id === tabId);
+      const nextTabs = currentTabs.filter((tab) => tab.id !== tabId);
+      if (activeCodingTabId === tabId) {
+        setActiveCodingTabId(nextTabs[Math.max(0, closingIndex - 1)]?.id ?? nextTabs[0]?.id ?? CODING_CHAT_TAB_ID);
+      }
+      return nextTabs;
+    });
+  }
+
+  function updateCodingFileContent(tabId: string, content: string): void {
+    setCodingTabs((currentTabs) =>
+      currentTabs.map((tab) =>
+        tab.id === tabId
+          ? {
+              ...tab,
+              content,
+              dirty: tab.file?.kind === "text" && content !== tab.file.content
+            }
+          : tab
+      )
+    );
+  }
+
+  function installCodingPlugin(plugin: CodingPlugin): void {
+    setInstalledCodingPlugins((currentPlugins) => ({
+      ...currentPlugins,
+      [plugin.id]: true
+    }));
+    setCodingStatus(`${plugin.name} is queued. Run ${plugin.command} in the terminal when you are ready.`);
+  }
+
+  function sendCodingChatMessage(): void {
+    const message = codingDraftMessage.trim();
+    if (!message) {
+      return;
+    }
+
+    setCodingDraftMessage("");
+    setCodingStatus(`Chat saved: ${message}`);
+  }
+
+  function openGithubForCoding(): void {
+    navigateTo("https://github.com/");
+  }
+
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
     if (!sidebarOpen) {
       return;
@@ -1319,20 +1669,20 @@ export function App(): JSX.Element {
               <div className="productivity-sidebar-stat">
                 <Code2 size={16} aria-hidden="true" />
                 <span>
-                  <strong>4</strong>
+                  <strong>{codingTabs.filter((tab) => tab.kind === "file").length}</strong>
                   <small>Open files</small>
                 </span>
               </div>
               <div className="productivity-sidebar-stat">
-                <Check size={16} aria-hidden="true" />
+                <FolderOpen size={16} aria-hidden="true" />
                 <span>
-                  <strong>2</strong>
-                  <small>Applied edits</small>
+                  <strong>{codingSnapshot.projects.length}</strong>
+                  <small>Projects</small>
                 </span>
               </div>
               <div className="productivity-sidebar-note">
-                <strong>Agent panel is ready</strong>
-                <span>Ask for edits, review diffs, then apply or undo.</span>
+                <strong>{activeCodingProject?.name ?? "No project open"}</strong>
+                <span>{activeCodingProject ? "Files autosave as you edit." : "Open a local folder to start."}</span>
               </div>
             </section>
           ) : (
@@ -1625,150 +1975,329 @@ export function App(): JSX.Element {
           {view === "coding" && (
             <section className="coding-page" aria-labelledby="coding-heading">
               <div className="coding-activity-rail" aria-label="Coding tools">
-                {[FolderOpen, Search, Code2, ListChecks, Settings].map((Icon, index) => (
-                  <button className={index === 0 ? "active" : ""} key={index} type="button" aria-label={`Coding tool ${index + 1}`}>
-                    <Icon size={18} />
-                  </button>
-                ))}
+                <button className={codingSection === "files" ? "active" : ""} type="button" aria-label="Files" onClick={() => setCodingSection("files")}>
+                  <FolderOpen size={18} />
+                </button>
+                <button type="button" aria-label="Search project files">
+                  <Search size={18} />
+                </button>
+                <button className={codingSection === "plugins" ? "active" : ""} type="button" aria-label="Plugins" onClick={openCodingPlugins}>
+                  <Package size={18} />
+                </button>
+                <button type="button" aria-label="Terminal">
+                  <Terminal size={18} />
+                </button>
               </div>
 
               <aside className="coding-explorer" aria-label="Project explorer">
                 <div className="coding-panel-heading">
                   <div>
                     <p className="panel-kicker">Explorer</p>
-                    <h2 id="coding-heading">Aurora app</h2>
+                    <h2 id="coding-heading">{activeCodingProject?.name ?? "No project"}</h2>
                   </div>
-                  <button type="button" aria-label="New file">
+                  <button type="button" aria-label="Open file picker" onClick={openCodingPicker}>
                     <Plus size={15} />
                   </button>
                 </div>
-                <div className="coding-tree">
-                  {codingFiles.map((file) => {
-                    const FileIcon = file.kind === "folder-open" ? FolderOpen : file.kind === "folder" ? Folder : Code2;
+
+                <div className="coding-project-actions">
+                  <button type="button" disabled={codingBusy} onClick={() => void createCodingProject()}>
+                    <Folder size={15} aria-hidden="true" />
+                    New project
+                  </button>
+                  <button type="button" disabled={codingBusy} onClick={() => void openCodingProject()}>
+                    <Download size={15} aria-hidden="true" />
+                    Open local folder
+                  </button>
+                  <button type="button" onClick={openGithubForCoding}>
+                    <Github size={15} aria-hidden="true" />
+                    GitHub in browser
+                  </button>
+                </div>
+
+                {codingSnapshot.projects.length > 0 && (
+                  <div className="coding-project-switcher" aria-label="Recent projects">
+                    {codingSnapshot.projects.map((project) => (
+                      <button
+                        className={project.rootPath === activeCodingProject?.rootPath ? "active" : ""}
+                        key={project.rootPath}
+                        type="button"
+                        onClick={() => void selectCodingProject(project.rootPath)}
+                      >
+                        <FolderOpen size={14} aria-hidden="true" />
+                        <span>
+                          <strong>{project.name}</strong>
+                          <small>{project.rootPath}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {codingSection === "plugins" ? (
+                  <div className="coding-plugin-list compact">
+                    {codingPluginCatalog.map((plugin) => (
+                      <button key={plugin.id} type="button" onClick={() => installCodingPlugin(plugin)}>
+                        <Package size={15} aria-hidden="true" />
+                        <span>
+                          <strong>{plugin.name}</strong>
+                          <small>{installedCodingPlugins[plugin.id] ? "Queued" : plugin.category}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : codingSnapshot.tree ? (
+                  <div className="coding-tree">
+                    <CodingTree activePath={activeCodingPath} node={codingSnapshot.tree} openFolders={openCodingFolders} onOpen={openCodingNode} />
+                  </div>
+                ) : (
+                  <div className="coding-empty-explorer">
+                    <FolderOpen size={22} aria-hidden="true" />
+                    <span>Open a folder from your PC to browse and edit files.</span>
+                  </div>
+                )}
+              </aside>
+
+              <section className="coding-workbench" aria-label="Coding workspace">
+                <div className="coding-workbench-tabs" role="tablist" aria-label="Open chats and files">
+                  {codingTabs.map((tab) => {
+                    const TabIcon = getCodingTabIcon(tab.kind, tab.file);
                     return (
                       <button
-                        className={`coding-file ${file.active ? "active" : ""}`}
-                        key={`${file.level}-${file.name}`}
-                        style={{ "--file-level": file.level } as CSSProperties}
+                        className={`coding-tab ${tab.id === activeCodingTabId ? "active" : ""}`}
+                        key={tab.id}
                         type="button"
+                        role="tab"
+                        aria-selected={tab.id === activeCodingTabId}
+                        onClick={() => setActiveCodingTabId(tab.id)}
                       >
-                        <FileIcon size={15} aria-hidden="true" />
-                        <span>{file.name}</span>
-                        {file.status && <b>{file.status}</b>}
+                        <TabIcon size={14} aria-hidden="true" />
+                        <span>{tab.title}</span>
+                        {tab.dirty && <b>Unsaved</b>}
+                        {codingTabs.length > 1 && (
+                          <X
+                            size={13}
+                            aria-hidden="true"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              closeCodingTab(tab.id);
+                            }}
+                          />
+                        )}
                       </button>
                     );
                   })}
+                  <button className="coding-tab-add" type="button" aria-label="Open file tab" onClick={openCodingPicker}>
+                    <Plus size={16} />
+                  </button>
                 </div>
-              </aside>
 
-              <aside className="coding-plugins" aria-label="Plugins">
-                <div className="coding-panel-heading">
-                  <div>
-                    <p className="panel-kicker">Plugins</p>
-                    <h2>Installed</h2>
-                  </div>
-                  <span>12</span>
-                </div>
-                <div className="coding-plugin-list">
-                  {codingPlugins.map((plugin) => (
-                    <article className="coding-plugin" key={plugin.name}>
-                      <span className={`coding-plugin-icon ${plugin.accent}`}>{plugin.name.slice(0, 2)}</span>
-                      <div>
-                        <strong>{plugin.name}</strong>
-                        <p>{plugin.description}</p>
-                        <small>{plugin.vendor}</small>
+                <div className="coding-workbench-content">
+                  {activeCodingTab.kind === "chat" && (
+                    <section className="coding-chat" aria-label="Coding chat">
+                      <div className="coding-chat-hero">
+                        <AutopilotNeedle className="coding-agent-needle" />
+                        <div>
+                          <p className="panel-kicker">Coding</p>
+                          <h2>What are we building?</h2>
+                          <span>
+                            Start with a chat, open a local project, pull up GitHub in the browser, or use the plus tab to pick a file.
+                          </span>
+                        </div>
                       </div>
-                      <time>{plugin.latency}</time>
-                    </article>
-                  ))}
-                </div>
-              </aside>
+                      <div className="coding-action-grid">
+                        <button type="button" onClick={() => void openCodingProject()}>
+                          <FolderOpen size={18} aria-hidden="true" />
+                          <span>
+                            <strong>Open local folder</strong>
+                            <small>Browse files on this computer</small>
+                          </span>
+                        </button>
+                        <button type="button" onClick={() => void createCodingProject()}>
+                          <Folder size={18} aria-hidden="true" />
+                          <span>
+                            <strong>Create project</strong>
+                            <small>Make a new project folder</small>
+                          </span>
+                        </button>
+                        <button type="button" onClick={newCodingChat}>
+                          <MessageCircle size={18} aria-hidden="true" />
+                          <span>
+                            <strong>New chat</strong>
+                            <small>Start a fresh coding thread</small>
+                          </span>
+                        </button>
+                        <button type="button" onClick={openGithubForCoding}>
+                          <Github size={18} aria-hidden="true" />
+                          <span>
+                            <strong>Open GitHub</strong>
+                            <small>Use browser tabs to pull repo code</small>
+                          </span>
+                        </button>
+                        <button type="button" onClick={openCodingPlugins}>
+                          <Package size={18} aria-hidden="true" />
+                          <span>
+                            <strong>Install plugins</strong>
+                            <small>Queue CLIs and dev tools</small>
+                          </span>
+                        </button>
+                      </div>
+                      <form
+                        className="coding-chat-input"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          sendCodingChatMessage();
+                        }}
+                      >
+                        <input
+                          value={codingDraftMessage}
+                          onChange={(event) => setCodingDraftMessage(event.target.value)}
+                          placeholder="Ask Autopilot to explain, edit, or plan code..."
+                          aria-label="Coding chat message"
+                        />
+                        <button type="submit">
+                          <ArrowRight size={16} aria-hidden="true" />
+                        </button>
+                      </form>
+                    </section>
+                  )}
 
-              <section className="coding-editor" aria-label="Code editor">
-                <div className="coding-editor-tabs" role="tablist" aria-label="Open code files">
-                  {codingTabs.map((tab, index) => (
-                    <button className={index === 0 ? "active" : ""} key={tab.name} type="button" role="tab" aria-selected={index === 0}>
-                      <Code2 size={13} aria-hidden="true" />
-                      <span>{tab.name}</span>
-                      {tab.status && <b>{tab.status}</b>}
-                      {index > 0 && <X size={12} aria-hidden="true" />}
-                    </button>
-                  ))}
+                  {activeCodingTab.kind === "picker" && (
+                    <section className="coding-folder-view" aria-label="Choose file">
+                      <div className="coding-content-heading">
+                        <div>
+                          <p className="panel-kicker">Open tab</p>
+                          <h2>{activeCodingProject ? "Choose a file or folder" : "No project open"}</h2>
+                        </div>
+                        <button type="button" onClick={() => void openCodingProject()}>
+                          <FolderOpen size={16} aria-hidden="true" />
+                          Open folder
+                        </button>
+                      </div>
+                      <div className="coding-folder-grid">
+                        {(codingSnapshot.tree?.children ?? []).map((entry) => {
+                          const EntryIcon = entry.kind === "folder" ? Folder : getCodingFileIcon(entry.name);
+                          return (
+                            <button key={entry.path} type="button" onClick={() => void openCodingPath(entry.path)}>
+                              <EntryIcon size={20} aria-hidden="true" />
+                              <span>
+                                <strong>{entry.name}</strong>
+                                <small>{entry.kind === "folder" ? "Folder" : formatFileSize(entry.size)}</small>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  )}
+
+                  {activeCodingTab.kind === "folder" && activeCodingTab.file?.kind === "directory" && (
+                    <section className="coding-folder-view" aria-label={`${activeCodingTab.title} folder`}>
+                      <div className="coding-content-heading">
+                        <div>
+                          <p className="panel-kicker">Folder</p>
+                          <h2>{activeCodingTab.file.relativePath}</h2>
+                        </div>
+                      </div>
+                      <div className="coding-folder-grid">
+                        {activeCodingTab.file.entries.map((entry) => {
+                          const EntryIcon = entry.kind === "folder" ? Folder : getCodingFileIcon(entry.name);
+                          return (
+                            <button key={entry.path} type="button" onClick={() => void openCodingPath(entry.path)}>
+                              <EntryIcon size={20} aria-hidden="true" />
+                              <span>
+                                <strong>{entry.name}</strong>
+                                <small>{entry.kind === "folder" ? "Folder" : formatFileSize(entry.size)}</small>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  )}
+
+                  {activeCodingTab.kind === "file" && activeCodingTab.file?.kind === "text" && (
+                    <section className="coding-editor-shell" aria-label={`${activeCodingTab.title} editor`}>
+                      <div className="coding-content-heading">
+                        <div>
+                          <p className="panel-kicker">{activeCodingTab.file.language}</p>
+                          <h2>{activeCodingTab.file.relativePath}</h2>
+                        </div>
+                        <span className="coding-save-state">
+                          <Save size={15} aria-hidden="true" />
+                          {activeCodingTab.dirty ? "Autosaving..." : `Saved ${formatSaveTime(activeCodingTab.savedAt)}`}
+                        </span>
+                      </div>
+                      <textarea
+                        className="coding-textarea"
+                        value={activeCodingTab.content ?? activeCodingTab.file.content}
+                        onChange={(event) => updateCodingFileContent(activeCodingTab.id, event.target.value)}
+                        spellCheck={false}
+                        aria-label={`Edit ${activeCodingTab.title}`}
+                      />
+                    </section>
+                  )}
+
+                  {activeCodingTab.kind === "file" && activeCodingTab.file?.kind === "image" && (
+                    <section className="coding-image-view" aria-label={`${activeCodingTab.title} preview`}>
+                      <div className="coding-content-heading">
+                        <div>
+                          <p className="panel-kicker">Image preview</p>
+                          <h2>{activeCodingTab.file.relativePath}</h2>
+                        </div>
+                        <span>{formatFileSize(activeCodingTab.file.size)}</span>
+                      </div>
+                      <div className="coding-image-stage">
+                        <img src={activeCodingTab.file.dataUrl} alt={activeCodingTab.file.name} />
+                      </div>
+                    </section>
+                  )}
+
+                  {activeCodingTab.kind === "file" && activeCodingTab.file?.kind === "binary" && (
+                    <section className="coding-binary-view" aria-label={`${activeCodingTab.title} file`}>
+                      <FileText size={34} aria-hidden="true" />
+                      <h2>{activeCodingTab.file.relativePath}</h2>
+                      <p>{activeCodingTab.file.reason}</p>
+                      <span>{formatFileSize(activeCodingTab.file.size)}</span>
+                    </section>
+                  )}
+
+                  {activeCodingTab.kind === "plugins" && (
+                    <section className="coding-plugin-market" aria-label="Plugin marketplace">
+                      <div className="coding-content-heading">
+                        <div>
+                          <p className="panel-kicker">Plugins</p>
+                          <h2>Install coding tools and CLIs</h2>
+                        </div>
+                        <span>{Object.keys(installedCodingPlugins).length} queued</span>
+                      </div>
+                      <div className="coding-plugin-grid">
+                        {codingPluginCatalog.map((plugin) => (
+                          <article className="coding-plugin-card" key={plugin.id}>
+                            <span className="coding-plugin-icon">
+                              <Wrench size={18} aria-hidden="true" />
+                            </span>
+                            <div>
+                              <strong>{plugin.name}</strong>
+                              <small>{plugin.category}</small>
+                              <p>{plugin.description}</p>
+                              <code>{plugin.command}</code>
+                            </div>
+                            <button type="button" onClick={() => installCodingPlugin(plugin)}>
+                              {installedCodingPlugins[plugin.id] ? "Queued" : "Install"}
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  )}
                 </div>
-                <div className="coding-breadcrumbs" aria-label="File path">
-                  <span>apps</span>
-                  <span>api</span>
-                  <span>src</span>
-                  <span>controllers</span>
-                  <strong>events.controller.ts</strong>
-                </div>
-                <div className="coding-code" aria-label="events.controller.ts source">
-                  {codingCodeLines.map((line, index) => (
-                    <div className={`coding-code-line ${index >= 14 && index <= 16 ? "changed" : ""}`} key={`${index}-${line}`}>
-                      <span>{index + 1}</span>
-                      <code>{line || " "}</code>
-                    </div>
-                  ))}
+
+                <div className="coding-console" aria-label="Coding status">
+                  <Terminal size={15} aria-hidden="true" />
+                  <span>{codingBusy ? "Working..." : codingStatus}</span>
                 </div>
               </section>
-
-              <section className="coding-terminal" aria-label="Terminal">
-                <div className="coding-terminal-tabs">
-                  <button type="button">Problems <b>2</b></button>
-                  <button type="button">Output</button>
-                  <button className="active" type="button">Terminal</button>
-                </div>
-                <pre>{codingTerminalLines.join("\n")}</pre>
-              </section>
-
-              <aside className="coding-agent" aria-label="AI coding agent">
-                <div className="coding-agent-heading">
-                  <div>
-                    <p className="panel-kicker">AI Agent</p>
-                    <h2>GPT-5.5</h2>
-                  </div>
-                  <button type="button" aria-label="New agent task">
-                    <Plus size={15} />
-                  </button>
-                </div>
-                <div className="coding-agent-prompt">Add cursor-based pagination to the events list endpoint.</div>
-                <article className="coding-agent-message">
-                  <AutopilotNeedle className="coding-agent-needle" />
-                  <p>I will update the list endpoint, add a cursor query DTO, and show the diff before applying it.</p>
-                </article>
-                <div className="coding-change-summary">
-                  {codingAgentChanges.map((change) => (
-                    <div key={change.file}>
-                      <Code2 size={13} aria-hidden="true" />
-                      <span>
-                        <strong>{change.file}</strong>
-                        <small>{change.path}</small>
-                      </span>
-                      <b>+{change.added}</b>
-                      <em>-{change.removed}</em>
-                    </div>
-                  ))}
-                </div>
-                <article className="coding-diff-card">
-                  <div>
-                    <strong>events.controller.ts</strong>
-                    <span>+24 -6</span>
-                  </div>
-                  <pre>{codingDiffLines.join("\n")}</pre>
-                </article>
-                <div className="coding-applied">
-                  <Check size={15} aria-hidden="true" />
-                  <span>Cursor pagination added. Review changes carefully.</span>
-                  <button type="button">Undo</button>
-                  <button type="button">View file</button>
-                </div>
-                <label className="coding-agent-input">
-                  <input placeholder="Ask the agent..." aria-label="Ask the coding agent" />
-                  <button type="button" aria-label="Send coding prompt">
-                    <ArrowRight size={16} />
-                  </button>
-                </label>
-              </aside>
             </section>
           )}
 

@@ -8,6 +8,7 @@ import type {
   BrowserBookmarkSourceOption
 } from "../shared/bookmarks.js";
 import type { BrowserSnapshot } from "../shared/browserModel.js";
+import type { CodingFileReadResult, CodingSnapshot, CodingWriteResult } from "../shared/coding.js";
 import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email.js";
 import type {
   PasswordAvailability,
@@ -81,6 +82,15 @@ contextBridge.exposeInMainWorld("autopilot", {
     connectGmail: () => ipcRenderer.invoke("email:connect-gmail") as Promise<EmailConnectResult>,
     sync: () => ipcRenderer.invoke("email:sync") as Promise<EmailSyncResult>,
     disconnect: () => ipcRenderer.invoke("email:disconnect") as Promise<EmailConnectionStatus>
+  },
+  coding: {
+    getSnapshot: () => ipcRenderer.invoke("coding:snapshot") as Promise<CodingSnapshot>,
+    openProject: () => ipcRenderer.invoke("coding:open-project") as Promise<CodingSnapshot>,
+    createProject: () => ipcRenderer.invoke("coding:create-project") as Promise<CodingSnapshot>,
+    selectProject: (rootPath: string) => ipcRenderer.invoke("coding:select-project", rootPath) as Promise<CodingSnapshot>,
+    readPath: (targetPath: string) => ipcRenderer.invoke("coding:read-path", targetPath) as Promise<CodingFileReadResult>,
+    writeFile: (targetPath: string, content: string) =>
+      ipcRenderer.invoke("coding:write-file", targetPath, content) as Promise<CodingWriteResult>
   },
   passwords: passwordsApi
 });
