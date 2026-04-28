@@ -217,7 +217,7 @@ export class CodingWorkspace {
     const result = await dialog.showSaveDialog(window, {
       title: "Create project folder",
       buttonLabel: "Create project",
-      defaultPath: path.join(app.getPath("documents"), "Autopilot Project")
+      defaultPath: path.join(app.getPath("documents"), "New Coding Project")
     });
 
     if (result.canceled || !result.filePath) {
@@ -545,10 +545,10 @@ export class CodingWorkspace {
 
   private getActiveProject(): CodingProject | null {
     if (!this.activeRootPath) {
-      return this.projects[0] ?? null;
+      return null;
     }
 
-    return this.projects.find((project) => project.rootPath === this.activeRootPath) ?? this.projects[0] ?? null;
+    return this.projects.find((project) => project.rootPath === this.activeRootPath) ?? null;
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -556,13 +556,13 @@ export class CodingWorkspace {
       return;
     }
 
-    const saved = await readJsonFile<{ projects: CodingProject[]; activeRootPath: string | null; accessMode?: CodingAccessMode }>(getProjectsFilePath(), {
+    const saved = await readJsonFile<{ projects: CodingProject[]; activeRootPath?: string | null; accessMode?: CodingAccessMode }>(getProjectsFilePath(), {
       projects: [],
       activeRootPath: null,
       accessMode: "ask"
     });
     this.projects = Array.isArray(saved.projects) ? saved.projects.filter((project) => project.rootPath && project.name) : [];
-    this.activeRootPath = saved.activeRootPath ?? this.projects[0]?.rootPath ?? null;
+    this.activeRootPath = null;
     this.accessMode = saved.accessMode === "full" ? "full" : "ask";
     this.loaded = true;
   }
@@ -578,7 +578,7 @@ export class CodingWorkspace {
     if (existingProjects.length !== this.projects.length) {
       this.projects = existingProjects;
       if (this.activeRootPath && !this.projects.some((project) => project.rootPath === this.activeRootPath)) {
-        this.activeRootPath = this.projects[0]?.rootPath ?? null;
+        this.activeRootPath = null;
       }
       await this.saveProjects();
     }
@@ -588,7 +588,7 @@ export class CodingWorkspace {
     await fs.mkdir(app.getPath("userData"), { recursive: true });
     await fs.writeFile(
       getProjectsFilePath(),
-      JSON.stringify({ projects: this.projects, activeRootPath: this.activeRootPath, accessMode: this.accessMode }, null, 2),
+      JSON.stringify({ projects: this.projects, accessMode: this.accessMode }, null, 2),
       "utf8"
     );
   }
@@ -645,15 +645,23 @@ export class CodingWorkspace {
 
   private async listDirectory(rootPath: string, directoryPath: string): Promise<CodingDirectoryEntry[]> {
     const entries = await fs.readdir(directoryPath, { withFileTypes: true });
-    const nodes: CodingDirectoryEntry[] = [];
-    for (const entry of entries.slice(0, MAX_TREE_CHILDREN)) {
-      if (entry.isDirectory() && SKIPPED_DIRECTORIES.has(entry.name)) {
-        continue;
-      }
+    const visibleEntries = entries
+      .filter((entry) => (entry.isDirectory() || entry.isFile()) && !(entry.isDirectory() && SKIPPED_DIRECTORIES.has(entry.name)))
+      .sort((leftEntry, rightEntry) => {
+        if (leftEntry.isDirectory() !== rightEntry.isDirectory()) {
+          return leftEntry.isDirectory() ? -1 : 1;
+        }
 
+        return leftEntry.name.localeCompare(rightEntry.name, undefined, { sensitivity: "base" });
+      });
+    const truncated = visibleEntries.length > MAX_TREE_CHILDREN;
+    const nodes: CodingDirectoryEntry[] = [];
+    for (const entry of visibleEntries.slice(0, MAX_TREE_CHILDREN)) {
       const entryPath = path.join(directoryPath, entry.name);
-      const stats = await fs.stat(entryPath);
-      if (!entry.isDirectory() && !entry.isFile()) {
+      let stats;
+      try {
+        stats = await fs.stat(entryPath);
+      } catch {
         continue;
       }
 
@@ -664,7 +672,7 @@ export class CodingWorkspace {
         relativePath: toRelativePath(rootPath, entryPath),
         size: stats.size,
         modifiedAt: stats.mtimeMs,
-        truncated: entries.length > MAX_TREE_CHILDREN
+        truncated
       });
     }
 

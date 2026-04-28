@@ -134,55 +134,51 @@ export function createPreviewAutopilotApi(): AutopilotApi {
   let previewSelectedSources: string[] = [];
   let previewPasswords: PasswordCredentialSummary[] = [];
   let previewEmailMessages: EmailMessageSummary[] = [];
-  let previewCodingSnapshot: CodingSnapshot = {
-    projects: [
+  const previewProject = {
+    name: "Autopilot preview",
+    rootPath: "C:\\Projects\\autopilot-preview",
+    openedAt: Date.now()
+  };
+  const previewTree: NonNullable<CodingSnapshot["tree"]> = {
+    kind: "folder",
+    name: "Autopilot preview",
+    path: "C:\\Projects\\autopilot-preview",
+    relativePath: ".",
+    size: 0,
+    modifiedAt: Date.now(),
+    children: [
       {
-        name: "Autopilot preview",
-        rootPath: "C:\\Projects\\autopilot-preview",
-        openedAt: Date.now()
+        kind: "folder",
+        name: "src",
+        path: "C:\\Projects\\autopilot-preview\\src",
+        relativePath: "src",
+        size: 0,
+        modifiedAt: Date.now(),
+        children: [
+          {
+            kind: "file",
+            name: "main.tsx",
+            path: "C:\\Projects\\autopilot-preview\\src\\main.tsx",
+            relativePath: "src\\main.tsx",
+            size: 138,
+            modifiedAt: Date.now()
+          }
+        ]
+      },
+      {
+        kind: "file",
+        name: "README.md",
+        path: "C:\\Projects\\autopilot-preview\\README.md",
+        relativePath: "README.md",
+        size: 188,
+        modifiedAt: Date.now()
       }
-    ],
-    activeProject: {
-      name: "Autopilot preview",
-      rootPath: "C:\\Projects\\autopilot-preview",
-      openedAt: Date.now()
-    },
-    tree: {
-      kind: "folder",
-      name: "Autopilot preview",
-      path: "C:\\Projects\\autopilot-preview",
-      relativePath: ".",
-      size: 0,
-      modifiedAt: Date.now(),
-      children: [
-        {
-          kind: "folder",
-          name: "src",
-          path: "C:\\Projects\\autopilot-preview\\src",
-          relativePath: "src",
-          size: 0,
-          modifiedAt: Date.now(),
-          children: [
-            {
-              kind: "file",
-              name: "main.tsx",
-              path: "C:\\Projects\\autopilot-preview\\src\\main.tsx",
-              relativePath: "src\\main.tsx",
-              size: 138,
-              modifiedAt: Date.now()
-            }
-          ]
-        },
-        {
-          kind: "file",
-          name: "README.md",
-          path: "C:\\Projects\\autopilot-preview\\README.md",
-          relativePath: "README.md",
-          size: 188,
-          modifiedAt: Date.now()
-        }
-      ]
-    },
+    ]
+  };
+  let previewCodingSnapshot: CodingSnapshot = {
+    projects: [previewProject],
+    activeProject: null,
+    tree: null,
     accessMode: "ask"
   };
   const listeners = new Set<(snapshot: BrowserSnapshot) => void>();
@@ -205,6 +201,15 @@ export function createPreviewAutopilotApi(): AutopilotApi {
 
   function getActiveId(tabId?: string): string | null {
     return tabId ?? snapshot.activeTabId;
+  }
+
+  function activatePreviewCodingProject(): CodingSnapshot {
+    previewCodingSnapshot = {
+      ...previewCodingSnapshot,
+      activeProject: previewProject,
+      tree: previewTree
+    };
+    return structuredClone(previewCodingSnapshot);
   }
 
   return {
@@ -335,20 +340,25 @@ export function createPreviewAutopilotApi(): AutopilotApi {
     },
     coding: {
       getSnapshot: async () => structuredClone(previewCodingSnapshot),
-      openProject: async () => structuredClone(previewCodingSnapshot),
-      createProject: async () => structuredClone(previewCodingSnapshot),
-      selectProject: async () => structuredClone(previewCodingSnapshot),
+      openProject: async () => activatePreviewCodingProject(),
+      createProject: async () => activatePreviewCodingProject(),
+      selectProject: async () => activatePreviewCodingProject(),
       readPath: async (targetPath: string) => {
+        if (!previewCodingSnapshot.tree) {
+          return { success: false, reason: "Open a project before reading files." };
+        }
+
         const name = targetPath.split(/[\\/]/).pop() || "README.md";
-        const isDirectory = targetPath.endsWith("src") || targetPath.endsWith("preview");
+        const isDirectory = targetPath === previewTree.path || targetPath.endsWith("src") || targetPath.endsWith("preview");
         if (isDirectory) {
+          const entries = targetPath.endsWith("src") ? previewTree.children?.[0]?.children ?? [] : previewTree.children ?? [];
           return {
             success: true,
             kind: "directory",
             name,
             path: targetPath,
             relativePath: name,
-            entries: previewCodingSnapshot.tree?.children ?? []
+            entries
           };
         }
 

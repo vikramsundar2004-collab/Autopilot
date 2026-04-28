@@ -1902,6 +1902,7 @@ input:focus-visible,
 .coding-folder-grid,
 .coding-plugin-grid {
   display: grid;
+  align-content: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   width: min(780px, 100%);
@@ -1963,6 +1964,43 @@ input:focus-visible,
   font-weight: 750;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.coding-folder-empty,
+.coding-folder-note {
+  width: min(780px, 100%);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 84%, white);
+  color: var(--text-muted);
+  box-shadow: 0 12px 28px rgba(51, 39, 31, 0.06);
+}
+
+.coding-folder-empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 18px;
+}
+
+.coding-folder-empty svg {
+  color: var(--primary);
+}
+
+.coding-folder-empty strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.coding-folder-empty span,
+.coding-folder-note {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.coding-folder-note {
+  margin: 12px 0 0;
+  padding: 12px 14px;
 }
 
 .coding-chat-input {

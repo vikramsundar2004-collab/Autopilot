@@ -784,6 +784,10 @@ export function App(): JSX.Element {
             [snapshot.tree?.path ?? ""]: true
           }));
           setCodingStatus(`Ready in ${snapshot.activeProject?.name ?? "project"}.`);
+        } else if (snapshot.projects.length > 0) {
+          setCodingStatus("Choose a recent project or open a folder to start browsing files.");
+        } else {
+          setCodingStatus("Open a folder or create a project to start editing local files.");
         }
       })
       .catch(() => setCodingStatus("Coding workspace could not read local project access."));
@@ -1476,10 +1480,18 @@ export function App(): JSX.Element {
         ...currentFolders,
         [snapshot.tree?.path ?? ""]: true
       }));
+    } else {
+      setOpenCodingFolders({});
+      setCodingSearchResults([]);
     }
-    if (status) {
-      setCodingStatus(status);
-    }
+    setCodingStatus(
+      status ??
+        (snapshot.tree
+          ? `Ready in ${snapshot.activeProject?.name ?? "project"}.`
+          : snapshot.projects.length > 0
+            ? "Choose a recent project or open a folder to start browsing files."
+            : "Open a folder or create a project to start editing local files.")
+    );
   }
 
   async function openCodingProject(): Promise<void> {
@@ -1537,7 +1549,13 @@ export function App(): JSX.Element {
       savedAt: result.kind === "text" ? result.modifiedAt : undefined
     };
     upsertCodingTab(tab);
-    setCodingStatus(result.kind === "directory" ? `Opened folder ${result.relativePath}.` : `Opened ${result.relativePath}.`);
+    setCodingStatus(
+      result.kind === "directory"
+        ? result.entries.length === 0
+          ? `Folder ${result.relativePath} is empty.`
+          : `Opened folder ${result.relativePath}.`
+        : `Opened ${result.relativePath}.`
+    );
     setCodingBusy(false);
   }
 
@@ -2218,7 +2236,13 @@ export function App(): JSX.Element {
                     </label>
                     <div className="coding-search-results" aria-label="Project search results">
                       {codingSearchResults.length === 0 ? (
-                        <span>{codingSearchQuery.trim() ? "No matching files yet." : "Type to search this project."}</span>
+                        <span>
+                          {!activeCodingProject
+                            ? "Open a project to search files."
+                            : codingSearchQuery.trim()
+                              ? "No matching files yet."
+                              : "Type to search this project."}
+                        </span>
                       ) : (
                         codingSearchResults.map((result) => {
                           const ResultIcon = result.kind === "folder" ? Folder : getCodingFileIcon(result.name);
@@ -2382,20 +2406,32 @@ export function App(): JSX.Element {
                           Open folder
                         </button>
                       </div>
-                      <div className="coding-folder-grid">
-                        {codingProjectOptions.map((entry) => {
-                          const EntryIcon = entry.kind === "folder" ? Folder : getCodingFileIcon(entry.name);
-                          return (
-                            <button key={entry.path} type="button" onClick={() => void openCodingPath(entry.path)}>
-                              <EntryIcon size={20} aria-hidden="true" />
-                              <span>
-                                <strong>{entry.name}</strong>
-                                <small>{entry.kind === "folder" ? "Folder" : formatFileSize(entry.size)}</small>
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                      {codingProjectOptions.length === 0 ? (
+                        <div className="coding-folder-empty">
+                          <FolderOpen size={26} aria-hidden="true" />
+                          <strong>{activeCodingProject ? "No files found in this project." : "Open a project first."}</strong>
+                          <span>
+                            {activeCodingProject
+                              ? "This folder is empty, or every visible item is inside an ignored build directory."
+                              : "Choose a recent project or open a local folder to browse files."}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="coding-folder-grid">
+                          {codingProjectOptions.map((entry) => {
+                            const EntryIcon = entry.kind === "folder" ? Folder : getCodingFileIcon(entry.name);
+                            return (
+                              <button key={entry.path} type="button" onClick={() => void openCodingPath(entry.path)}>
+                                <EntryIcon size={20} aria-hidden="true" />
+                                <span>
+                                  <strong>{entry.name}</strong>
+                                  <small>{entry.kind === "folder" ? "Folder" : formatFileSize(entry.size)}</small>
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </section>
                   )}
 
@@ -2407,20 +2443,33 @@ export function App(): JSX.Element {
                           <h2>{activeCodingTab.file.relativePath}</h2>
                         </div>
                       </div>
-                      <div className="coding-folder-grid">
-                        {activeCodingTab.file.entries.map((entry) => {
-                          const EntryIcon = entry.kind === "folder" ? Folder : getCodingFileIcon(entry.name);
-                          return (
-                            <button key={entry.path} type="button" onClick={() => void openCodingPath(entry.path)}>
-                              <EntryIcon size={20} aria-hidden="true" />
-                              <span>
-                                <strong>{entry.name}</strong>
-                                <small>{entry.kind === "folder" ? "Folder" : formatFileSize(entry.size)}</small>
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
+                      {activeCodingTab.file.entries.length === 0 ? (
+                        <div className="coding-folder-empty">
+                          <FolderOpen size={26} aria-hidden="true" />
+                          <strong>This folder is empty.</strong>
+                          <span>No files or subfolders were found in {activeCodingTab.file.relativePath}.</span>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="coding-folder-grid">
+                            {activeCodingTab.file.entries.map((entry) => {
+                              const EntryIcon = entry.kind === "folder" ? Folder : getCodingFileIcon(entry.name);
+                              return (
+                                <button key={entry.path} type="button" onClick={() => void openCodingPath(entry.path)}>
+                                  <EntryIcon size={20} aria-hidden="true" />
+                                  <span>
+                                    <strong>{entry.name}</strong>
+                                    <small>{entry.kind === "folder" ? "Folder" : formatFileSize(entry.size)}</small>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {activeCodingTab.file.entries.some((entry) => entry.truncated) && (
+                            <p className="coding-folder-note">This folder has more items. Use search or open a narrower folder to keep the explorer fast.</p>
+                          )}
+                        </>
+                      )}
                     </section>
                   )}
 
