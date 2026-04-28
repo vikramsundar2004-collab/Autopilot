@@ -16,6 +16,7 @@ import { loadAutopilotEnv } from "./env.js";
 import { PasswordStore } from "./passwords.js";
 import { TabController } from "./tabs.js";
 import type { AddBookmarkFolderInput, AddBookmarkInput, BookmarkNodeTarget } from "../shared/bookmarks.js";
+import type { CodingAccessMode, CodingCommandRequest } from "../shared/coding.js";
 import type { PasswordCaptureInput } from "../shared/passwords.js";
 import { CodingWorkspace } from "./coding.js";
 
@@ -80,6 +81,10 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("coding:select-project", (_event, rootPath: string) => codingWorkspace.selectProject(rootPath));
   ipcMain.handle("coding:read-path", (_event, targetPath: string) => codingWorkspace.readPath(targetPath));
   ipcMain.handle("coding:write-file", (_event, targetPath: string, content: string) => codingWorkspace.writeFile(targetPath, content));
+  ipcMain.handle("coding:set-access-mode", (_event, mode: CodingAccessMode) => codingWorkspace.setAccessMode(mode));
+  ipcMain.handle("coding:search", (_event, query: string) => codingWorkspace.searchProject(query));
+  ipcMain.handle("coding:run-command", (_event, input: CodingCommandRequest) => codingWorkspace.runCommand(input));
+  ipcMain.handle("coding:browse", (_event, input: string) => codingWorkspace.browse(input));
   ipcMain.handle("passwords:stage", (event, input: PasswordCaptureInput) =>
     passwordStore.stage({
       ...input,

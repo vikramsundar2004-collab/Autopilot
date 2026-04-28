@@ -8,7 +8,16 @@ import type {
   BrowserBookmarkSourceOption
 } from "../shared/bookmarks.js";
 import type { BrowserSnapshot } from "../shared/browserModel.js";
-import type { CodingFileReadResult, CodingSnapshot, CodingWriteResult } from "../shared/coding.js";
+import type {
+  CodingAccessMode,
+  CodingCommandRequest,
+  CodingCommandResult,
+  CodingFileReadResult,
+  CodingResearchResult,
+  CodingSearchResult,
+  CodingSnapshot,
+  CodingWriteResult
+} from "../shared/coding.js";
 import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email.js";
 import type {
   PasswordAvailability,
@@ -90,7 +99,11 @@ contextBridge.exposeInMainWorld("autopilot", {
     selectProject: (rootPath: string) => ipcRenderer.invoke("coding:select-project", rootPath) as Promise<CodingSnapshot>,
     readPath: (targetPath: string) => ipcRenderer.invoke("coding:read-path", targetPath) as Promise<CodingFileReadResult>,
     writeFile: (targetPath: string, content: string) =>
-      ipcRenderer.invoke("coding:write-file", targetPath, content) as Promise<CodingWriteResult>
+      ipcRenderer.invoke("coding:write-file", targetPath, content) as Promise<CodingWriteResult>,
+    setAccessMode: (mode: CodingAccessMode) => ipcRenderer.invoke("coding:set-access-mode", mode) as Promise<CodingSnapshot>,
+    search: (query: string) => ipcRenderer.invoke("coding:search", query) as Promise<CodingSearchResult[]>,
+    runCommand: (input: CodingCommandRequest) => ipcRenderer.invoke("coding:run-command", input) as Promise<CodingCommandResult>,
+    browse: (input: string) => ipcRenderer.invoke("coding:browse", input) as Promise<CodingResearchResult>
   },
   passwords: passwordsApi
 });

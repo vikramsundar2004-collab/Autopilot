@@ -25,6 +25,7 @@ import {
   MessageCircle,
   Package,
   Palette,
+  Play,
   Plus,
   Printer,
   RotateCw,
@@ -63,7 +64,17 @@ import {
   type BrowserTheme,
   type Tab
 } from "../shared/browserModel";
-import type { CodingFileReadResult, CodingPlugin, CodingSnapshot, CodingTreeNode } from "../shared/coding";
+import type {
+  CodingAccessMode,
+  CodingCommandRequest,
+  CodingCommandResult,
+  CodingFileReadResult,
+  CodingPlugin,
+  CodingResearchResult,
+  CodingSearchResult,
+  CodingSnapshot,
+  CodingTreeNode
+} from "../shared/coding";
 import type { EmailConnectionStatus, EmailMessageSummary } from "../shared/email";
 import type { PasswordAvailability, PasswordCredentialSummary, PendingPasswordSave } from "../shared/passwords";
 import { getAutopilotApi } from "./autopilotApi";
@@ -126,13 +137,13 @@ const workspaceItems: Array<{ label: string; color: string; icon: LucideIcon; vi
   { label: "design", color: "pink", icon: Palette, view: "browser" }
 ];
 
-type CodingSection = "files" | "plugins";
+type CodingSection = "files" | "search" | "plugins" | "terminal" | "browser";
 
 type CodingOpenedFile = Extract<CodingFileReadResult, { success: true }>;
 
 type CodingWorkbenchTab = {
   id: string;
-  kind: "chat" | "file" | "folder" | "picker" | "plugins";
+  kind: "chat" | "file" | "folder" | "picker" | "plugins" | "terminal" | "browser";
   title: string;
   path?: string;
   file?: CodingOpenedFile;
@@ -146,7 +157,8 @@ const CODING_CHAT_TAB_ID = "coding-chat-home";
 const defaultCodingSnapshot: CodingSnapshot = {
   projects: [],
   activeProject: null,
-  tree: null
+  tree: null,
+  accessMode: "ask"
 };
 
 const initialCodingTabs: CodingWorkbenchTab[] = [
@@ -540,6 +552,14 @@ function getCodingTabIcon(kind: CodingWorkbenchTab["kind"], file?: CodingOpenedF
     return Package;
   }
 
+  if (kind === "terminal") {
+    return Terminal;
+  }
+
+  if (kind === "browser") {
+    return Globe2;
+  }
+
   if (file?.kind === "image") {
     return ImageIcon;
   }
@@ -549,6 +569,30 @@ function getCodingTabIcon(kind: CodingWorkbenchTab["kind"], file?: CodingOpenedF
   }
 
   return FileText;
+}
+
+function flattenCodingTree(node: CodingTreeNode | null, limit = 140): CodingTreeNode[] {
+  if (!node) {
+    return [];
+  }
+
+  const nodes: CodingTreeNode[] = [];
+  function visit(currentNode: CodingTreeNode): void {
+    if (nodes.length >= limit) {
+      return;
+    }
+
+    nodes.push(currentNode);
+    for (const child of currentNode.children ?? []) {
+      visit(child);
+    }
+  }
+
+  for (const child of node.children ?? []) {
+    visit(child);
+  }
+
+  return nodes;
 }
 
 export function App(): JSX.Element {
@@ -595,6 +639,13 @@ export function App(): JSX.Element {
   const [codingBusy, setCodingBusy] = useState(false);
   const [codingDraftMessage, setCodingDraftMessage] = useState("");
   const [installedCodingPlugins, setInstalledCodingPlugins] = useState<Record<string, boolean>>({});
+  const [codingSearchQuery, setCodingSearchQuery] = useState("");
+  const [codingSearchResults, setCodingSearchResults] = useState<CodingSearchResult[]>([]);
+  const [codingCommandDraft, setCodingCommandDraft] = useState("npm test");
+  const [pendingCodingCommand, setPendingCodingCommand] = useState<CodingCommandRequest | null>(null);
+  const [codingCommandResult, setCodingCommandResult] = useState<CodingCommandResult | null>(null);
+  const [codingResearchDraft, setCodingResearchDraft] = useState("React autosave editor patterns");
+  const [codingResearchResult, setCodingResearchResult] = useState<CodingResearchResult | null>(null);
   const webAreaRef = useRef<HTMLDivElement | null>(null);
   const sidebarWidthRef = useRef(sidebarWidth);
 
@@ -606,6 +657,7 @@ export function App(): JSX.Element {
   const activeCodingTab = codingTabs.find((tab) => tab.id === activeCodingTabId) ?? codingTabs[0] ?? initialCodingTabs[0];
   const activeCodingProject = codingSnapshot.activeProject;
   const activeCodingPath = activeCodingTab?.path ?? null;
+  const codingProjectOptions = useMemo(() => flattenCodingTree(codingSnapshot.tree), [codingSnapshot.tree]);
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
   const completedActionItems = useMemo(() => actionItems.filter((item) => item.completedAt), [actionItems]);
   const selectedProductivitySourceSet = useMemo(() => new Set(selectedProductivitySources), [selectedProductivitySources]);
@@ -740,6 +792,27 @@ export function App(): JSX.Element {
       cancelled = true;
     };
   }, [autopilot]);
+
+  useEffect(() => {
+    if (codingSearchQuery.trim().length === 0) {
+      setCodingSearchResults([]);
+      return;
+    }
+
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void autopilot.coding.search(codingSearchQuery).then((results) => {
+        if (!cancelled) {
+          setCodingSearchResults(results);
+        }
+      });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [autopilot, codingSearchQuery]);
 
   useEffect(() => {
     const dirtyTabs = codingTabs.filter((tab) => tab.kind === "file" && tab.file?.kind === "text" && tab.path && tab.dirty);
@@ -1506,6 +1579,45 @@ export function App(): JSX.Element {
     setActiveCodingTabId(tab.id);
   }
 
+  function openCodingSearch(): void {
+    setCodingSection("search");
+    setCodingStatus("Search is filtering the active project file tree.");
+  }
+
+  function openCodingTerminal(): void {
+    setCodingSection("terminal");
+    const existingTab = codingTabs.find((tab) => tab.kind === "terminal");
+    if (existingTab) {
+      setActiveCodingTabId(existingTab.id);
+      return;
+    }
+
+    const tab: CodingWorkbenchTab = {
+      id: createCodingTabId("terminal"),
+      kind: "terminal",
+      title: "Terminal"
+    };
+    setCodingTabs((currentTabs) => [...currentTabs, tab]);
+    setActiveCodingTabId(tab.id);
+  }
+
+  function openCodingBrowser(): void {
+    setCodingSection("browser");
+    const existingTab = codingTabs.find((tab) => tab.kind === "browser");
+    if (existingTab) {
+      setActiveCodingTabId(existingTab.id);
+      return;
+    }
+
+    const tab: CodingWorkbenchTab = {
+      id: createCodingTabId("browser"),
+      kind: "browser",
+      title: "Research"
+    };
+    setCodingTabs((currentTabs) => [...currentTabs, tab]);
+    setActiveCodingTabId(tab.id);
+  }
+
   function newCodingChat(): void {
     const tab: CodingWorkbenchTab = {
       id: createCodingTabId("chat"),
@@ -1553,6 +1665,59 @@ export function App(): JSX.Element {
     setCodingStatus(`${plugin.name} is queued. Run ${plugin.command} in the terminal when you are ready.`);
   }
 
+  function setCodingAccessMode(mode: CodingAccessMode): void {
+    void autopilot.coding
+      .setAccessMode(mode)
+      .then((snapshot) => {
+        applyCodingSnapshot(snapshot, mode === "full" ? "Full access enabled. Commands can run without approval." : "Approval mode enabled.");
+        if (mode !== "full") {
+          setPendingCodingCommand(null);
+        }
+      })
+      .catch(() => setCodingStatus("Could not update coding access mode."));
+  }
+
+  async function runCodingCommand(approved = false): Promise<void> {
+    const request: CodingCommandRequest = pendingCodingCommand && approved
+      ? { ...pendingCodingCommand, approved: true }
+      : {
+          command: codingCommandDraft,
+          cwd: activeCodingProject?.rootPath,
+          approved
+        };
+
+    setCodingBusy(true);
+    setCodingCommandResult(null);
+    const result: CodingCommandResult = await autopilot.coding.runCommand(request).catch(() => ({
+      success: false,
+      command: request.command,
+      cwd: request.cwd,
+      reason: "Command runner failed before it could start."
+    }));
+    setCodingBusy(false);
+    if (!result.success && result.requiresApproval) {
+      setPendingCodingCommand(request);
+      setCodingStatus("Command is waiting for approval.");
+      return;
+    }
+
+    setPendingCodingCommand(null);
+    setCodingCommandResult(result);
+    setCodingStatus(result.success ? `Command finished in ${result.durationMs}ms.` : result.reason);
+  }
+
+  async function browseFromCoding(): Promise<void> {
+    setCodingBusy(true);
+    const result = await autopilot.coding.browse(codingResearchDraft).catch(() => ({
+      success: false as const,
+      input: codingResearchDraft,
+      reason: "Coding browser could not start."
+    }));
+    setCodingResearchResult(result);
+    setCodingBusy(false);
+    setCodingStatus(result.success ? `Browsed ${result.title}.` : result.reason);
+  }
+
   function sendCodingChatMessage(): void {
     const message = codingDraftMessage.trim();
     if (!message) {
@@ -1564,7 +1729,9 @@ export function App(): JSX.Element {
   }
 
   function openGithubForCoding(): void {
-    navigateTo("https://github.com/");
+    openCodingBrowser();
+    setCodingResearchDraft("https://github.com/");
+    void autopilot.coding.browse("https://github.com/").then((result) => setCodingResearchResult(result));
   }
 
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>): void {
@@ -1978,14 +2145,17 @@ export function App(): JSX.Element {
                 <button className={codingSection === "files" ? "active" : ""} type="button" aria-label="Files" onClick={() => setCodingSection("files")}>
                   <FolderOpen size={18} />
                 </button>
-                <button type="button" aria-label="Search project files">
+                <button className={codingSection === "search" ? "active" : ""} type="button" aria-label="Search project files" onClick={openCodingSearch}>
                   <Search size={18} />
                 </button>
                 <button className={codingSection === "plugins" ? "active" : ""} type="button" aria-label="Plugins" onClick={openCodingPlugins}>
                   <Package size={18} />
                 </button>
-                <button type="button" aria-label="Terminal">
+                <button className={codingSection === "terminal" ? "active" : ""} type="button" aria-label="Terminal" onClick={openCodingTerminal}>
                   <Terminal size={18} />
+                </button>
+                <button className={codingSection === "browser" ? "active" : ""} type="button" aria-label="Research browser" onClick={openCodingBrowser}>
+                  <Globe2 size={18} />
                 </button>
               </div>
 
@@ -2034,7 +2204,38 @@ export function App(): JSX.Element {
                   </div>
                 )}
 
-                {codingSection === "plugins" ? (
+                {codingSection === "search" ? (
+                  <div className="coding-search-panel">
+                    <label className="coding-search-box">
+                      <Search size={16} aria-hidden="true" />
+                      <input
+                        autoFocus
+                        value={codingSearchQuery}
+                        onChange={(event) => setCodingSearchQuery(event.target.value)}
+                        placeholder="Search files and folders"
+                        aria-label="Search project files"
+                      />
+                    </label>
+                    <div className="coding-search-results" aria-label="Project search results">
+                      {codingSearchResults.length === 0 ? (
+                        <span>{codingSearchQuery.trim() ? "No matching files yet." : "Type to search this project."}</span>
+                      ) : (
+                        codingSearchResults.map((result) => {
+                          const ResultIcon = result.kind === "folder" ? Folder : getCodingFileIcon(result.name);
+                          return (
+                            <button key={result.path} type="button" onClick={() => void openCodingPath(result.path)}>
+                              <ResultIcon size={15} aria-hidden="true" />
+                              <span>
+                                <strong>{result.name}</strong>
+                                <small>{result.relativePath}</small>
+                              </span>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                ) : codingSection === "plugins" ? (
                   <div className="coding-plugin-list compact">
                     {codingPluginCatalog.map((plugin) => (
                       <button key={plugin.id} type="button" onClick={() => installCodingPlugin(plugin)}>
@@ -2131,7 +2332,7 @@ export function App(): JSX.Element {
                           <Github size={18} aria-hidden="true" />
                           <span>
                             <strong>Open GitHub</strong>
-                            <small>Use browser tabs to pull repo code</small>
+                            <small>Research repos in the coding browser</small>
                           </span>
                         </button>
                         <button type="button" onClick={openCodingPlugins}>
@@ -2139,6 +2340,13 @@ export function App(): JSX.Element {
                           <span>
                             <strong>Install plugins</strong>
                             <small>Queue CLIs and dev tools</small>
+                          </span>
+                        </button>
+                        <button type="button" onClick={openCodingTerminal}>
+                          <Terminal size={18} aria-hidden="true" />
+                          <span>
+                            <strong>Run commands</strong>
+                            <small>Approval mode by default</small>
                           </span>
                         </button>
                       </div>
@@ -2175,7 +2383,7 @@ export function App(): JSX.Element {
                         </button>
                       </div>
                       <div className="coding-folder-grid">
-                        {(codingSnapshot.tree?.children ?? []).map((entry) => {
+                        {codingProjectOptions.map((entry) => {
                           const EntryIcon = entry.kind === "folder" ? Folder : getCodingFileIcon(entry.name);
                           return (
                             <button key={entry.path} type="button" onClick={() => void openCodingPath(entry.path)}>
@@ -2289,6 +2497,140 @@ export function App(): JSX.Element {
                           </article>
                         ))}
                       </div>
+                    </section>
+                  )}
+
+                  {activeCodingTab.kind === "terminal" && (
+                    <section className="coding-terminal-panel" aria-label="Command runner">
+                      <div className="coding-content-heading">
+                        <div>
+                          <p className="panel-kicker">Terminal</p>
+                          <h2>Run project commands</h2>
+                        </div>
+                        <div className="coding-access-toggle" aria-label="Command access mode">
+                          <button
+                            className={codingSnapshot.accessMode === "ask" ? "active" : ""}
+                            type="button"
+                            onClick={() => setCodingAccessMode("ask")}
+                          >
+                            <ShieldCheck size={15} aria-hidden="true" />
+                            Ask first
+                          </button>
+                          <button
+                            className={codingSnapshot.accessMode === "full" ? "active danger" : "danger"}
+                            type="button"
+                            onClick={() => setCodingAccessMode("full")}
+                          >
+                            <AlertTriangle size={15} aria-hidden="true" />
+                            Full access
+                          </button>
+                        </div>
+                      </div>
+                      <form
+                        className="coding-command-bar"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void runCodingCommand(false);
+                        }}
+                      >
+                        <Terminal size={16} aria-hidden="true" />
+                        <input
+                          value={codingCommandDraft}
+                          onChange={(event) => setCodingCommandDraft(event.target.value)}
+                          placeholder="npm test"
+                          aria-label="Command to run"
+                          spellCheck={false}
+                        />
+                        <button type="submit" disabled={codingBusy}>
+                          <Play size={15} aria-hidden="true" />
+                          Run
+                        </button>
+                      </form>
+                      {pendingCodingCommand && (
+                        <div className="coding-approval-card" role="status">
+                          <AlertTriangle size={18} aria-hidden="true" />
+                          <span>
+                            <strong>Approve command</strong>
+                            <small>{pendingCodingCommand.command}</small>
+                          </span>
+                          <button type="button" onClick={() => void runCodingCommand(true)}>
+                            Approve and run
+                          </button>
+                          <button type="button" onClick={() => setPendingCodingCommand(null)}>
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                      <pre className="coding-command-output">
+                        {codingCommandResult
+                          ? [
+                              `> ${codingCommandResult.command ?? codingCommandDraft}`,
+                              codingCommandResult.cwd ? `cwd: ${codingCommandResult.cwd}` : "",
+                              codingCommandResult.success ? `exit ${codingCommandResult.exitCode} in ${codingCommandResult.durationMs}ms` : codingCommandResult.reason,
+                              codingCommandResult.stdout ?? "",
+                              codingCommandResult.stderr ?? ""
+                            ]
+                              .filter(Boolean)
+                              .join("\n")
+                          : "Commands run from the active project. In Ask first mode, Autopilot pauses before executing."}
+                      </pre>
+                    </section>
+                  )}
+
+                  {activeCodingTab.kind === "browser" && (
+                    <section className="coding-browser-panel" aria-label="Coding browser">
+                      <div className="coding-content-heading">
+                        <div>
+                          <p className="panel-kicker">Browser</p>
+                          <h2>Research without leaving Coding</h2>
+                        </div>
+                      </div>
+                      <form
+                        className="coding-command-bar"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void browseFromCoding();
+                        }}
+                      >
+                        <Globe2 size={16} aria-hidden="true" />
+                        <input
+                          value={codingResearchDraft}
+                          onChange={(event) => setCodingResearchDraft(event.target.value)}
+                          placeholder="Search Google or enter a URL"
+                          aria-label="Coding browser search"
+                        />
+                        <button type="submit" disabled={codingBusy}>
+                          <Search size={15} aria-hidden="true" />
+                          Browse
+                        </button>
+                      </form>
+                      <article className={`coding-research-result ${codingResearchResult?.success ? "" : "empty"}`}>
+                        {codingResearchResult ? (
+                          codingResearchResult.success ? (
+                            <>
+                              <span>{codingResearchResult.status}</span>
+                              <h3>{codingResearchResult.title}</h3>
+                              <a href={codingResearchResult.url} target="_blank" rel="noreferrer">
+                                {codingResearchResult.url}
+                              </a>
+                              <p>{codingResearchResult.snippet}</p>
+                              <button type="button" onClick={() => navigateTo(codingResearchResult.url)}>
+                                Open full page in Browser workspace
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <h3>Could not browse that page</h3>
+                              <p>{codingResearchResult.reason}</p>
+                            </>
+                          )
+                        ) : (
+                          <>
+                            <h3>Ready to research</h3>
+                            <p>Autopilot can fetch URLs, localhost pages, or Google search queries from the coding workspace.</p>
+                          </>
+                        )}
+                      </article>
                     </section>
                   )}
                 </div>

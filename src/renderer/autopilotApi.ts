@@ -17,7 +17,16 @@ import {
   type BrowserBookmarkSourceOption
 } from "../shared/bookmarks";
 import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email";
-import type { CodingFileReadResult, CodingSnapshot, CodingWriteResult } from "../shared/coding";
+import type {
+  CodingAccessMode,
+  CodingCommandRequest,
+  CodingCommandResult,
+  CodingFileReadResult,
+  CodingResearchResult,
+  CodingSearchResult,
+  CodingSnapshot,
+  CodingWriteResult
+} from "../shared/coding";
 import type {
   PasswordAvailability,
   PasswordCredentialSummary,
@@ -86,6 +95,10 @@ type CodingApi = {
   selectProject: (rootPath: string) => Promise<CodingSnapshot>;
   readPath: (targetPath: string) => Promise<CodingFileReadResult>;
   writeFile: (targetPath: string, content: string) => Promise<CodingWriteResult>;
+  setAccessMode: (mode: CodingAccessMode) => Promise<CodingSnapshot>;
+  search: (query: string) => Promise<CodingSearchResult[]>;
+  runCommand: (input: CodingCommandRequest) => Promise<CodingCommandResult>;
+  browse: (input: string) => Promise<CodingResearchResult>;
 };
 
 export type AutopilotApi = {
@@ -169,7 +182,8 @@ export function createPreviewAutopilotApi(): AutopilotApi {
           modifiedAt: Date.now()
         }
       ]
-    }
+    },
+    accessMode: "ask"
   };
   const listeners = new Set<(snapshot: BrowserSnapshot) => void>();
   const previewEmailStatus: EmailConnectionStatus = {
@@ -356,6 +370,66 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         success: true,
         savedAt: Date.now(),
         size: new TextEncoder().encode(content).length
+      }),
+      setAccessMode: async (mode: CodingAccessMode) => {
+        previewCodingSnapshot = {
+          ...previewCodingSnapshot,
+          accessMode: mode
+        };
+        return structuredClone(previewCodingSnapshot);
+      },
+      search: async (query: string) => {
+        const normalizedQuery = query.trim().toLowerCase();
+        const results: CodingSearchResult[] = [];
+        function visit(node: NonNullable<CodingSnapshot["tree"]>): void {
+          if (node.name.toLowerCase().includes(normalizedQuery) || node.relativePath.toLowerCase().includes(normalizedQuery)) {
+            results.push({
+              kind: node.kind,
+              name: node.name,
+              path: node.path,
+              relativePath: node.relativePath,
+              size: node.size,
+              modifiedAt: node.modifiedAt,
+              match: node.name.toLowerCase().includes(normalizedQuery) ? "name" : "path"
+            });
+          }
+          for (const child of node.children ?? []) {
+            visit(child);
+          }
+        }
+        if (previewCodingSnapshot.tree && normalizedQuery) {
+          visit(previewCodingSnapshot.tree);
+        }
+        return results;
+      },
+      runCommand: async (input: CodingCommandRequest) => {
+        if (previewCodingSnapshot.accessMode !== "full" && !input.approved) {
+          return {
+            success: false,
+            command: input.command,
+            cwd: previewCodingSnapshot.activeProject?.rootPath,
+            reason: "Approve this command before Autopilot runs it.",
+            requiresApproval: true
+          };
+        }
+
+        return {
+          success: true,
+          command: input.command,
+          cwd: previewCodingSnapshot.activeProject?.rootPath ?? "preview",
+          stdout: `Preview command: ${input.command}\nOpen the desktop app to run this on your computer.`,
+          stderr: "",
+          exitCode: 0,
+          durationMs: 12
+        };
+      },
+      browse: async (input: string) => ({
+        success: true,
+        input,
+        url: input.startsWith("http") ? input : `https://www.google.com/search?q=${encodeURIComponent(input)}`,
+        title: "Autopilot coding research preview",
+        snippet: "The desktop app can browse from the coding workspace and summarize the page response here.",
+        status: 200
       })
     },
     passwords: {

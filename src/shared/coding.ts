@@ -17,10 +17,13 @@ export type CodingProject = {
   openedAt: number;
 };
 
+export type CodingAccessMode = "ask" | "full";
+
 export type CodingSnapshot = {
   projects: CodingProject[];
   activeProject: CodingProject | null;
   tree: CodingTreeNode | null;
+  accessMode: CodingAccessMode;
 };
 
 export type CodingDirectoryEntry = Omit<CodingTreeNode, "children">;
@@ -89,3 +92,57 @@ export type CodingPlugin = {
   description: string;
   command: string;
 };
+
+export type CodingCommandRequest = {
+  command: string;
+  cwd?: string;
+  approved?: boolean;
+};
+
+export type CodingCommandResult =
+  | {
+      success: true;
+      command: string;
+      cwd: string;
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+      durationMs: number;
+    }
+  | {
+      success: false;
+      command?: string;
+      cwd?: string;
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number | null;
+      durationMs?: number;
+      reason: string;
+      requiresApproval?: boolean;
+    };
+
+export type CodingSearchResult = {
+  kind: CodingNodeKind;
+  name: string;
+  path: string;
+  relativePath: string;
+  size: number;
+  modifiedAt: number;
+  match: "name" | "path";
+};
+
+export type CodingResearchResult =
+  | {
+      success: true;
+      input: string;
+      url: string;
+      title: string;
+      snippet: string;
+      status: number;
+    }
+  | {
+      success: false;
+      input: string;
+      url?: string;
+      reason: string;
+    };

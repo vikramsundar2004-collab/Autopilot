@@ -1618,6 +1618,93 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+.coding-search-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+}
+
+.coding-search-box,
+.coding-command-bar {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--surface) 84%, white);
+  color: var(--text-muted);
+  padding: 8px 10px;
+}
+
+.coding-search-box {
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.coding-search-box input,
+.coding-command-bar input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.coding-search-results {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.coding-search-results > span {
+  border: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 750;
+  padding: 14px;
+}
+
+.coding-search-results button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+}
+
+.coding-search-results button:hover {
+  border-color: color-mix(in srgb, var(--primary) 22%, var(--border));
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+}
+
+.coding-search-results strong,
+.coding-search-results small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coding-search-results strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.coding-search-results small {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 750;
+}
+
 .coding-tree,
 .coding-plugin-list,
 .coding-workbench-content,
@@ -1766,6 +1853,8 @@ input:focus-visible,
 .coding-editor-shell,
 .coding-image-view,
 .coding-plugin-market,
+.coding-terminal-panel,
+.coding-browser-panel,
 .coding-binary-view {
   min-height: 100%;
 }
@@ -2033,6 +2122,130 @@ input:focus-visible,
   padding: 6px 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.coding-access-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 44%, var(--surface));
+  padding: 4px;
+}
+
+.coding-access-toggle button,
+.coding-command-bar button,
+.coding-approval-card button,
+.coding-research-result button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 900;
+  padding: 0 10px;
+}
+
+.coding-access-toggle button.active,
+.coding-command-bar button,
+.coding-approval-card button:first-of-type,
+.coding-research-result button {
+  background: var(--primary);
+  color: var(--surface);
+}
+
+.coding-access-toggle button.danger.active {
+  background: var(--danger);
+}
+
+.coding-command-bar {
+  margin-bottom: 12px;
+}
+
+.coding-approval-card {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+  padding: 12px;
+}
+
+.coding-approval-card span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.coding-approval-card small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coding-command-output {
+  min-height: 320px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--sidebar-border) 48%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--sidebar-bg) 94%, #020b08);
+  color: color-mix(in srgb, var(--sidebar-text) 88%, white);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  padding: 14px;
+  white-space: pre-wrap;
+}
+
+.coding-research-result {
+  display: grid;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 86%, white);
+  box-shadow: 0 14px 32px rgba(51, 39, 31, 0.06);
+  padding: 18px;
+}
+
+.coding-research-result.empty {
+  border-style: dashed;
+}
+
+.coding-research-result span {
+  justify-self: start;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sage-muted) 54%, var(--surface));
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 900;
+  padding: 4px 8px;
+}
+
+.coding-research-result h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+}
+
+.coding-research-result a,
+.coding-research-result p {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .coding-console {

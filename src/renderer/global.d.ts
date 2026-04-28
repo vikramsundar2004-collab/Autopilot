@@ -6,7 +6,16 @@ import type {
   BrowserBookmarkSourceOption
 } from "../shared/bookmarks";
 import type { BrowserSnapshot } from "../shared/browserModel";
-import type { CodingFileReadResult, CodingSnapshot, CodingWriteResult } from "../shared/coding";
+import type {
+  CodingAccessMode,
+  CodingCommandRequest,
+  CodingCommandResult,
+  CodingFileReadResult,
+  CodingResearchResult,
+  CodingSearchResult,
+  CodingSnapshot,
+  CodingWriteResult
+} from "../shared/coding";
 import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email";
 import type {
   PasswordAvailability,
@@ -66,6 +75,10 @@ type CodingApi = {
   selectProject: (rootPath: string) => Promise<CodingSnapshot>;
   readPath: (targetPath: string) => Promise<CodingFileReadResult>;
   writeFile: (targetPath: string, content: string) => Promise<CodingWriteResult>;
+  setAccessMode: (mode: CodingAccessMode) => Promise<CodingSnapshot>;
+  search: (query: string) => Promise<CodingSearchResult[]>;
+  runCommand: (input: CodingCommandRequest) => Promise<CodingCommandResult>;
+  browse: (input: string) => Promise<CodingResearchResult>;
 };
 
 declare global {
