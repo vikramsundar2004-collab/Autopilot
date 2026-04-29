@@ -3123,6 +3123,18 @@ export function App(): JSX.Element {
                     Connected sources become a ranked day plan. Gmail and Google Calendar will feed this directly once integration is connected.
                   </p>
                 </div>
+                <div className="productivity-compass-card" aria-label="Current productivity bearing">
+                  <div className="productivity-compass-orbit" aria-hidden="true">
+                    <AutopilotNeedle className="productivity-compass-needle" />
+                    <span className="compass-node north" />
+                    <span className="compass-node east" />
+                    <span className="compass-node south" />
+                  </div>
+                  <div>
+                    <span>Next bearing</span>
+                    <strong>{nextActionItem ? getActionInstruction(nextActionItem) : "Connect a source"}</strong>
+                  </div>
+                </div>
                 <div className="productivity-stats" aria-label="Action item summary">
                   <span>
                     <strong>{focusTimeLabel}</strong>
@@ -3140,6 +3152,7 @@ export function App(): JSX.Element {
               </header>
 
               <section className="priority-callout" aria-label="Today's priority call">
+                <AutopilotNeedle className="priority-callout-needle" />
                 <div>
                   <p className="panel-kicker">Today's call</p>
                   <h2>{nextActionItem ? "Start here" : "No action items yet."}</h2>
