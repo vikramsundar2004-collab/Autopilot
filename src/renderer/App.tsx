@@ -68,6 +68,7 @@ import type {
   CodingAccessMode,
   CodingCommandRequest,
   CodingCommandResult,
+  CodingDirectoryEntry,
   CodingFileReadResult,
   CodingPlugin,
   CodingResearchResult,
@@ -575,30 +576,6 @@ function getCodingTabIcon(kind: CodingWorkbenchTab["kind"], file?: CodingOpenedF
   return FileText;
 }
 
-function flattenCodingTree(node: CodingTreeNode | null, limit = 140): CodingTreeNode[] {
-  if (!node) {
-    return [];
-  }
-
-  const nodes: CodingTreeNode[] = [];
-  function visit(currentNode: CodingTreeNode): void {
-    if (nodes.length >= limit) {
-      return;
-    }
-
-    nodes.push(currentNode);
-    for (const child of currentNode.children ?? []) {
-      visit(child);
-    }
-  }
-
-  for (const child of node.children ?? []) {
-    visit(child);
-  }
-
-  return nodes;
-}
-
 export function App(): JSX.Element {
   const autopilot = useMemo(() => getAutopilotApi(), []);
   const [theme, setTheme] = useState<BrowserTheme>(() => loadTheme());
@@ -645,6 +622,9 @@ export function App(): JSX.Element {
   const [installedCodingPlugins, setInstalledCodingPlugins] = useState<Record<string, boolean>>({});
   const [codingSearchQuery, setCodingSearchQuery] = useState("");
   const [codingSearchResults, setCodingSearchResults] = useState<CodingSearchResult[]>([]);
+  const [codingPickerEntries, setCodingPickerEntries] = useState<CodingDirectoryEntry[]>([]);
+  const [codingPickerLoading, setCodingPickerLoading] = useState(false);
+  const [codingPickerError, setCodingPickerError] = useState<string | null>(null);
   const [codingCommandDraft, setCodingCommandDraft] = useState("npm test");
   const [pendingCodingCommand, setPendingCodingCommand] = useState<CodingCommandRequest | null>(null);
   const [codingCommandResult, setCodingCommandResult] = useState<CodingCommandResult | null>(null);
@@ -661,7 +641,6 @@ export function App(): JSX.Element {
   const activeCodingTab = codingTabs.find((tab) => tab.id === activeCodingTabId) ?? codingTabs[0] ?? initialCodingTabs[0];
   const activeCodingProject = codingSnapshot.activeProject;
   const activeCodingPath = activeCodingTab?.path ?? null;
-  const codingProjectOptions = useMemo(() => flattenCodingTree(codingSnapshot.tree), [codingSnapshot.tree]);
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
   const completedActionItems = useMemo(() => actionItems.filter((item) => item.completedAt), [actionItems]);
   const selectedProductivitySourceSet = useMemo(() => new Set(selectedProductivitySources), [selectedProductivitySources]);
@@ -821,6 +800,54 @@ export function App(): JSX.Element {
       window.clearTimeout(timeout);
     };
   }, [autopilot, codingSearchQuery]);
+
+  useEffect(() => {
+    if (activeCodingTab.kind !== "picker") {
+      return;
+    }
+
+    if (!activeCodingProject?.rootPath) {
+      setCodingPickerEntries([]);
+      setCodingPickerError(null);
+      setCodingPickerLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCodingPickerLoading(true);
+    setCodingPickerError(null);
+    void autopilot.coding
+      .readPath(activeCodingProject.rootPath)
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (result.success && result.kind === "directory") {
+          setCodingPickerEntries(result.entries);
+          setCodingPickerError(null);
+          return;
+        }
+
+        setCodingPickerEntries([]);
+        setCodingPickerError(result.success ? "The active project is not a folder." : result.reason);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCodingPickerEntries([]);
+          setCodingPickerError("Autopilot could not read this project folder.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCodingPickerLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCodingProject?.rootPath, activeCodingTab.kind, autopilot]);
 
   useEffect(() => {
     const dirtyTabs = codingTabs.filter((tab) => tab.kind === "file" && tab.file?.kind === "text" && tab.path && tab.dirty);
@@ -1487,6 +1514,8 @@ export function App(): JSX.Element {
     } else {
       setOpenCodingFolders({});
       setCodingSearchResults([]);
+      setCodingPickerEntries([]);
+      setCodingPickerError(null);
     }
     setCodingStatus(
       status ??
@@ -2410,19 +2439,31 @@ export function App(): JSX.Element {
                           Open folder
                         </button>
                       </div>
-                      {codingProjectOptions.length === 0 ? (
+                      {codingPickerLoading ? (
                         <div className="coding-folder-empty">
                           <FolderOpen size={26} aria-hidden="true" />
-                          <strong>{activeCodingProject ? "No files found in this project." : "Open a project first."}</strong>
+                          <strong>Loading files from disk...</strong>
+                          <span>Autopilot is reading {activeCodingProject?.rootPath ?? "the selected project"}.</span>
+                        </div>
+                      ) : codingPickerError ? (
+                        <div className="coding-folder-empty">
+                          <FolderOpen size={26} aria-hidden="true" />
+                          <strong>Could not show this folder.</strong>
+                          <span>{codingPickerError}</span>
+                        </div>
+                      ) : codingPickerEntries.length === 0 ? (
+                        <div className="coding-folder-empty">
+                          <FolderOpen size={26} aria-hidden="true" />
+                          <strong>{activeCodingProject ? "This project folder is empty." : "Open a project first."}</strong>
                           <span>
                             {activeCodingProject
-                              ? "This folder is empty, or every visible item is inside an ignored build directory."
+                              ? "No files or subfolders were found at the selected project root."
                               : "Choose a recent project or open a local folder to browse files."}
                           </span>
                         </div>
                       ) : (
                         <div className="coding-folder-grid">
-                          {codingProjectOptions.map((entry) => {
+                          {codingPickerEntries.map((entry) => {
                             const EntryIcon = entry.kind === "folder" ? Folder : getCodingFileIcon(entry.name);
                             return (
                               <button key={entry.path} type="button" onClick={() => void openCodingPath(entry.path)}>
