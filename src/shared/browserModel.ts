@@ -61,6 +61,15 @@ export type BrowserHistoryEntry = {
   visitedAt: number;
 };
 
+export function isGoogleSignInPopupUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname.toLowerCase() === "accounts.google.com";
+  } catch {
+    return false;
+  }
+}
+
 const CHROMIUM_NAVIGATION_ERROR_COPY: Record<number, { reason: string; guidance: string }> = {
   [-501]: {
     reason: "Insecure response",

@@ -12,6 +12,7 @@ import {
   createTab,
   describeNavigationError,
   getDisplayUrl,
+  isGoogleSignInPopupUrl,
   isHistoryPageUrl,
   isHomeUrl,
   isPdfResponseHeaders,
@@ -93,6 +94,16 @@ describe("PDF detection", () => {
     expect(readableTitle("", historyUrl)).toBe("History");
     expect(decodeURIComponent(historyUrl)).toContain(AUTOPILOT_HISTORY_PAGE_MARKER);
     expect(decodeURIComponent(historyUrl)).toContain("Example");
+  });
+});
+
+describe("Google sign-in popups", () => {
+  it("allows only the real Google account host to use popup auth", () => {
+    expect(isGoogleSignInPopupUrl("https://accounts.google.com/o/oauth2/v2/auth?client_id=test")).toBe(true);
+    expect(isGoogleSignInPopupUrl("https://accounts.google.com/gsi/select")).toBe(true);
+    expect(isGoogleSignInPopupUrl("https://mail.google.com/mail/u/0/")).toBe(false);
+    expect(isGoogleSignInPopupUrl("https://accounts.google.com.evil.test/o/oauth2/v2/auth")).toBe(false);
+    expect(isGoogleSignInPopupUrl("http://accounts.google.com/o/oauth2/v2/auth")).toBe(false);
   });
 });
 

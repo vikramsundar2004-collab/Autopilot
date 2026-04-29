@@ -8,6 +8,7 @@ import {
   describeNavigationError,
   isPdfResponseHeaders,
   isPdfUrl,
+  isGoogleSignInPopupUrl,
   normalizeAddressInput,
   readableTitle,
   type BrowserSnapshot,
@@ -600,6 +601,26 @@ export class TabController {
     view.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
       if (isExternalPdfUrl(popupUrl)) {
         this.createTab(popupUrl);
+      } else if (isGoogleSignInPopupUrl(popupUrl)) {
+        return {
+          action: "allow",
+          overrideBrowserWindowOptions: {
+            width: 520,
+            height: 720,
+            minWidth: 420,
+            minHeight: 540,
+            title: "Google Sign-In - Autopilot",
+            autoHideMenuBar: true,
+            backgroundColor: "#f4ebdd",
+            webPreferences: {
+              nodeIntegration: false,
+              contextIsolation: true,
+              sandbox: true,
+              webSecurity: true,
+              partition: BROWSER_PARTITION
+            }
+          }
+        };
       } else if (isSafeBrowserUrl(popupUrl)) {
         this.createTab(popupUrl);
       }
