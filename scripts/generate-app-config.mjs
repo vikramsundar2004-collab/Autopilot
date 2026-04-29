@@ -36,14 +36,16 @@ function readEnvFile(filePath) {
 const projectRoot = process.cwd();
 const env = {
   ...readEnvFile(path.join(projectRoot, ".env")),
+  ...readEnvFile(path.join(projectRoot, "env")),
   ...readEnvFile(path.join(projectRoot, ".env.local")),
+  ...readEnvFile(path.join(projectRoot, "env.local")),
   ...process.env
 };
 const clientId = (env.AUTOPILOT_GOOGLE_CLIENT_ID || env.VITE_GOOGLE_CLIENT_ID || "").trim();
 const configPath = path.join(projectRoot, "public", "autopilot-config.json");
 
 if (!clientId) {
-  console.log("Autopilot Gmail config: no client ID found in .env.local.");
+  console.log("Autopilot Gmail config: no client ID found in .env.local or env.local.");
   process.exit(0);
 }
 
@@ -62,4 +64,3 @@ writeFileSync(
   "utf8"
 );
 console.log("Autopilot Gmail config: wrote public/autopilot-config.json.");
-

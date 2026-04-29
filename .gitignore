@@ -4,6 +4,8 @@ coverage/
 .env
 .env.*
 !.env.example
+env
+env.*
 public/autopilot-config.json
 *.log
 .DS_Store

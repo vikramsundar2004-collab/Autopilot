@@ -11,7 +11,7 @@ npm run dev
 
 ## Gmail Setup
 
-Create or edit `.env.local` in the project root:
+Create or edit `.env.local` in the project root. Autopilot also supports `env.local` if that is the file name you already use:
 
 ```bash
 AUTOPILOT_GOOGLE_CLIENT_ID=your-client-id
@@ -19,7 +19,7 @@ AUTOPILOT_GOOGLE_CLIENT_SECRET=optional-local-development-secret
 AUTOPILOT_GOOGLE_REDIRECT_PORT=53682
 ```
 
-Restart Autopilot after changing those values. `.env.local` is ignored by git, and `.env.example` shows the expected keys.
+Restart Autopilot after changing those values. `.env.local` and `env.local` are ignored by git, and `.env.example` shows the expected keys.
 
 When you run `npm run build` or `npm run dev`, Autopilot generates `public/autopilot-config.json` from the client ID. That generated file is copied into the built app, so people who receive that build can connect Gmail without creating their own `.env.local`. The client secret is never written to the generated public config.
 

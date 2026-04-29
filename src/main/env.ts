@@ -45,14 +45,22 @@ function readAppConfig(filePath: string): Record<string, string> {
   }
 }
 
-export function loadAutopilotEnv(): void {
-  const projectRootFromDist = path.resolve(__dirname, "../..");
-  const envCandidates = [
-    path.join(process.cwd(), ".env.local"),
-    path.join(process.cwd(), ".env"),
+export function getAutopilotEnvFileCandidates(projectRootFromDist: string, cwd = process.cwd()): string[] {
+  return [
+    path.join(cwd, "env.local"),
+    path.join(cwd, ".env.local"),
+    path.join(cwd, "env"),
+    path.join(cwd, ".env"),
+    path.join(projectRootFromDist, "env.local"),
     path.join(projectRootFromDist, ".env.local"),
+    path.join(projectRootFromDist, "env"),
     path.join(projectRootFromDist, ".env")
   ];
+}
+
+export function loadAutopilotEnv(): void {
+  const projectRootFromDist = path.resolve(__dirname, "../..");
+  const envCandidates = getAutopilotEnvFileCandidates(projectRootFromDist);
   const configCandidates = [
     path.join(process.cwd(), "public", "autopilot-config.json"),
     path.join(projectRootFromDist, "public", "autopilot-config.json"),
