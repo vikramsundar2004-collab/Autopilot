@@ -9,10 +9,12 @@ describe("parseEnvText", () => {
 # Gmail
 AUTOPILOT_GOOGLE_CLIENT_ID="client-id"
 AUTOPILOT_GOOGLE_CLIENT_SECRET=client-secret
+AUTOPILOT_OPENAI_API_KEY='openai-key'
 `)
     ).toEqual({
       AUTOPILOT_GOOGLE_CLIENT_ID: "client-id",
-      AUTOPILOT_GOOGLE_CLIENT_SECRET: "client-secret"
+      AUTOPILOT_GOOGLE_CLIENT_SECRET: "client-secret",
+      AUTOPILOT_OPENAI_API_KEY: "openai-key"
     });
   });
 });

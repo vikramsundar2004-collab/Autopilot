@@ -77,7 +77,7 @@ import type {
   CodingSnapshot,
   CodingTreeNode
 } from "../shared/coding";
-import type { EmailConnectionStatus, EmailMessageSummary } from "../shared/email";
+import type { EmailActionSuggestion, EmailConnectionStatus, EmailMessageSummary } from "../shared/email";
 import type { PasswordAvailability, PasswordCredentialSummary, PendingPasswordSave } from "../shared/passwords";
 import { getAutopilotApi } from "./autopilotApi";
 import { addHistoryEntry, loadHistoryEntries, saveHistoryEntries, type BrowserHistoryEntry } from "./history";
@@ -1544,20 +1544,16 @@ export function App(): JSX.Element {
     });
   }
 
-  function addActionsFromEmailMessages(messages: EmailMessageSummary[]): number {
+  function addEmailActionSuggestions(suggestions: EmailActionSuggestion[]): number {
     const existingKeys = new Set(actionItems.map((item) => `${item.source}:${item.context}:${item.title}`.toLowerCase()));
     const nextItems: ActionItem[] = [];
 
-    for (const message of messages) {
-      const context = getEmailContext(message);
-      const titles = extractActionItemTitles(`${message.subject}.\n${message.snippet}\n${message.actionText ?? ""}`);
-      for (const title of titles) {
-        const item = createActionItem(title, "Email", context);
-        const key = `${item.source}:${item.context}:${item.title}`.toLowerCase();
-        if (!existingKeys.has(key)) {
-          existingKeys.add(key);
-          nextItems.push(item);
-        }
+    for (const suggestion of suggestions) {
+      const item = createActionItem(suggestion.title, "Email", suggestion.context);
+      const key = `${item.source}:${item.context}:${item.title}`.toLowerCase();
+      if (!existingKeys.has(key)) {
+        existingKeys.add(key);
+        nextItems.push(item);
       }
     }
 
@@ -1566,6 +1562,54 @@ export function App(): JSX.Element {
     }
 
     return nextItems.length;
+  }
+
+  function addLocalActionsFromEmailMessages(messages: EmailMessageSummary[]): number {
+    const suggestions: EmailActionSuggestion[] = [];
+
+    for (const message of messages) {
+      const context = getEmailContext(message);
+      const titles = extractActionItemTitles(`${message.subject}.\n${message.snippet}\n${message.actionText ?? ""}`);
+      for (const title of titles) {
+        suggestions.push({ title, context, sourceMessageId: message.id });
+      }
+    }
+
+    return addEmailActionSuggestions(suggestions);
+  }
+
+  async function addActionsFromEmailMessages(messages: EmailMessageSummary[]): Promise<{
+    addedCount: number;
+    engine: "openai" | "local";
+    model?: string;
+    reason?: string;
+  }> {
+    if (messages.length === 0) {
+      return { addedCount: 0, engine: "local" };
+    }
+
+    const analysis = await autopilot.email.analyzeActions(messages).catch((error: unknown) => ({
+      success: false,
+      configured: true,
+      actions: [],
+      model: undefined,
+      reason: error instanceof Error ? error.message : "OpenAI email analysis failed."
+    }));
+
+    if (analysis.success) {
+      return {
+        addedCount: addEmailActionSuggestions(analysis.actions),
+        engine: "openai",
+        model: analysis.model
+      };
+    }
+
+    return {
+      addedCount: addLocalActionsFromEmailMessages(messages),
+      engine: "local",
+      model: analysis.model,
+      reason: analysis.reason
+    };
   }
 
   async function syncEmailInbox(): Promise<void> {
@@ -1592,14 +1636,22 @@ export function App(): JSX.Element {
       return;
     }
 
-    const addedCount = addActionsFromEmailMessages(result.messages);
-    setEmailSyncStatus(`Synced ${result.messages.length} inbox messages and added ${addedCount} action ${addedCount === 1 ? "item" : "items"}.`);
+    setEmailSyncStatus("Reading synced emails and building today's call...");
+    const actionResult = await addActionsFromEmailMessages(result.messages);
+    const plannerLabel = actionResult.engine === "openai" ? `OpenAI${actionResult.model ? ` (${actionResult.model})` : ""}` : "local rules";
+    const fallbackNote = actionResult.reason ? ` ${actionResult.reason} Used ${plannerLabel}.` : "";
+    setEmailSyncStatus(
+      `Synced ${result.messages.length} inbox messages and added ${actionResult.addedCount} action ${
+        actionResult.addedCount === 1 ? "item" : "items"
+      } with ${plannerLabel}.${fallbackNote}`
+    );
     setEmailBusy(false);
   }
 
   async function connectGmailInbox(): Promise<void> {
     setEmailBusy(true);
-    setEmailSyncStatus("Opening Google sign-in. Finish the prompt in your browser.");
+    setEmailSyncStatus("Opening Google sign-in inside Autopilot.");
+    setView("browser");
     const result = await autopilot.email.connectGmail().catch(() => ({
       success: false as const,
       status: emailStatus ?? {
@@ -1622,8 +1674,15 @@ export function App(): JSX.Element {
     }
 
     const syncedMessages = result.messages ?? [];
-    const addedCount = addActionsFromEmailMessages(syncedMessages);
-    setEmailSyncStatus(`Connected ${result.status.accountEmail ?? "Gmail"} and added ${addedCount} action ${addedCount === 1 ? "item" : "items"}.`);
+    setEmailSyncStatus("Gmail connected. Reading inbox for today's call...");
+    const actionResult = await addActionsFromEmailMessages(syncedMessages);
+    const plannerLabel = actionResult.engine === "openai" ? `OpenAI${actionResult.model ? ` (${actionResult.model})` : ""}` : "local rules";
+    const fallbackNote = actionResult.reason ? ` ${actionResult.reason} Used ${plannerLabel}.` : "";
+    setEmailSyncStatus(
+      `Connected ${result.status.accountEmail ?? "Gmail"} and added ${actionResult.addedCount} action ${
+        actionResult.addedCount === 1 ? "item" : "items"
+      } with ${plannerLabel}.${fallbackNote}`
+    );
     setEmailBusy(false);
   }
 
@@ -1638,7 +1697,11 @@ export function App(): JSX.Element {
 
   async function syncSelectedProductivitySources(): Promise<void> {
     if (selectedProductivitySources.includes("gmail")) {
-      await syncEmailInbox();
+      if (emailStatus?.connected) {
+        await syncEmailInbox();
+      } else {
+        await connectGmailInbox();
+      }
       return;
     }
 

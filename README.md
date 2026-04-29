@@ -31,6 +31,18 @@ http://127.0.0.1:53682/oauth/gmail/callback
 
 If your Google OAuth client type is `Desktop app`, the loopback redirect is handled by Google automatically.
 
+## OpenAI Email Planning
+
+Add your OpenAI key to `.env.local` to let Autopilot read synced Gmail snippets and write the real action items into Today's Call:
+
+```bash
+AUTOPILOT_OPENAI_API_KEY=your-openai-api-key
+AUTOPILOT_OPENAI_MODEL=gpt-4o-mini
+AUTOPILOT_OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+The OpenAI key is only read by the Electron main process. It is not written to `public/autopilot-config.json` or exposed to the renderer.
+
 ## Scripts
 
 - `npm run dev` starts Vite and Electron together.

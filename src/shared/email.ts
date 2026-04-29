@@ -37,6 +37,21 @@ export type EmailSyncResult = {
   reason?: string;
 };
 
+export type EmailActionSuggestion = {
+  title: string;
+  context: string;
+  sourceMessageId?: string;
+  priority?: "high" | "medium" | "low";
+};
+
+export type EmailActionAnalysisResult = {
+  success: boolean;
+  configured: boolean;
+  actions: EmailActionSuggestion[];
+  model?: string;
+  reason?: string;
+};
+
 export function parseEmailSender(value: string): { name: string; email: string } {
   const trimmed = value.trim();
   const match = trimmed.match(/^(?:"?([^"<]+)"?\s*)?<([^>]+)>$/);

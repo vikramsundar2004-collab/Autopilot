@@ -18,7 +18,13 @@ import type {
   CodingSnapshot,
   CodingWriteResult
 } from "../shared/coding.js";
-import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email.js";
+import type {
+  EmailActionAnalysisResult,
+  EmailConnectResult,
+  EmailConnectionStatus,
+  EmailMessageSummary,
+  EmailSyncResult
+} from "../shared/email.js";
 import type {
   PasswordAvailability,
   PasswordCredentialSummary,
@@ -90,6 +96,8 @@ contextBridge.exposeInMainWorld("autopilot", {
     list: () => ipcRenderer.invoke("email:list") as Promise<EmailMessageSummary[]>,
     connectGmail: () => ipcRenderer.invoke("email:connect-gmail") as Promise<EmailConnectResult>,
     sync: () => ipcRenderer.invoke("email:sync") as Promise<EmailSyncResult>,
+    analyzeActions: (messages: EmailMessageSummary[]) =>
+      ipcRenderer.invoke("email:analyze-actions", messages) as Promise<EmailActionAnalysisResult>,
     disconnect: () => ipcRenderer.invoke("email:disconnect") as Promise<EmailConnectionStatus>
   },
   coding: {

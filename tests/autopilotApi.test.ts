@@ -57,6 +57,12 @@ describe("browser preview autopilot api", () => {
       })
     );
     await expect(api.email.list()).resolves.toEqual([]);
+    await expect(api.email.analyzeActions([])).resolves.toEqual(
+      expect.objectContaining({
+        configured: false,
+        actions: []
+      })
+    );
   });
 
   it("supports tab actions without window.autopilot", async () => {

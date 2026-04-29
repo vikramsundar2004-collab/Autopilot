@@ -8,12 +8,16 @@ import path from "node:path";
 import { mapWithConcurrency } from "../shared/async.js";
 import {
   parseEmailSender,
+  type EmailActionAnalysisResult,
+  type EmailActionSuggestion,
   type EmailConnectResult,
   type EmailConnectionStatus,
   type EmailMessageSummary,
   type EmailProviderId,
   type EmailSyncResult
 } from "../shared/email.js";
+
+type OpenAuthorizationUrl = (url: string) => Promise<void> | void;
 
 type GmailTokenResponse = {
   access_token?: string;
@@ -71,6 +75,21 @@ type EmailInboxCacheFile = {
   messages: EmailMessageSummary[];
 };
 
+type OpenAiChatCompletionsResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+};
+
+type OpenAiActionPayload = {
+  actions?: unknown[];
+};
+
 const STORE_VERSION = 1;
 const GMAIL_PROVIDER: EmailProviderId = "gmail";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
@@ -82,6 +101,10 @@ const DEFAULT_GMAIL_REDIRECT_PORT = 53682;
 const DEFAULT_GMAIL_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_GMAIL_RETRY_ATTEMPTS = 2;
 const DEFAULT_GMAIL_MESSAGE_FETCH_CONCURRENCY = 4;
+const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_OPENAI_EMAIL_MESSAGES = 16;
 
 function getGoogleClientId(): string {
   return (process.env.AUTOPILOT_GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || "").trim();
@@ -111,6 +134,23 @@ function getGmailMessageFetchConcurrency(): number {
   return Number.isInteger(value) && value >= 1 && value <= 8 ? value : DEFAULT_GMAIL_MESSAGE_FETCH_CONCURRENCY;
 }
 
+function getOpenAiApiKey(): string {
+  return (process.env.AUTOPILOT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || "").trim();
+}
+
+function getOpenAiModel(): string {
+  return (process.env.AUTOPILOT_OPENAI_MODEL || DEFAULT_OPENAI_MODEL).trim();
+}
+
+function getOpenAiBaseUrl(): string {
+  return (process.env.AUTOPILOT_OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim().replace(/\/+$/u, "");
+}
+
+function getOpenAiRequestTimeoutMs(): number {
+  const value = Number.parseInt(process.env.AUTOPILOT_OPENAI_REQUEST_TIMEOUT_MS || "", 10);
+  return Number.isInteger(value) && value >= 5000 && value <= 120000 ? value : DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
+}
+
 function getGoogleOAuthForm(input: Record<string, string>): Record<string, string> {
   const clientSecret = getGoogleClientSecret();
   return clientSecret ? { ...input, client_secret: clientSecret } : input;
@@ -131,7 +171,11 @@ function writeOAuthResponse(response: ServerResponse, title: string, message: st
   response.end(`<!doctype html><html><head><title>${title}</title></head><body style="font-family: system-ui; padding: 32px;"><h1>${title}</h1><p>${message}</p></body></html>`);
 }
 
-async function requestGmailAuthorizationCode(clientId: string, challenge: string): Promise<{ code: string; redirectUri: string }> {
+async function requestGmailAuthorizationCode(
+  clientId: string,
+  challenge: string,
+  openAuthorizationUrl: OpenAuthorizationUrl
+): Promise<{ code: string; redirectUri: string }> {
   const state = base64Url(randomBytes(16));
   const server = createServer();
 
@@ -206,7 +250,7 @@ async function requestGmailAuthorizationCode(clientId: string, challenge: string
     code_challenge_method: "S256"
   }).toString();
 
-  await shell.openExternal(authUrl.toString());
+  await openAuthorizationUrl(authUrl.toString());
   return codePromise.then((result) => ({
     ...result,
     redirectUri
@@ -420,6 +464,176 @@ function stripActionTextForCache(message: EmailMessageSummary): EmailMessageSumm
   return summary;
 }
 
+function compactForOpenAi(value: string, maxLength: number): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function buildOpenAiEmailDigest(messages: EmailMessageSummary[]): string {
+  return messages
+    .slice(0, MAX_OPENAI_EMAIL_MESSAGES)
+    .map((message, index) => {
+      const body = compactForOpenAi(message.actionText || message.snippet, 1400);
+      return [
+        `Email ${index + 1}`,
+        `id: ${message.id}`,
+        `from: ${message.from}${message.fromEmail ? ` <${message.fromEmail}>` : ""}`,
+        `subject: ${message.subject}`,
+        `receivedAt: ${new Date(message.receivedAt).toISOString()}`,
+        `snippet: ${compactForOpenAi(message.snippet, 500)}`,
+        `body: ${body || "(no readable body)"}`
+      ].join("\n");
+    })
+    .join("\n\n---\n\n");
+}
+
+function cleanOpenAiActionTitle(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 140) : "";
+}
+
+function cleanOpenAiActionContext(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 120) : "";
+}
+
+function cleanOpenAiPriority(value: unknown): EmailActionSuggestion["priority"] {
+  return value === "high" || value === "medium" || value === "low" ? value : undefined;
+}
+
+function parseOpenAiActionSuggestions(content: string, messages: EmailMessageSummary[]): EmailActionSuggestion[] {
+  let parsed: OpenAiActionPayload;
+  try {
+    parsed = JSON.parse(content) as OpenAiActionPayload;
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed.actions)) {
+    return [];
+  }
+
+  const messageIds = new Set(messages.map((message) => message.id));
+  const suggestions: EmailActionSuggestion[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const rawAction of parsed.actions) {
+    if (!rawAction || typeof rawAction !== "object") {
+      continue;
+    }
+
+    const action = rawAction as Record<string, unknown>;
+    const title = cleanOpenAiActionTitle(action.title);
+    if (!title) {
+      continue;
+    }
+
+    const sourceMessageId = typeof action.sourceMessageId === "string" && messageIds.has(action.sourceMessageId) ? action.sourceMessageId : undefined;
+    const sourceMessage = sourceMessageId ? messages.find((message) => message.id === sourceMessageId) : undefined;
+    const context =
+      cleanOpenAiActionContext(action.context) ||
+      (sourceMessage ? `${sourceMessage.from} - ${sourceMessage.subject}`.slice(0, 120) : "Gmail inbox");
+    const key = `${sourceMessageId ?? ""}:${context}:${title}`.toLowerCase();
+    if (seenKeys.has(key)) {
+      continue;
+    }
+
+    seenKeys.add(key);
+    suggestions.push({
+      title,
+      context,
+      sourceMessageId,
+      priority: cleanOpenAiPriority(action.priority)
+    });
+  }
+
+  return suggestions.slice(0, 10);
+}
+
+async function fetchOpenAiActionSuggestions(messages: EmailMessageSummary[]): Promise<EmailActionAnalysisResult> {
+  const apiKey = getOpenAiApiKey();
+  const model = getOpenAiModel();
+  if (!apiKey) {
+    return {
+      success: false,
+      configured: false,
+      actions: [],
+      model,
+      reason: "Paste AUTOPILOT_OPENAI_API_KEY into .env.local, then restart Autopilot to enable AI email action planning."
+    };
+  }
+
+  if (messages.length === 0) {
+    return {
+      success: true,
+      configured: true,
+      actions: [],
+      model
+    };
+  }
+
+  const endpoint = new URL("chat/completions", `${getOpenAiBaseUrl()}/`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getOpenAiRequestTimeoutMs());
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              "You turn inbox emails into a concise action plan. Return JSON only as {\"actions\":[{\"title\":\"specific next action\",\"context\":\"sender - subject\",\"sourceMessageId\":\"email id\",\"priority\":\"high|medium|low\"}]}. Only include actions the user actually needs to do. Do not invent tasks from newsletters, alerts, receipts, marketing, or FYI messages."
+          },
+          {
+            role: "user",
+            content: `Read these Gmail messages and extract the exact tasks the user should do today. If there are no real user actions, return {"actions":[]}.\n\n${buildOpenAiEmailDigest(messages)}`
+          }
+        ]
+      }),
+      signal: controller.signal
+    });
+    const body = (await response.json()) as OpenAiChatCompletionsResponse;
+    if (!response.ok) {
+      return {
+        success: false,
+        configured: true,
+        actions: [],
+        model,
+        reason: body.error?.message || `OpenAI request failed with status ${response.status}.`
+      };
+    }
+
+    const content = body.choices?.[0]?.message?.content ?? "";
+    return {
+      success: true,
+      configured: true,
+      actions: parseOpenAiActionSuggestions(content, messages),
+      model
+    };
+  } catch (error) {
+    return {
+      success: false,
+      configured: true,
+      actions: [],
+      model,
+      reason:
+        error instanceof Error && error.name === "AbortError"
+          ? `OpenAI email analysis timed out after ${Math.round(getOpenAiRequestTimeoutMs() / 1000)} seconds.`
+          : error instanceof Error
+            ? error.message
+            : "OpenAI email analysis failed."
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function toMessageSummary(message: GmailMessageResponse): EmailMessageSummary | null {
   if (!message.id || !message.threadId) {
     return null;
@@ -498,7 +712,7 @@ export class EmailService {
     }
   }
 
-  async connectGmail(): Promise<EmailConnectResult> {
+  async connectGmail(openAuthorizationUrl: OpenAuthorizationUrl = (url) => shell.openExternal(url)): Promise<EmailConnectResult> {
     const clientId = getGoogleClientId();
     if (!clientId || !safeStorage.isEncryptionAvailable()) {
       return {
@@ -510,7 +724,7 @@ export class EmailService {
 
     try {
       const pkce = createPkceChallenge();
-      const authorization = await requestGmailAuthorizationCode(clientId, pkce.challenge);
+      const authorization = await requestGmailAuthorizationCode(clientId, pkce.challenge, openAuthorizationUrl);
       const token = await postForm<GmailTokenResponse>(
         GMAIL_TOKEN_URL,
         getGoogleOAuthForm({
@@ -555,6 +769,10 @@ export class EmailService {
         reason: error instanceof Error ? error.message : "Gmail connection failed."
       };
     }
+  }
+
+  async analyzeActionItems(messages: EmailMessageSummary[]): Promise<EmailActionAnalysisResult> {
+    return fetchOpenAiActionSuggestions(messages);
   }
 
   async syncInbox(): Promise<EmailSyncResult> {

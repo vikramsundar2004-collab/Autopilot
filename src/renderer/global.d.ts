@@ -16,7 +16,13 @@ import type {
   CodingSnapshot,
   CodingWriteResult
 } from "../shared/coding";
-import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email";
+import type {
+  EmailActionAnalysisResult,
+  EmailConnectResult,
+  EmailConnectionStatus,
+  EmailMessageSummary,
+  EmailSyncResult
+} from "../shared/email";
 import type {
   PasswordAvailability,
   PasswordCredentialSummary,
@@ -65,6 +71,7 @@ type EmailApi = {
   list: () => Promise<EmailMessageSummary[]>;
   connectGmail: () => Promise<EmailConnectResult>;
   sync: () => Promise<EmailSyncResult>;
+  analyzeActions: (messages: EmailMessageSummary[]) => Promise<EmailActionAnalysisResult>;
   disconnect: () => Promise<EmailConnectionStatus>;
 };
 

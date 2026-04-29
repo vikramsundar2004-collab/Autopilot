@@ -72,8 +72,14 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("bookmarks:set-sources", (_event, sources: string[]) => updateSelectedBookmarkSources(sources));
   ipcMain.handle("email:status", () => emailService.getStatus());
   ipcMain.handle("email:list", () => emailService.listCachedMessages());
-  ipcMain.handle("email:connect-gmail", () => emailService.connectGmail());
+  ipcMain.handle("email:connect-gmail", () =>
+    emailService.connectGmail((authUrl) => {
+      controller.createTab(authUrl);
+      mainWindow.focus();
+    })
+  );
   ipcMain.handle("email:sync", () => emailService.syncInbox());
+  ipcMain.handle("email:analyze-actions", (_event, messages) => emailService.analyzeActionItems(messages));
   ipcMain.handle("email:disconnect", () => emailService.disconnect());
   ipcMain.handle("coding:snapshot", () => codingWorkspace.getSnapshot());
   ipcMain.handle("coding:open-project", () => codingWorkspace.openProject(mainWindow));

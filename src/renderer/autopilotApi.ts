@@ -16,7 +16,13 @@ import {
   type BrowserBookmarkNode,
   type BrowserBookmarkSourceOption
 } from "../shared/bookmarks";
-import type { EmailConnectResult, EmailConnectionStatus, EmailMessageSummary, EmailSyncResult } from "../shared/email";
+import type {
+  EmailActionAnalysisResult,
+  EmailConnectResult,
+  EmailConnectionStatus,
+  EmailMessageSummary,
+  EmailSyncResult
+} from "../shared/email";
 import type {
   CodingAccessMode,
   CodingCommandRequest,
@@ -85,6 +91,7 @@ type EmailApi = {
   list: () => Promise<EmailMessageSummary[]>;
   connectGmail: () => Promise<EmailConnectResult>;
   sync: () => Promise<EmailSyncResult>;
+  analyzeActions: (messages: EmailMessageSummary[]) => Promise<EmailActionAnalysisResult>;
   disconnect: () => Promise<EmailConnectionStatus>;
 };
 
@@ -332,6 +339,12 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         status: previewEmailStatus,
         messages: [...previewEmailMessages],
         reason: previewEmailStatus.reason
+      }),
+      analyzeActions: async () => ({
+        success: false,
+        configured: false,
+        actions: [],
+        reason: "OpenAI email action planning is available in the desktop app when AUTOPILOT_OPENAI_API_KEY is configured."
       }),
       disconnect: async () => {
         previewEmailMessages = [];
