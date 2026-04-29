@@ -71,6 +71,7 @@ import type {
   CodingDirectoryEntry,
   CodingFileReadResult,
   CodingPlugin,
+  CodingProject,
   CodingResearchResult,
   CodingSearchResult,
   CodingSnapshot,
@@ -107,6 +108,8 @@ const DEFAULT_SIDEBAR_WIDTH = 292;
 const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 560;
 const SIDEBAR_WIDTH_STORAGE_KEY = "autopilot:sidebar-width";
+const CODING_CHATS_STORAGE_KEY = "autopilot:coding-chats";
+const MAX_CODING_CHATS = 120;
 
 const colorControls: Array<{ key: keyof BrowserTheme; label: string }> = [
   { key: "bg", label: "Background" },
@@ -142,10 +145,29 @@ type CodingSection = "files" | "search" | "plugins" | "terminal" | "browser";
 
 type CodingOpenedFile = Extract<CodingFileReadResult, { success: true }>;
 
+type CodingChatMessage = {
+  id: string;
+  role: "user" | "agent";
+  content: string;
+  createdAt: number;
+};
+
+type CodingChatThread = {
+  id: string;
+  projectRootPath: string | null;
+  projectName: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: CodingChatMessage[];
+};
+
 type CodingWorkbenchTab = {
   id: string;
   kind: "chat" | "file" | "folder" | "picker" | "plugins" | "terminal" | "browser";
   title: string;
+  chatId?: string;
+  projectRootPath?: string | null;
   path?: string;
   file?: CodingOpenedFile;
   content?: string;
@@ -540,6 +562,114 @@ function createCodingTabId(kind: CodingWorkbenchTab["kind"], pathValue?: string)
   return `${kind}:${pathValue ?? Date.now().toString(36)}:${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function createCodingChatId(): string {
+  return `coding-chat:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createCodingChatMessage(role: CodingChatMessage["role"], content: string): CodingChatMessage {
+  return {
+    id: `message:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    role,
+    content,
+    createdAt: Date.now()
+  };
+}
+
+function createCodingChatThread(project: CodingProject | null, title?: string): CodingChatThread {
+  const now = Date.now();
+  const projectName = project?.name ?? "General";
+  return {
+    id: createCodingChatId(),
+    projectRootPath: project?.rootPath ?? null,
+    projectName,
+    title: title ?? (project ? `New agent chat` : "New coding chat"),
+    createdAt: now,
+    updatedAt: now,
+    messages: [
+      createCodingChatMessage(
+        "agent",
+        project
+          ? `I'm scoped to ${project.name}. Ask me what to build, which files to inspect, or which command to run. I'll keep this chat tied to the project.`
+          : "Open a project to give this coding agent a folder, files, and command context."
+      )
+    ]
+  };
+}
+
+function loadCodingChats(): CodingChatThread[] {
+  try {
+    const raw = window.localStorage.getItem(CODING_CHATS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter((chat): chat is CodingChatThread => typeof chat?.id === "string" && typeof chat.title === "string")
+      .map((chat) => ({
+        ...chat,
+        projectRootPath: typeof chat.projectRootPath === "string" ? chat.projectRootPath : null,
+        projectName: typeof chat.projectName === "string" ? chat.projectName : "General",
+        createdAt: typeof chat.createdAt === "number" ? chat.createdAt : Date.now(),
+        updatedAt: typeof chat.updatedAt === "number" ? chat.updatedAt : Date.now(),
+        messages: Array.isArray(chat.messages)
+          ? chat.messages.filter(
+              (message): message is CodingChatMessage =>
+                typeof message?.id === "string" &&
+                (message.role === "user" || message.role === "agent") &&
+                typeof message.content === "string" &&
+                typeof message.createdAt === "number"
+            )
+          : []
+      }))
+      .sort((leftChat, rightChat) => rightChat.updatedAt - leftChat.updatedAt)
+      .slice(0, MAX_CODING_CHATS);
+  } catch {
+    return [];
+  }
+}
+
+function saveCodingChats(chats: CodingChatThread[]): void {
+  try {
+    window.localStorage.setItem(CODING_CHATS_STORAGE_KEY, JSON.stringify(chats.slice(0, MAX_CODING_CHATS)));
+  } catch {
+    // Chat history is helpful, but the coding workspace should still work if storage is unavailable.
+  }
+}
+
+function deriveCodingChatTitle(message: string): string {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "New agent chat";
+  }
+
+  return normalized.length > 42 ? `${normalized.slice(0, 39)}...` : normalized;
+}
+
+function formatCodingChatAge(timestamp: number): string {
+  const ageMs = Math.max(0, Date.now() - timestamp);
+  const minuteMs = 60 * 1000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+  if (ageMs < hourMs) {
+    return `${Math.max(1, Math.round(ageMs / minuteMs))}m`;
+  }
+
+  if (ageMs < dayMs) {
+    return `${Math.round(ageMs / hourMs)}h`;
+  }
+
+  if (ageMs < dayMs * 14) {
+    return `${Math.round(ageMs / dayMs)}d`;
+  }
+
+  return `${Math.round(ageMs / (dayMs * 7))}w`;
+}
+
+function createCodingAgentReply(message: string, projectName: string): string {
+  return `Agent ready in ${projectName}: I can inspect files, open the picker, run approved commands, and turn "${message}" into concrete code changes.`;
+}
+
 function getCodingTabIcon(kind: CodingWorkbenchTab["kind"], file?: CodingOpenedFile): LucideIcon {
   if (kind === "chat") {
     return MessageCircle;
@@ -614,6 +744,7 @@ export function App(): JSX.Element {
   const [codingSnapshot, setCodingSnapshot] = useState<CodingSnapshot>(defaultCodingSnapshot);
   const [codingTabs, setCodingTabs] = useState<CodingWorkbenchTab[]>(initialCodingTabs);
   const [activeCodingTabId, setActiveCodingTabId] = useState(CODING_CHAT_TAB_ID);
+  const [codingChats, setCodingChats] = useState<CodingChatThread[]>(() => loadCodingChats());
   const [openCodingFolders, setOpenCodingFolders] = useState<Record<string, boolean>>({});
   const [codingSection, setCodingSection] = useState<CodingSection>("files");
   const [codingStatus, setCodingStatus] = useState("Open a folder or create a project to start editing local files.");
@@ -641,6 +772,33 @@ export function App(): JSX.Element {
   const activeCodingTab = codingTabs.find((tab) => tab.id === activeCodingTabId) ?? codingTabs[0] ?? initialCodingTabs[0];
   const activeCodingProject = codingSnapshot.activeProject;
   const activeCodingPath = activeCodingTab?.path ?? null;
+  const activeCodingChat = activeCodingTab.kind === "chat" ? codingChats.find((chat) => chat.id === activeCodingTab.chatId) ?? null : null;
+  const codingChatsByProject = useMemo(() => {
+    const chatsByProject = new Map<string, CodingChatThread[]>();
+    for (const chat of codingChats) {
+      if (!chat.projectRootPath) {
+        continue;
+      }
+
+      const projectChats = chatsByProject.get(chat.projectRootPath) ?? [];
+      projectChats.push(chat);
+      chatsByProject.set(chat.projectRootPath, projectChats);
+    }
+
+    for (const chats of chatsByProject.values()) {
+      chats.sort((leftChat, rightChat) => rightChat.updatedAt - leftChat.updatedAt);
+    }
+
+    return chatsByProject;
+  }, [codingChats]);
+  const activeProjectChats = useMemo(
+    () => (activeCodingProject ? codingChatsByProject.get(activeCodingProject.rootPath) ?? [] : []),
+    [activeCodingProject, codingChatsByProject]
+  );
+  const globalCodingChats = useMemo(
+    () => codingChats.filter((chat) => !chat.projectRootPath).sort((leftChat, rightChat) => rightChat.updatedAt - leftChat.updatedAt),
+    [codingChats]
+  );
   const openActionItems = useMemo(() => actionItems.filter((item) => !item.completedAt), [actionItems]);
   const completedActionItems = useMemo(() => actionItems.filter((item) => item.completedAt), [actionItems]);
   const selectedProductivitySourceSet = useMemo(() => new Set(selectedProductivitySources), [selectedProductivitySources]);
@@ -725,6 +883,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     saveProductivitySources(selectedProductivitySources);
   }, [selectedProductivitySources]);
+
+  useEffect(() => {
+    saveCodingChats(codingChats);
+  }, [codingChats]);
 
   useEffect(() => {
     if (selectedActionSource !== "All" && !enabledActionSources.has(selectedActionSource)) {
@@ -1527,11 +1689,62 @@ export function App(): JSX.Element {
     );
   }
 
+  function openCodingChatTab(chat: CodingChatThread): void {
+    setCodingTabs((currentTabs) => {
+      const existingTab = currentTabs.find((tab) => tab.kind === "chat" && tab.chatId === chat.id);
+      if (existingTab) {
+        setActiveCodingTabId(existingTab.id);
+        return currentTabs.map((tab) =>
+          tab.id === existingTab.id
+            ? {
+                ...tab,
+                title: chat.title,
+                projectRootPath: chat.projectRootPath
+              }
+            : tab
+        );
+      }
+
+      const tab: CodingWorkbenchTab = {
+        id: createCodingTabId("chat", chat.id),
+        kind: "chat",
+        title: chat.title,
+        chatId: chat.id,
+        projectRootPath: chat.projectRootPath
+      };
+      setActiveCodingTabId(tab.id);
+      return [...currentTabs, tab];
+    });
+  }
+
+  function startNewCodingChat(project: CodingProject | null = activeCodingProject, title?: string): CodingChatThread {
+    const chat = createCodingChatThread(project, title);
+    setCodingChats((currentChats) => [chat, ...currentChats.filter((currentChat) => currentChat.id !== chat.id)].slice(0, MAX_CODING_CHATS));
+    openCodingChatTab(chat);
+    setCodingStatus(project ? `New agent chat started in ${project.name}.` : "New coding chat started.");
+    return chat;
+  }
+
+  async function openExistingCodingChat(chat: CodingChatThread): Promise<void> {
+    if (chat.projectRootPath && chat.projectRootPath !== activeCodingProject?.rootPath) {
+      setCodingBusy(true);
+      const snapshot = await autopilot.coding.selectProject(chat.projectRootPath).catch(() => codingSnapshot);
+      applyCodingSnapshot(snapshot, `Opened ${chat.title}.`);
+      setCodingBusy(false);
+    }
+
+    openCodingChatTab(chat);
+    setCodingStatus(`Opened chat: ${chat.title}`);
+  }
+
   async function openCodingProject(): Promise<void> {
     setCodingBusy(true);
     setCodingStatus("Choose a folder on your computer.");
     const snapshot = await autopilot.coding.openProject().catch(() => defaultCodingSnapshot);
     applyCodingSnapshot(snapshot, snapshot.activeProject ? `Opened ${snapshot.activeProject.name}.` : "No project selected.");
+    if (snapshot.activeProject) {
+      startNewCodingChat(snapshot.activeProject);
+    }
     setCodingBusy(false);
   }
 
@@ -1540,13 +1753,19 @@ export function App(): JSX.Element {
     setCodingStatus("Choose where the new project folder should live.");
     const snapshot = await autopilot.coding.createProject().catch(() => defaultCodingSnapshot);
     applyCodingSnapshot(snapshot, snapshot.activeProject ? `Created ${snapshot.activeProject.name}.` : "No project created.");
+    if (snapshot.activeProject) {
+      startNewCodingChat(snapshot.activeProject, `Create ${snapshot.activeProject.name}`);
+    }
     setCodingBusy(false);
   }
 
-  async function selectCodingProject(rootPath: string): Promise<void> {
+  async function selectCodingProject(rootPath: string, options: { startChat?: boolean } = { startChat: true }): Promise<void> {
     setCodingBusy(true);
     const snapshot = await autopilot.coding.selectProject(rootPath).catch(() => codingSnapshot);
     applyCodingSnapshot(snapshot, snapshot.activeProject ? `Switched to ${snapshot.activeProject.name}.` : undefined);
+    if (options.startChat && snapshot.activeProject) {
+      startNewCodingChat(snapshot.activeProject);
+    }
     setCodingBusy(false);
   }
 
@@ -1670,13 +1889,7 @@ export function App(): JSX.Element {
   }
 
   function newCodingChat(): void {
-    const tab: CodingWorkbenchTab = {
-      id: createCodingTabId("chat"),
-      kind: "chat",
-      title: `Chat ${codingTabs.filter((currentTab) => currentTab.kind === "chat").length + 1}`
-    };
-    setCodingTabs((currentTabs) => [...currentTabs, tab]);
-    setActiveCodingTabId(tab.id);
+    startNewCodingChat(activeCodingProject);
   }
 
   function closeCodingTab(tabId: string): void {
@@ -1775,8 +1988,47 @@ export function App(): JSX.Element {
       return;
     }
 
+    let targetChat = activeCodingChat;
+    if (!targetChat) {
+      targetChat = createCodingChatThread(activeCodingProject);
+      setCodingChats((currentChats) => [targetChat as CodingChatThread, ...currentChats].slice(0, MAX_CODING_CHATS));
+      openCodingChatTab(targetChat);
+    }
+
+    const now = Date.now();
+    const nextTitle =
+      targetChat.messages.filter((chatMessage) => chatMessage.role === "user").length === 0 ? deriveCodingChatTitle(message) : targetChat.title;
+    const userMessage = createCodingChatMessage("user", message);
+    const agentMessage = createCodingChatMessage("agent", createCodingAgentReply(message, targetChat.projectName));
+
+    setCodingChats((currentChats) => {
+      const existingChats = currentChats.some((chat) => chat.id === targetChat?.id) ? currentChats : [targetChat as CodingChatThread, ...currentChats];
+      return existingChats
+        .map((chat) =>
+          chat.id === targetChat?.id
+            ? {
+                ...chat,
+                title: nextTitle,
+                updatedAt: now,
+                messages: [...chat.messages, userMessage, agentMessage]
+              }
+            : chat
+        )
+        .sort((leftChat, rightChat) => rightChat.updatedAt - leftChat.updatedAt)
+        .slice(0, MAX_CODING_CHATS);
+    });
+    setCodingTabs((currentTabs) =>
+      currentTabs.map((tab) =>
+        tab.kind === "chat" && tab.chatId === targetChat?.id
+          ? {
+              ...tab,
+              title: nextTitle
+            }
+          : tab
+      )
+    );
     setCodingDraftMessage("");
-    setCodingStatus(`Chat saved: ${message}`);
+    setCodingStatus(`Agent chat updated: ${nextTitle}`);
   }
 
   function openGithubForCoding(): void {
@@ -2236,24 +2488,84 @@ export function App(): JSX.Element {
                   </button>
                 </div>
 
-                {codingSnapshot.projects.length > 0 && (
-                  <div className="coding-project-switcher" aria-label="Recent projects">
-                    {codingSnapshot.projects.map((project) => (
-                      <button
-                        className={project.rootPath === activeCodingProject?.rootPath ? "active" : ""}
-                        key={project.rootPath}
-                        type="button"
-                        onClick={() => void selectCodingProject(project.rootPath)}
-                      >
-                        <FolderOpen size={14} aria-hidden="true" />
-                        <span>
-                          <strong>{project.name}</strong>
-                          <small>{project.rootPath}</small>
-                        </span>
+                <div className="coding-project-browser" aria-label="Projects and chats">
+                  <div className="coding-sidebar-section-title">
+                    <span>Projects</span>
+                    <div>
+                      <button type="button" aria-label="Open file picker" onClick={openCodingPicker}>
+                        <Search size={13} aria-hidden="true" />
                       </button>
-                    ))}
+                      <button type="button" aria-label="New project chat" onClick={() => startNewCodingChat(activeCodingProject)}>
+                        <Plus size={13} aria-hidden="true" />
+                      </button>
+                    </div>
                   </div>
-                )}
+                  {codingSnapshot.projects.length === 0 ? (
+                    <span className="coding-sidebar-empty">No projects yet</span>
+                  ) : (
+                    <div className="coding-project-list">
+                      {codingSnapshot.projects.map((project) => {
+                        const projectChats = codingChatsByProject.get(project.rootPath) ?? [];
+                        const isActiveProject = project.rootPath === activeCodingProject?.rootPath;
+                        return (
+                          <div className="coding-project-group" key={project.rootPath}>
+                            <div className={`coding-project-row ${isActiveProject ? "active" : ""}`}>
+                              <button type="button" className="coding-project-main" onClick={() => void selectCodingProject(project.rootPath)}>
+                                <Folder size={15} aria-hidden="true" />
+                                <span>{project.name}</span>
+                              </button>
+                              <button
+                                className="coding-project-new-chat"
+                                type="button"
+                                aria-label={`New chat in ${project.name}`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void selectCodingProject(project.rootPath, { startChat: false }).then(() => startNewCodingChat(project));
+                                }}
+                              >
+                                <Plus size={13} aria-hidden="true" />
+                              </button>
+                            </div>
+                            {projectChats.slice(0, 5).map((chat) => (
+                              <button
+                                className={`coding-chat-row ${chat.id === activeCodingChat?.id ? "active" : ""}`}
+                                key={chat.id}
+                                type="button"
+                                onClick={() => void openExistingCodingChat(chat)}
+                              >
+                                <span>{chat.title}</span>
+                                <small>{formatCodingChatAge(chat.updatedAt)}</small>
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="coding-sidebar-section-title compact">
+                    <span>Chats</span>
+                    <button type="button" aria-label="New general coding chat" onClick={() => startNewCodingChat(null)}>
+                      <Plus size={13} aria-hidden="true" />
+                    </button>
+                  </div>
+                  {globalCodingChats.length === 0 ? (
+                    <span className="coding-sidebar-empty">No chats</span>
+                  ) : (
+                    <div className="coding-project-list">
+                      {globalCodingChats.slice(0, 5).map((chat) => (
+                        <button
+                          className={`coding-chat-row global ${chat.id === activeCodingChat?.id ? "active" : ""}`}
+                          key={chat.id}
+                          type="button"
+                          onClick={() => void openExistingCodingChat(chat)}
+                        >
+                          <span>{chat.title}</span>
+                          <small>{formatCodingChatAge(chat.updatedAt)}</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 {codingSection === "search" ? (
                   <div className="coding-search-panel">
@@ -2320,6 +2632,7 @@ export function App(): JSX.Element {
                 <div className="coding-workbench-tabs" role="tablist" aria-label="Open chats and files">
                   {codingTabs.map((tab) => {
                     const TabIcon = getCodingTabIcon(tab.kind, tab.file);
+                    const tabTitle = tab.kind === "chat" && tab.chatId ? codingChats.find((chat) => chat.id === tab.chatId)?.title ?? tab.title : tab.title;
                     return (
                       <button
                         className={`coding-tab ${tab.id === activeCodingTabId ? "active" : ""}`}
@@ -2330,7 +2643,7 @@ export function App(): JSX.Element {
                         onClick={() => setActiveCodingTabId(tab.id)}
                       >
                         <TabIcon size={14} aria-hidden="true" />
-                        <span>{tab.title}</span>
+                        <span>{tabTitle}</span>
                         {tab.dirty && <b>Unsaved</b>}
                         {codingTabs.length > 1 && (
                           <X
@@ -2353,60 +2666,87 @@ export function App(): JSX.Element {
                 <div className="coding-workbench-content">
                   {activeCodingTab.kind === "chat" && (
                     <section className="coding-chat" aria-label="Coding chat">
-                      <div className="coding-chat-hero">
-                        <AutopilotNeedle className="coding-agent-needle" />
-                        <div>
-                          <p className="panel-kicker">Coding</p>
-                          <h2>What are we building?</h2>
-                          <span>
-                            Start with a chat, open a local project, pull up GitHub in the browser, or use the plus tab to pick a file.
-                          </span>
-                        </div>
-                      </div>
-                      <div className="coding-action-grid">
-                        <button type="button" onClick={() => void openCodingProject()}>
-                          <FolderOpen size={18} aria-hidden="true" />
-                          <span>
-                            <strong>Open local folder</strong>
-                            <small>Browse files on this computer</small>
-                          </span>
-                        </button>
-                        <button type="button" onClick={() => void createCodingProject()}>
-                          <Folder size={18} aria-hidden="true" />
-                          <span>
-                            <strong>Create project</strong>
-                            <small>Make a new project folder</small>
-                          </span>
-                        </button>
-                        <button type="button" onClick={newCodingChat}>
-                          <MessageCircle size={18} aria-hidden="true" />
-                          <span>
-                            <strong>New chat</strong>
-                            <small>Start a fresh coding thread</small>
-                          </span>
-                        </button>
-                        <button type="button" onClick={openGithubForCoding}>
-                          <Github size={18} aria-hidden="true" />
-                          <span>
-                            <strong>Open GitHub</strong>
-                            <small>Research repos in the coding browser</small>
-                          </span>
-                        </button>
-                        <button type="button" onClick={openCodingPlugins}>
-                          <Package size={18} aria-hidden="true" />
-                          <span>
-                            <strong>Install plugins</strong>
-                            <small>Queue CLIs and dev tools</small>
-                          </span>
-                        </button>
-                        <button type="button" onClick={openCodingTerminal}>
-                          <Terminal size={18} aria-hidden="true" />
-                          <span>
-                            <strong>Run commands</strong>
-                            <small>Approval mode by default</small>
-                          </span>
-                        </button>
-                      </div>
+                      {activeCodingChat ? (
+                        <>
+                          <div className="coding-chat-session-heading">
+                            <AutopilotNeedle className="coding-agent-needle" />
+                            <div>
+                              <p className="panel-kicker">Agentic coding</p>
+                              <h2>{activeCodingChat.title}</h2>
+                              <span>{activeCodingChat.projectRootPath ? activeCodingChat.projectName : "General coding chat"}</span>
+                            </div>
+                            <button type="button" onClick={newCodingChat}>
+                              <Plus size={16} aria-hidden="true" />
+                              New chat
+                            </button>
+                          </div>
+                          <div className="coding-chat-thread" aria-label="Chat messages">
+                            {activeCodingChat.messages.map((message) => (
+                              <article className={`coding-chat-message ${message.role}`} key={message.id}>
+                                <strong>{message.role === "agent" ? "Autopilot" : "You"}</strong>
+                                <p>{message.content}</p>
+                              </article>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="coding-chat-hero">
+                            <AutopilotNeedle className="coding-agent-needle" />
+                            <div>
+                              <p className="panel-kicker">Coding</p>
+                              <h2>What are we building?</h2>
+                              <span>
+                                Select a project to start an agentic chat, open an older chat from the sidebar, or use the plus tab to pick files.
+                              </span>
+                            </div>
+                          </div>
+                          <div className="coding-action-grid">
+                            <button type="button" onClick={() => void openCodingProject()}>
+                              <FolderOpen size={18} aria-hidden="true" />
+                              <span>
+                                <strong>Open local folder</strong>
+                                <small>Browse files on this computer</small>
+                              </span>
+                            </button>
+                            <button type="button" onClick={() => void createCodingProject()}>
+                              <Folder size={18} aria-hidden="true" />
+                              <span>
+                                <strong>Create project</strong>
+                                <small>Make a new project folder</small>
+                              </span>
+                            </button>
+                            <button type="button" onClick={newCodingChat}>
+                              <MessageCircle size={18} aria-hidden="true" />
+                              <span>
+                                <strong>New chat</strong>
+                                <small>Start a fresh coding thread</small>
+                              </span>
+                            </button>
+                            <button type="button" onClick={openGithubForCoding}>
+                              <Github size={18} aria-hidden="true" />
+                              <span>
+                                <strong>Open GitHub</strong>
+                                <small>Research repos in the coding browser</small>
+                              </span>
+                            </button>
+                            <button type="button" onClick={openCodingPlugins}>
+                              <Package size={18} aria-hidden="true" />
+                              <span>
+                                <strong>Install plugins</strong>
+                                <small>Queue CLIs and dev tools</small>
+                              </span>
+                            </button>
+                            <button type="button" onClick={openCodingTerminal}>
+                              <Terminal size={18} aria-hidden="true" />
+                              <span>
+                                <strong>Run commands</strong>
+                                <small>Approval mode by default</small>
+                              </span>
+                            </button>
+                          </div>
+                        </>
+                      )}
                       <form
                         className="coding-chat-input"
                         onSubmit={(event) => {
@@ -2432,13 +2772,29 @@ export function App(): JSX.Element {
                       <div className="coding-content-heading">
                         <div>
                           <p className="panel-kicker">Open tab</p>
-                          <h2>{activeCodingProject ? "Choose a file or folder" : "No project open"}</h2>
+                          <h2>{activeCodingProject ? "Choose a chat, file, or folder" : "No project open"}</h2>
                         </div>
                         <button type="button" onClick={() => void openCodingProject()}>
                           <FolderOpen size={16} aria-hidden="true" />
                           Open folder
                         </button>
                       </div>
+                      {activeProjectChats.length > 0 && (
+                        <div className="coding-picker-section">
+                          <p className="panel-kicker">Project chats</p>
+                          <div className="coding-picker-chat-list">
+                            {activeProjectChats.slice(0, 8).map((chat) => (
+                              <button key={chat.id} type="button" onClick={() => void openExistingCodingChat(chat)}>
+                                <MessageCircle size={18} aria-hidden="true" />
+                                <span>
+                                  <strong>{chat.title}</strong>
+                                  <small>{formatCodingChatAge(chat.updatedAt)} ago</small>
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       {codingPickerLoading ? (
                         <div className="coding-folder-empty">
                           <FolderOpen size={26} aria-hidden="true" />
