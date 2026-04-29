@@ -518,20 +518,6 @@ function getEmailContext(message: EmailMessageSummary): string {
   return `${message.from} - ${message.subject}`.slice(0, 80);
 }
 
-function createGoogleBrowserSessionUrl(accountEmail: string | null | undefined): string {
-  const continueUrl = "https://mail.google.com/mail/u/0/";
-  const email = accountEmail?.trim();
-  if (!email) {
-    return continueUrl;
-  }
-
-  const params = new URLSearchParams({
-    Email: email,
-    continue: continueUrl
-  });
-  return `https://accounts.google.com/AccountChooser?${params.toString()}`;
-}
-
 function formatTabMemory(memoryBytes: number | undefined): string {
   if (typeof memoryBytes !== "number" || !Number.isFinite(memoryBytes) || memoryBytes <= 0) {
     return "Measuring";
@@ -1695,20 +1681,10 @@ export function App(): JSX.Element {
     const actionResult = await addActionsFromEmailMessages(syncedMessages);
     const plannerLabel = actionResult.engine === "openai" ? `OpenAI${actionResult.model ? ` (${actionResult.model})` : ""}` : "local rules";
     const fallbackNote = actionResult.reason ? ` ${actionResult.reason} Used ${plannerLabel}.` : "";
-    let browserSessionNote = "";
-    if (mode === "external") {
-      try {
-        await autopilot.tabs.create(createGoogleBrowserSessionUrl(result.status.accountEmail));
-        setView("browser");
-        browserSessionNote = " Opened Google inside Autopilot with this account selected for the browser session.";
-      } catch {
-        browserSessionNote = " Autopilot could not open the in-app Google session tab.";
-      }
-    }
     setEmailSyncStatus(
       `Connected ${result.status.accountEmail ?? "Gmail"} and added ${actionResult.addedCount} action ${
         actionResult.addedCount === 1 ? "item" : "items"
-      } with ${plannerLabel}.${fallbackNote}${browserSessionNote}`
+      } with ${plannerLabel}.${fallbackNote}`
     );
     setEmailBusy(false);
   }
