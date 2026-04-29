@@ -90,6 +90,7 @@ type EmailApi = {
   status: () => Promise<EmailConnectionStatus>;
   list: () => Promise<EmailMessageSummary[]>;
   connectGmail: () => Promise<EmailConnectResult>;
+  connectGmailExternal: () => Promise<EmailConnectResult>;
   sync: () => Promise<EmailSyncResult>;
   analyzeActions: (messages: EmailMessageSummary[]) => Promise<EmailActionAnalysisResult>;
   disconnect: () => Promise<EmailConnectionStatus>;
@@ -329,6 +330,12 @@ export function createPreviewAutopilotApi(): AutopilotApi {
       status: async () => previewEmailStatus,
       list: async () => [...previewEmailMessages],
       connectGmail: async () => ({
+        success: false,
+        status: previewEmailStatus,
+        messages: [...previewEmailMessages],
+        reason: previewEmailStatus.reason
+      }),
+      connectGmailExternal: async () => ({
         success: false,
         status: previewEmailStatus,
         messages: [...previewEmailMessages],

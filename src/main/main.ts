@@ -78,6 +78,7 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
       mainWindow.focus();
     })
   );
+  ipcMain.handle("email:connect-gmail-external", () => emailService.connectGmail());
   ipcMain.handle("email:sync", () => emailService.syncInbox());
   ipcMain.handle("email:analyze-actions", (_event, messages) => emailService.analyzeActionItems(messages));
   ipcMain.handle("email:disconnect", () => emailService.disconnect());

@@ -1648,11 +1648,14 @@ export function App(): JSX.Element {
     setEmailBusy(false);
   }
 
-  async function connectGmailInbox(): Promise<void> {
+  async function connectGmailInbox(mode: "autopilot" | "external" = "autopilot"): Promise<void> {
     setEmailBusy(true);
-    setEmailSyncStatus("Opening Google sign-in inside Autopilot.");
-    setView("browser");
-    const result = await autopilot.email.connectGmail().catch(() => ({
+    setEmailSyncStatus(mode === "external" ? "Opening Google sign-in in another browser." : "Opening Google sign-in inside Autopilot.");
+    if (mode === "autopilot") {
+      setView("browser");
+    }
+    const connect = mode === "external" ? autopilot.email.connectGmailExternal : autopilot.email.connectGmail;
+    const result = await connect().catch(() => ({
       success: false as const,
       status: emailStatus ?? {
         provider: "gmail" as const,
@@ -1662,7 +1665,7 @@ export function App(): JSX.Element {
         reason: "Gmail connection failed."
       },
       messages: emailMessages,
-      reason: "Gmail connection failed."
+      reason: mode === "external" ? "Gmail connection failed in the external browser." : "Gmail connection failed."
     }));
 
     setEmailStatus(result.status);
@@ -1700,7 +1703,7 @@ export function App(): JSX.Element {
       if (emailStatus?.connected) {
         await syncEmailInbox();
       } else {
-        await connectGmailInbox();
+        await connectGmailInbox("autopilot");
       }
       return;
     }
@@ -3284,10 +3287,25 @@ export function App(): JSX.Element {
                           </button>
                         </>
                       ) : (
-                        <button className="primary-action" type="button" onClick={() => void connectGmailInbox()} disabled={emailBusy || emailStatus?.configured === false}>
-                          <Mail size={16} aria-hidden="true" />
-                          Connect Gmail
-                        </button>
+                        <>
+                          <button
+                            className="primary-action"
+                            type="button"
+                            onClick={() => void connectGmailInbox("autopilot")}
+                            disabled={emailBusy || emailStatus?.configured === false}
+                          >
+                            <Mail size={16} aria-hidden="true" />
+                            Connect Gmail
+                          </button>
+                          <button
+                            className="secondary-action"
+                            type="button"
+                            onClick={() => void connectGmailInbox("external")}
+                            disabled={emailBusy || emailStatus?.configured === false}
+                          >
+                            Use another browser
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>

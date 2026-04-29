@@ -95,6 +95,7 @@ contextBridge.exposeInMainWorld("autopilot", {
     status: () => ipcRenderer.invoke("email:status") as Promise<EmailConnectionStatus>,
     list: () => ipcRenderer.invoke("email:list") as Promise<EmailMessageSummary[]>,
     connectGmail: () => ipcRenderer.invoke("email:connect-gmail") as Promise<EmailConnectResult>,
+    connectGmailExternal: () => ipcRenderer.invoke("email:connect-gmail-external") as Promise<EmailConnectResult>,
     sync: () => ipcRenderer.invoke("email:sync") as Promise<EmailSyncResult>,
     analyzeActions: (messages: EmailMessageSummary[]) =>
       ipcRenderer.invoke("email:analyze-actions", messages) as Promise<EmailActionAnalysisResult>,
