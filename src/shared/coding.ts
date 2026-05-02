@@ -96,6 +96,17 @@ export type CodingWriteResult =
       reason: string;
     };
 
+export type CodingDeleteResult =
+  | {
+      success: true;
+      deletedPath: string;
+      snapshot: CodingSnapshot;
+    }
+  | {
+      success: false;
+      reason: string;
+    };
+
 export type CodingPlugin = {
   id: string;
   name: string;
@@ -103,6 +114,34 @@ export type CodingPlugin = {
   description: string;
   command: string;
 };
+
+export type CodingPluginStatusState = "missing" | "installed" | "installing" | "failed" | "cancelled";
+
+export type CodingPluginStatus = {
+  id: string;
+  name: string;
+  command: string;
+  status: CodingPluginStatusState;
+  installed: boolean;
+  version?: string;
+  reason?: string;
+  startedAt?: number;
+  estimatedSeconds?: number;
+  elapsedMs?: number;
+  stdout?: string;
+  stderr?: string;
+};
+
+export type CodingPluginInstallResult =
+  | {
+      success: true;
+      status: CodingPluginStatus;
+    }
+  | {
+      success: false;
+      reason: string;
+      status?: CodingPluginStatus;
+    };
 
 export type CodingCommandRequest = {
   command: string;
@@ -157,3 +196,16 @@ export type CodingResearchResult =
       url?: string;
       reason: string;
     };
+
+export type CodingDownloadEntry = {
+  id: string;
+  filename: string;
+  url: string;
+  path: string;
+  state: "progressing" | "completed" | "cancelled" | "interrupted";
+  receivedBytes: number;
+  totalBytes: number;
+  startedAt: number;
+  updatedAt: number;
+  reason?: string;
+};

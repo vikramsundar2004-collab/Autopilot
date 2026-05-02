@@ -11,4 +11,4 @@ public/autopilot-config.json
 .DS_Store
 Thumbs.db
 .gstack/
-.gstack/
+.claude/

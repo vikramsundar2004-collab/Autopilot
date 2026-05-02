@@ -6,6 +6,7 @@ import {
   AUTOPILOT_PDF_NOTICE_MARKER,
   createHomeUrl,
   describeNavigationError,
+  findDuplicateTabIds,
   isPdfResponseHeaders,
   isPdfUrl,
   isGoogleSignInPopupUrl,
@@ -565,8 +566,13 @@ export class TabController {
   }
 
   getSnapshot(): BrowserSnapshot {
+    const rawTabs = [...this.tabs.values()].map(({ view: _view, ...tab }) => tab);
+    const duplicateIds = findDuplicateTabIds(rawTabs);
     return {
-      tabs: [...this.tabs.values()].map(({ view: _view, ...tab }) => tab),
+      tabs: rawTabs.map((tab) => ({
+        ...tab,
+        duplicateOfTabId: duplicateIds.get(tab.id)
+      })),
       activeTabId: this.activeTabId
     };
   }
@@ -646,15 +652,26 @@ export class TabController {
     });
 
     view.webContents.on("page-title-updated", (_event, title) => {
+      if (this.tabs.get(id)?.hibernated) {
+        return;
+      }
       this.patchTab(id, { title: readableTitle(title, tab.url) });
     });
 
     view.webContents.on("did-navigate", (_event, navigatedUrl) => {
+      if (this.tabs.get(id)?.hibernated) {
+        this.syncTabFromView(id);
+        return;
+      }
       this.patchTab(id, { url: navigatedUrl, navigationError: undefined });
       this.syncTabFromView(id);
     });
 
     view.webContents.on("did-navigate-in-page", (_event, navigatedUrl) => {
+      if (this.tabs.get(id)?.hibernated) {
+        this.syncTabFromView(id);
+        return;
+      }
       this.patchTab(id, { url: navigatedUrl, navigationError: undefined });
       this.syncTabFromView(id);
     });
@@ -723,11 +740,16 @@ export class TabController {
   }
 
   activateTab(tabId: string): BrowserSnapshot {
-    if (this.tabs.has(tabId)) {
-      this.activeTabId = tabId;
-      this.reconcileAttachedView();
-      this.refreshMemoryMetrics();
-      this.emit();
+    const tab = this.tabs.get(tabId);
+    if (tab) {
+      if (tab.hibernated && tab.hibernatedUrl) {
+        this.wakeTab(tabId);
+      } else {
+        this.activeTabId = tabId;
+        this.reconcileAttachedView();
+        this.refreshMemoryMetrics();
+        this.emit();
+      }
     }
 
     return this.getSnapshot();
@@ -757,6 +779,8 @@ export class TabController {
 
     tab.url = url;
     tab.isLoading = true;
+    tab.hibernated = false;
+    tab.hibernatedUrl = undefined;
     tab.navigationError = undefined;
     this.loadTabUrl(tabId, url);
     this.refreshMemoryMetrics();
@@ -792,6 +816,77 @@ export class TabController {
       tab.view.webContents.reload();
     }
 
+    return this.getSnapshot();
+  }
+
+  setTabGroup(tabId: string, groupId: string | null): BrowserSnapshot {
+    const tab = this.tabs.get(tabId);
+    if (!tab) {
+      return this.getSnapshot();
+    }
+
+    tab.groupId = groupId?.trim() || undefined;
+    this.emit();
+    return this.getSnapshot();
+  }
+
+  setTabPinned(tabId: string, pinned: boolean): BrowserSnapshot {
+    const tab = this.tabs.get(tabId);
+    if (!tab) {
+      return this.getSnapshot();
+    }
+
+    tab.pinned = pinned;
+    this.emit();
+    return this.getSnapshot();
+  }
+
+  hibernateTab(tabId: string): BrowserSnapshot {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.id === this.activeTabId || tab.hibernated) {
+      return this.getSnapshot();
+    }
+
+    const sourceUrl = tab.hibernatedUrl ?? tab.url;
+    const safeTitle = escapeHtml(tab.title || "Sleeping tab");
+    const safeUrl = escapeHtml(sourceUrl);
+    const sleepingUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8" /><title>Sleeping tab</title></head>
+<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#fff8ed;color:#123c2b;font-family:Inter,system-ui,sans-serif;">
+<main style="max-width:460px;text-align:center;">
+<h1 style="margin:0 0 12px;font-size:30px;">${safeTitle}</h1>
+<p style="margin:0;color:#6b5d4d;">Autopilot paused this page to reduce memory. Wake it to reload:</p>
+<small style="display:block;margin-top:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${safeUrl}</small>
+</main>
+</body>
+</html>`)}`;
+
+    tab.hibernated = true;
+    tab.hibernatedUrl = sourceUrl;
+    tab.memoryBytes = 0;
+    tab.isLoading = false;
+    this.loadTabUrl(tabId, sleepingUrl);
+    this.emit();
+    return this.getSnapshot();
+  }
+
+  wakeTab(tabId: string): BrowserSnapshot {
+    const tab = this.tabs.get(tabId);
+    if (!tab) {
+      return this.getSnapshot();
+    }
+
+    const wakeUrl = tab.hibernatedUrl;
+    tab.hibernated = false;
+    tab.hibernatedUrl = undefined;
+    this.activeTabId = tabId;
+    this.reconcileAttachedView();
+    if (wakeUrl) {
+      this.navigate(tabId, wakeUrl);
+    } else {
+      this.emit();
+    }
     return this.getSnapshot();
   }
 
@@ -971,6 +1066,14 @@ export class TabController {
       tab.canGoBack = tab.view.webContents.canGoBack();
       tab.canGoForward = tab.view.webContents.canGoForward();
       this.refreshMemoryMetrics();
+      this.emit();
+      return;
+    }
+
+    if (tab.hibernated) {
+      tab.isLoading = tab.view.webContents.isLoading();
+      tab.canGoBack = false;
+      tab.canGoForward = false;
       this.emit();
       return;
     }

@@ -138,4 +138,61 @@ describe("CodingWorkspace file explorer", () => {
       })
     );
   });
+
+  it("keeps environment files out of editor previews and autosave writes", async () => {
+    const projectRoot = await makeTempRoot("secret-project");
+    const envPath = path.join(projectRoot, ".env.local");
+    await writeFile(envPath, "OPENAI_API_KEY=sk-test-secret\n", "utf8");
+
+    electronMock.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [projectRoot] });
+    const workspace = new CodingWorkspace();
+    await workspace.openProject({} as never);
+
+    const readResult = await workspace.readPath(envPath);
+    expect(readResult).toEqual(
+      expect.objectContaining({
+        success: true,
+        kind: "binary",
+        reason: expect.stringContaining("Environment files are hidden")
+      })
+    );
+
+    const writeResult = await workspace.writeFile(envPath, "OPENAI_API_KEY=changed\n");
+    expect(writeResult).toEqual(
+      expect.objectContaining({
+        success: false,
+        reason: expect.stringContaining("Environment files are protected")
+      })
+    );
+  });
+
+  it("deletes folders inside the active project but refuses to delete the project root", async () => {
+    const projectRoot = await makeTempRoot("delete-project");
+    const srcPath = path.join(projectRoot, "src");
+    await mkdir(srcPath);
+    await writeFile(path.join(srcPath, "index.ts"), "export const ok = true;\n", "utf8");
+
+    electronMock.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [projectRoot] });
+    const workspace = new CodingWorkspace();
+    await workspace.openProject({} as never);
+
+    const deleteResult = await workspace.deletePath(srcPath);
+    expect(deleteResult).toEqual(
+      expect.objectContaining({
+        success: true,
+        deletedPath: path.resolve(srcPath)
+      })
+    );
+
+    const readDeletedFolder = await workspace.readPath(srcPath);
+    expect(readDeletedFolder).toEqual(expect.objectContaining({ success: false }));
+
+    const rootDeleteResult = await workspace.deletePath(projectRoot);
+    expect(rootDeleteResult).toEqual(
+      expect.objectContaining({
+        success: false,
+        reason: expect.stringContaining("project root")
+      })
+    );
+  });
 });

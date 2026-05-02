@@ -27,7 +27,11 @@ import type {
   CodingAccessMode,
   CodingCommandRequest,
   CodingCommandResult,
+  CodingDeleteResult,
+  CodingDownloadEntry,
   CodingFileReadResult,
+  CodingPluginInstallResult,
+  CodingPluginStatus,
   CodingResearchResult,
   CodingSearchResult,
   CodingSnapshot,
@@ -40,7 +44,30 @@ import type {
   PasswordSaveResult,
   PendingPasswordSave
 } from "../shared/passwords";
-import type { PageTextCaptureResult } from "../shared/productivity";
+import type {
+  PageTextCaptureResult,
+  ProductivityDraft,
+  ProductivityTask,
+  ProductivityTaskState,
+  ProductivityTaskSyncResult
+} from "../shared/productivity";
+import type {
+  AssistantContextSource,
+  AssistantRequest,
+  AssistantResponse,
+  DesignPromptSuggestionRequest,
+  DesignPromptSuggestionResponse
+} from "../shared/assistant";
+import type { ActionPlan, AgentPlanFromEmailRequest, AgentPlanResult, AgentRun, AgentStartRunRequest } from "../shared/agent";
+import {
+  defaultArtifactContent,
+  type Artifact,
+  type ArtifactCreateInput,
+  type ArtifactExportResult,
+  type ArtifactExportToCodingResult,
+  type ArtifactUpdateInput
+} from "../shared/artifacts";
+import { DEFAULT_WORKSPACE_PROFILES, type WorkspaceProfile, type WorkspaceState } from "../shared/workspaces";
 
 type ViewBounds = {
   x: number;
@@ -62,7 +89,18 @@ type TabsApi = {
   readPageText: (tabId: string) => Promise<PageTextCaptureResult>;
   print: (tabId: string) => Promise<{ success: boolean; reason?: string }>;
   setWebArea: (bounds: ViewBounds, visible: boolean) => Promise<BrowserSnapshot>;
+  setGroup: (tabId: string, groupId: string | null) => Promise<BrowserSnapshot>;
+  setPinned: (tabId: string, pinned: boolean) => Promise<BrowserSnapshot>;
+  hibernate: (tabId: string) => Promise<BrowserSnapshot>;
+  wake: (tabId: string) => Promise<BrowserSnapshot>;
   subscribe: (listener: (snapshot: BrowserSnapshot) => void) => () => void;
+};
+
+type WorkspacesApi = {
+  state: () => Promise<WorkspaceState>;
+  switch: (workspaceId: string) => Promise<WorkspaceState>;
+  update: (profile: WorkspaceProfile) => Promise<WorkspaceState>;
+  persistBrowserSnapshot: (workspaceId: string) => Promise<WorkspaceState>;
 };
 
 type BookmarksApi = {
@@ -103,10 +141,53 @@ type CodingApi = {
   selectProject: (rootPath: string) => Promise<CodingSnapshot>;
   readPath: (targetPath: string) => Promise<CodingFileReadResult>;
   writeFile: (targetPath: string, content: string) => Promise<CodingWriteResult>;
+  deletePath: (targetPath: string) => Promise<CodingDeleteResult>;
   setAccessMode: (mode: CodingAccessMode) => Promise<CodingSnapshot>;
   search: (query: string) => Promise<CodingSearchResult[]>;
   runCommand: (input: CodingCommandRequest) => Promise<CodingCommandResult>;
   browse: (input: string) => Promise<CodingResearchResult>;
+  pluginStatuses: () => Promise<CodingPluginStatus[]>;
+  installPlugin: (pluginId: string) => Promise<CodingPluginInstallResult>;
+  cancelPluginInstall: (pluginId: string) => Promise<CodingPluginInstallResult>;
+  listDownloads: () => Promise<CodingDownloadEntry[]>;
+  openDownload: (id: string) => Promise<{ success: boolean; reason?: string }>;
+};
+
+type DownloadsApi = {
+  list: () => Promise<CodingDownloadEntry[]>;
+  open: (id: string) => Promise<{ success: boolean; reason?: string }>;
+};
+
+type ProductivityApi = {
+  listTasks: () => Promise<ProductivityTask[]>;
+  listDrafts: () => Promise<ProductivityDraft[]>;
+  upsertDraft: (draft: Partial<ProductivityDraft> & Pick<ProductivityDraft, "title" | "body" | "artifactKind" | "source">) => Promise<ProductivityDraft[]>;
+  deleteDraft: (draftId: string) => Promise<ProductivityDraft[]>;
+  updateTask: (taskId: string, patch: Partial<ProductivityTask>) => Promise<ProductivityTask[]>;
+  setTaskState: (taskId: string, state: ProductivityTaskState) => Promise<ProductivityTask[]>;
+  sync: () => Promise<ProductivityTaskSyncResult>;
+};
+
+type AssistantApi = {
+  sources: () => Promise<AssistantContextSource[]>;
+  ask: (request: AssistantRequest) => Promise<AssistantResponse>;
+  generatePrompts: (request: DesignPromptSuggestionRequest) => Promise<DesignPromptSuggestionResponse>;
+};
+
+type ArtifactsApi = {
+  list: () => Promise<Artifact[]>;
+  create: (input: ArtifactCreateInput) => Promise<Artifact>;
+  update: (input: ArtifactUpdateInput) => Promise<Artifact[]>;
+  export: (artifactId: string) => Promise<ArtifactExportResult>;
+  exportToCoding: (artifactId: string) => Promise<ArtifactExportToCodingResult>;
+};
+
+type AgentApi = {
+  planFromEmail: (input: AgentPlanFromEmailRequest) => Promise<AgentPlanResult>;
+  startRun: (input: AgentStartRunRequest) => Promise<AgentPlanResult>;
+  listPlans: () => Promise<ActionPlan[]>;
+  listRuns: () => Promise<AgentRun[]>;
+  approveFinalStep: (planId: string) => Promise<AgentRun[]>;
 };
 
 export type AutopilotApi = {
@@ -117,10 +198,16 @@ export type AutopilotApi = {
     electron: string;
   };
   tabs: TabsApi;
+  workspaces: WorkspacesApi;
   bookmarks: BookmarksApi;
   passwords: PasswordsApi;
   email: EmailApi;
+  productivity: ProductivityApi;
+  assistant: AssistantApi;
+  artifacts: ArtifactsApi;
+  agent: AgentApi;
   coding: CodingApi;
+  downloads: DownloadsApi;
 };
 
 let previewApi: AutopilotApi | null = null;
@@ -142,6 +229,15 @@ export function createPreviewAutopilotApi(): AutopilotApi {
   let previewSelectedSources: string[] = [];
   let previewPasswords: PasswordCredentialSummary[] = [];
   let previewEmailMessages: EmailMessageSummary[] = [];
+  let previewWorkspaceState: WorkspaceState = {
+    activeWorkspaceId: "browsing",
+    profiles: structuredClone(DEFAULT_WORKSPACE_PROFILES)
+  };
+  let previewProductivityTasks: ProductivityTask[] = [];
+  let previewProductivityDrafts: ProductivityDraft[] = [];
+  let previewArtifacts: Artifact[] = [];
+  let previewActionPlans: ActionPlan[] = [];
+  let previewAgentRuns: AgentRun[] = [];
   const previewProject = {
     name: "Autopilot preview",
     rootPath: "C:\\Projects\\autopilot-preview",
@@ -220,12 +316,122 @@ export function createPreviewAutopilotApi(): AutopilotApi {
     return structuredClone(previewCodingSnapshot);
   }
 
+  async function createPreviewAgentArtifact(title: string, prompt: string, kind: Artifact["kind"]): Promise<AgentPlanResult> {
+    const now = Date.now();
+    const versionId = `preview-version:${crypto.randomUUID()}`;
+    const artifact: Artifact = {
+      id: `preview-artifact:${crypto.randomUUID()}`,
+      kind,
+      title: title.trim().slice(0, 120) || "Preview artifact",
+      summary: "Generated by the preview agent.",
+      source: { provider: "manual", label: "Preview prompt" },
+      visibility: "user_project",
+      pinned: false,
+      activeVersionId: versionId,
+      versions: [
+        {
+          id: versionId,
+          createdAt: now,
+          prompt,
+          summary: "Generated by the preview agent.",
+          content: defaultArtifactContent(kind, title.trim().slice(0, 120) || "Preview artifact")
+        }
+      ],
+      createdAt: now,
+      updatedAt: now
+    };
+    previewArtifacts = [artifact, ...previewArtifacts];
+
+    const plan: ActionPlan = {
+      id: `preview-plan:${crypto.randomUUID()}`,
+      title: artifact.title,
+      summary: artifact.summary,
+      source: { provider: "manual" as const, label: "Preview prompt" },
+      tool: kind,
+      artifactId: artifact.id,
+      steps: [
+        {
+          id: `preview-step:${crypto.randomUUID()}`,
+          title: "Generate artifact in the Design tab",
+          tool: kind,
+          state: "completed" as const,
+          risk: "local" as const,
+          requiresFinalApproval: false,
+          artifactId: artifact.id
+        }
+      ],
+      finalApproval: { required: false, reason: "Preview artifact only." },
+      createdAt: now,
+      updatedAt: now
+    };
+    previewActionPlans = [plan, ...previewActionPlans];
+    const run: AgentRun = {
+      id: `preview-run:${crypto.randomUUID()}`,
+      planId: plan.id,
+      state: "completed",
+      events: [
+        {
+          id: `preview-event:${crypto.randomUUID()}`,
+          createdAt: now,
+          level: "success",
+          message: "Preview artifact generated."
+        }
+      ],
+      createdAt: now,
+      updatedAt: now
+    };
+    previewAgentRuns = [run, ...previewAgentRuns];
+    return { success: true, plan, artifact, run, model: "preview", usedFallback: true };
+  }
+
   return {
     runtime: "browser-preview",
     platform: "browser",
     versions: {
       chrome: "preview",
       electron: "not running"
+    },
+    workspaces: {
+      state: async () => structuredClone(previewWorkspaceState),
+      switch: async (workspaceId: string) => {
+        if (previewWorkspaceState.profiles.some((profile) => profile.id === workspaceId)) {
+          previewWorkspaceState = {
+            ...previewWorkspaceState,
+            activeWorkspaceId: workspaceId
+          };
+        }
+        return structuredClone(previewWorkspaceState);
+      },
+      update: async (profile: WorkspaceProfile) => {
+        previewWorkspaceState = {
+          ...previewWorkspaceState,
+          profiles: previewWorkspaceState.profiles.some((currentProfile) => currentProfile.id === profile.id)
+            ? previewWorkspaceState.profiles.map((currentProfile) => (currentProfile.id === profile.id ? profile : currentProfile))
+            : [...previewWorkspaceState.profiles, profile]
+        };
+        return structuredClone(previewWorkspaceState);
+      },
+      persistBrowserSnapshot: async (workspaceId: string) => {
+        previewWorkspaceState = {
+          ...previewWorkspaceState,
+          profiles: previewWorkspaceState.profiles.map((profile) =>
+            profile.id === workspaceId
+              ? {
+                  ...profile,
+                  savedTabs: snapshot.tabs.map((tab) => ({
+                    id: tab.id,
+                    title: tab.title,
+                    url: tab.url,
+                    memoryBytes: tab.memoryBytes,
+                    lastActiveAt: Date.now()
+                  })),
+                  updatedAt: Date.now()
+                }
+              : profile
+          )
+        };
+        return structuredClone(previewWorkspaceState);
+      }
     },
     bookmarks: {
       list: async () => structuredClone(previewBookmarks),
@@ -358,6 +564,242 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         return previewEmailStatus;
       }
     },
+    productivity: {
+      listTasks: async () => structuredClone(previewProductivityTasks),
+      listDrafts: async () => structuredClone(previewProductivityDrafts),
+      upsertDraft: async (draft: Partial<ProductivityDraft> & Pick<ProductivityDraft, "title" | "body" | "artifactKind" | "source">) => {
+        const now = Date.now();
+        const nextDraft: ProductivityDraft = {
+          id: draft.id ?? `preview-draft:${now}`,
+          title: draft.title,
+          body: draft.body,
+          preview: draft.preview ?? draft.body.replace(/\s+/g, " ").trim().slice(0, 260),
+          status: draft.status ?? "draft",
+          artifactId: draft.artifactId,
+          artifactKind: draft.artifactKind,
+          source: draft.source,
+          createdAt: draft.createdAt ?? now,
+          updatedAt: now
+        };
+        previewProductivityDrafts = [nextDraft, ...previewProductivityDrafts.filter((candidate) => candidate.id !== nextDraft.id)];
+        return structuredClone(previewProductivityDrafts);
+      },
+      deleteDraft: async (draftId: string) => {
+        previewProductivityDrafts = previewProductivityDrafts.filter((draft) => draft.id !== draftId);
+        return structuredClone(previewProductivityDrafts);
+      },
+      updateTask: async (taskId: string, patch: Partial<ProductivityTask>) => {
+        previewProductivityTasks = previewProductivityTasks.map((task) =>
+          task.id === taskId ? { ...task, ...patch, updatedAt: Date.now() } : task
+        );
+        return structuredClone(previewProductivityTasks);
+      },
+      setTaskState: async (taskId: string, state: ProductivityTaskState) => {
+        previewProductivityTasks = previewProductivityTasks.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                state,
+                completedAt: state === "done" ? Date.now() : undefined,
+                updatedAt: Date.now()
+              }
+            : task
+        );
+        return structuredClone(previewProductivityTasks);
+      },
+      sync: async () => ({
+        success: false,
+        tasks: structuredClone(previewProductivityTasks),
+        addedCount: 0,
+        updatedCount: 0,
+        reason: "Productivity sync is available in the desktop app."
+      })
+    },
+    assistant: {
+      sources: async () => [
+        {
+          id: "current-tab",
+          label: "Current tab",
+          detail: "Preview page text is available.",
+          available: true,
+          enabled: true
+        },
+        {
+          id: "selected-tabs",
+          label: "Open tabs",
+          detail: `${snapshot.tabs.length} preview tabs available.`,
+          available: true,
+          enabled: false
+        },
+        {
+          id: "gmail",
+          label: "Gmail inbox",
+          detail: "Connect Gmail in the desktop app.",
+          available: false,
+          enabled: false
+        },
+        {
+          id: "downloads",
+          label: "Downloads",
+          detail: "Downloads are available in the desktop app.",
+          available: false,
+          enabled: false
+        },
+        {
+          id: "coding-project",
+          label: "Coding project",
+          detail: "Open a project in the desktop app.",
+          available: Boolean(previewCodingSnapshot.activeProject),
+          enabled: false
+        }
+      ],
+      ask: async (request: AssistantRequest) => ({
+        success: false,
+        answer: "",
+        model: "preview",
+        sources: [
+          {
+            sourceId: "current-tab",
+            title: "Preview tab",
+            text: request.prompt
+          }
+        ],
+        reason: "Autopilot Assistant needs the desktop app and AUTOPILOT_OPENAI_API_KEY."
+      }),
+      generatePrompts: async () => ({
+        success: false,
+        suggestions: [],
+        model: "preview",
+        reason: "Prompt suggestions need the desktop app and AUTOPILOT_OPENAI_API_KEY."
+      })
+    },
+    artifacts: {
+      list: async () => structuredClone(previewArtifacts),
+      create: async (input: ArtifactCreateInput) => {
+        const now = Date.now();
+        const artifact: Artifact = {
+          id: `preview-artifact:${crypto.randomUUID()}`,
+          kind: input.kind,
+          title: input.title,
+          summary: input.summary ?? "Preview artifact.",
+          source: {
+            provider: input.source?.provider === "gmail" ? "gmail" : "manual",
+            label: input.source?.label ?? "Preview prompt"
+          },
+          visibility: input.visibility ?? (input.source?.provider === "gmail" ? "ai_generated" : "user_project"),
+          pinned: Boolean(input.pinned),
+          activeVersionId: `preview-version:${crypto.randomUUID()}`,
+          versions: [
+            {
+              id: `preview-version:${crypto.randomUUID()}`,
+              createdAt: now,
+              prompt: input.prompt ?? "Preview prompt",
+              summary: input.summary ?? "Preview version.",
+              content: input.content.kind === input.kind ? input.content : defaultArtifactContent(input.kind)
+            }
+          ],
+          createdAt: now,
+          updatedAt: now
+        };
+        artifact.activeVersionId = artifact.versions[0].id;
+        previewArtifacts = [artifact, ...previewArtifacts];
+        return structuredClone(artifact);
+      },
+      update: async (input: ArtifactUpdateInput) => {
+        const now = Date.now();
+        previewArtifacts = previewArtifacts.map((artifact) => {
+          if (artifact.id !== input.artifactId) {
+            return artifact;
+          }
+
+          const version = {
+            id: `preview-version:${crypto.randomUUID()}`,
+            createdAt: now,
+            prompt: input.prompt,
+            summary: input.summary ?? "Preview edit.",
+            content: input.content
+          };
+          return {
+            ...artifact,
+            summary: input.summary ?? artifact.summary,
+            activeVersionId: version.id,
+            versions: [...artifact.versions, version],
+            updatedAt: now
+          };
+        });
+        return structuredClone(previewArtifacts);
+      },
+      export: async (artifactId: string) => {
+        const artifact = previewArtifacts.find((candidate) => candidate.id === artifactId);
+        if (!artifact) {
+          return { success: false, artifactId, reason: "Preview artifact was not found." };
+        }
+
+        return {
+          success: false,
+          artifactId,
+          kind: artifact.kind,
+          reason: "Export is available in the desktop app."
+        };
+      },
+      exportToCoding: async (artifactId: string) => {
+        const artifact = previewArtifacts.find((candidate) => candidate.id === artifactId);
+        return {
+          success: false,
+          artifactId,
+          kind: artifact?.kind,
+          reason: "Export to Coding is available in the desktop app."
+        };
+      }
+    },
+    agent: {
+      planFromEmail: async (input: AgentPlanFromEmailRequest) => {
+        const message = previewEmailMessages.find((candidate) => candidate.id === input.messageId);
+        if (!message) {
+          return { success: false, reason: "No preview email is selected." };
+        }
+
+        return createPreviewAgentArtifact(message.subject, message.snippet, input.preferredKind ?? "document");
+      },
+      startRun: async (input: AgentStartRunRequest) => createPreviewAgentArtifact(input.prompt, input.prompt, input.preferredKind ?? "website_design"),
+      listPlans: async () => structuredClone(previewActionPlans),
+      listRuns: async () => structuredClone(previewAgentRuns),
+      approveFinalStep: async (planId: string) => {
+        const now = Date.now();
+        previewActionPlans = previewActionPlans.map((plan) =>
+          plan.id === planId
+            ? {
+                ...plan,
+                finalApproval: {
+                  ...plan.finalApproval,
+                  approvedAt: now
+                },
+                steps: plan.steps.map((step) => (step.requiresFinalApproval ? { ...step, state: "completed" } : step)),
+                updatedAt: now
+              }
+            : plan
+        );
+        previewAgentRuns = previewAgentRuns.map((run) =>
+          run.planId === planId
+            ? {
+                ...run,
+                state: "completed",
+                updatedAt: now,
+                events: [
+                  ...run.events,
+                  {
+                    id: `preview-event:${crypto.randomUUID()}`,
+                    createdAt: now,
+                    level: "success",
+                    message: "Final approval recorded."
+                  }
+                ]
+              }
+            : run
+        );
+        return structuredClone(previewAgentRuns);
+      }
+    },
     coding: {
       getSnapshot: async () => structuredClone(previewCodingSnapshot),
       openProject: async () => activatePreviewCodingProject(),
@@ -400,6 +842,11 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         success: true,
         savedAt: Date.now(),
         size: new TextEncoder().encode(content).length
+      }),
+      deletePath: async (targetPath: string) => ({
+        success: true,
+        deletedPath: targetPath,
+        snapshot: structuredClone(previewCodingSnapshot)
       }),
       setAccessMode: async (mode: CodingAccessMode) => {
         previewCodingSnapshot = {
@@ -460,7 +907,56 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         title: "Autopilot coding research preview",
         snippet: "The desktop app can browse from the coding workspace and summarize the page response here.",
         status: 200
-      })
+      }),
+      pluginStatuses: async () =>
+        [
+          {
+            id: "node",
+            name: "Node.js CLI",
+            command: "winget install OpenJS.NodeJS.LTS",
+            status: "installed",
+            installed: true,
+            version: "preview"
+          },
+          {
+            id: "git",
+            name: "Git",
+            command: "winget install Git.Git",
+            status: "missing",
+            installed: false,
+            reason: "Desktop app checks your computer for installed tools."
+          }
+        ] satisfies CodingPluginStatus[],
+      installPlugin: async (pluginId: string) => ({
+        success: true,
+        status: {
+          id: pluginId,
+          name: pluginId,
+          command: "preview install",
+          status: "installing",
+          installed: false,
+          startedAt: Date.now(),
+          estimatedSeconds: 30,
+          elapsedMs: 0
+        }
+      }),
+      cancelPluginInstall: async (pluginId: string) => ({
+        success: true,
+        status: {
+          id: pluginId,
+          name: pluginId,
+          command: "preview install",
+          status: "cancelled",
+          installed: false,
+          reason: "Preview install cancelled."
+        }
+      }),
+      listDownloads: async () => [],
+      openDownload: async () => ({ success: false, reason: "Downloads are available in the desktop app." })
+    },
+    downloads: {
+      list: async () => [],
+      open: async () => ({ success: false, reason: "Downloads are available in the desktop app." })
     },
     passwords: {
       availability: async () => ({
@@ -559,6 +1055,36 @@ export function createPreviewAutopilotApi(): AutopilotApi {
       },
       print: async () => ({ success: false, reason: "Printing is available in the desktop app." }),
       setWebArea: async () => cloneSnapshot(snapshot),
+      setGroup: async (tabId: string, groupId: string | null) =>
+        publish({
+          ...snapshot,
+          tabs: updateTab(snapshot.tabs, tabId, {
+            groupId: groupId ?? undefined
+          })
+        }),
+      setPinned: async (tabId: string, pinned: boolean) =>
+        publish({
+          ...snapshot,
+          tabs: updateTab(snapshot.tabs, tabId, {
+            pinned
+          })
+        }),
+      hibernate: async (tabId: string) =>
+        publish({
+          ...snapshot,
+          tabs: updateTab(snapshot.tabs, tabId, {
+            hibernated: true,
+            memoryBytes: 0
+          })
+        }),
+      wake: async (tabId: string) =>
+        publish({
+          ...snapshot,
+          activeTabId: tabId,
+          tabs: updateTab(snapshot.tabs, tabId, {
+            hibernated: false
+          })
+        }),
       subscribe: (listener: (snapshot: BrowserSnapshot) => void) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
@@ -567,9 +1093,65 @@ export function createPreviewAutopilotApi(): AutopilotApi {
   };
 }
 
+function withCompatibilityFallback(rawApi: Partial<AutopilotApi>): AutopilotApi {
+  const fallbackApi = createPreviewAutopilotApi();
+  return {
+    runtime: rawApi.runtime ?? fallbackApi.runtime,
+    platform: rawApi.platform ?? fallbackApi.platform,
+    versions: {
+      ...fallbackApi.versions,
+      ...rawApi.versions
+    },
+    tabs: {
+      ...fallbackApi.tabs,
+      ...rawApi.tabs
+    },
+    workspaces: {
+      ...fallbackApi.workspaces,
+      ...rawApi.workspaces
+    },
+    bookmarks: {
+      ...fallbackApi.bookmarks,
+      ...rawApi.bookmarks
+    },
+    passwords: {
+      ...fallbackApi.passwords,
+      ...rawApi.passwords
+    },
+    email: {
+      ...fallbackApi.email,
+      ...rawApi.email
+    },
+    productivity: {
+      ...fallbackApi.productivity,
+      ...rawApi.productivity
+    },
+    assistant: {
+      ...fallbackApi.assistant,
+      ...rawApi.assistant
+    },
+    artifacts: {
+      ...fallbackApi.artifacts,
+      ...rawApi.artifacts
+    },
+    agent: {
+      ...fallbackApi.agent,
+      ...rawApi.agent
+    },
+    coding: {
+      ...fallbackApi.coding,
+      ...rawApi.coding
+    },
+    downloads: {
+      ...fallbackApi.downloads,
+      ...rawApi.downloads
+    }
+  };
+}
+
 export function getAutopilotApi(): AutopilotApi {
   if (window.autopilot) {
-    return window.autopilot;
+    return withCompatibilityFallback(window.autopilot);
   }
 
   previewApi ??= createPreviewAutopilotApi();

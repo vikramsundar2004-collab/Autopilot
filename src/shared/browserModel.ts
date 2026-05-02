@@ -17,6 +17,12 @@ export type Tab = {
   canGoBack: boolean;
   canGoForward: boolean;
   memoryBytes?: number;
+  workspaceId?: string;
+  groupId?: string;
+  pinned?: boolean;
+  hibernated?: boolean;
+  hibernatedUrl?: string;
+  duplicateOfTabId?: string;
   navigationError?: BrowserNavigationError;
 };
 
@@ -1017,6 +1023,27 @@ export function updateTab(tabs: Tab[], tabId: string, patch: Partial<Tab>): Tab[
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...patch } : tab));
 }
 
+export function findDuplicateTabIds(tabs: Tab[]): Map<string, string> {
+  const firstTabByUrl = new Map<string, string>();
+  const duplicateIds = new Map<string, string>();
+
+  for (const tab of tabs) {
+    const normalizedUrl = normalizeDuplicateUrl(tab.url);
+    if (!normalizedUrl) {
+      continue;
+    }
+
+    const firstTabId = firstTabByUrl.get(normalizedUrl);
+    if (firstTabId) {
+      duplicateIds.set(tab.id, firstTabId);
+    } else {
+      firstTabByUrl.set(normalizedUrl, tab.id);
+    }
+  }
+
+  return duplicateIds;
+}
+
 export function readableTitle(title: string, url: string): string {
   const trimmed = title.trim();
   if (trimmed) {
@@ -1039,5 +1066,19 @@ export function readableTitle(title: string, url: string): string {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {
     return "Untitled";
+  }
+}
+
+function normalizeDuplicateUrl(url: string): string | null {
+  if (isHomeUrl(url) || isHistoryPageUrl(url) || isPdfNoticeUrl(url)) {
+    return null;
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    parsedUrl.hash = "";
+    return parsedUrl.href.replace(/\/+$/, "").toLowerCase();
+  } catch {
+    return url.trim().toLowerCase() || null;
   }
 }

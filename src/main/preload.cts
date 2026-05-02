@@ -12,7 +12,11 @@ import type {
   CodingAccessMode,
   CodingCommandRequest,
   CodingCommandResult,
+  CodingDeleteResult,
+  CodingDownloadEntry,
   CodingFileReadResult,
+  CodingPluginInstallResult,
+  CodingPluginStatus,
   CodingResearchResult,
   CodingSearchResult,
   CodingSnapshot,
@@ -32,7 +36,23 @@ import type {
   PasswordSaveResult,
   PendingPasswordSave
 } from "../shared/passwords.js";
-import type { PageTextCaptureResult } from "../shared/productivity.js";
+import type {
+  PageTextCaptureResult,
+  ProductivityDraft,
+  ProductivityTask,
+  ProductivityTaskState,
+  ProductivityTaskSyncResult
+} from "../shared/productivity.js";
+import type {
+  AssistantContextSource,
+  AssistantRequest,
+  AssistantResponse,
+  DesignPromptSuggestionRequest,
+  DesignPromptSuggestionResponse
+} from "../shared/assistant.js";
+import type { ActionPlan, AgentPlanFromEmailRequest, AgentPlanResult, AgentRun, AgentStartRunRequest } from "../shared/agent.js";
+import type { Artifact, ArtifactCreateInput, ArtifactExportResult, ArtifactExportToCodingResult, ArtifactUpdateInput } from "../shared/artifacts.js";
+import type { WorkspaceProfile, WorkspaceState } from "../shared/workspaces.js";
 
 const tabsApi = {
   getSnapshot: () => ipcRenderer.invoke("tabs:snapshot") as Promise<BrowserSnapshot>,
@@ -48,6 +68,10 @@ const tabsApi = {
   print: (tabId: string) => ipcRenderer.invoke("tabs:print", tabId) as Promise<{ success: boolean; reason?: string }>,
   setWebArea: (bounds: Rectangle, visible: boolean) =>
     ipcRenderer.invoke("tabs:web-area", bounds, visible) as Promise<BrowserSnapshot>,
+  setGroup: (tabId: string, groupId: string | null) => ipcRenderer.invoke("tabs:set-group", tabId, groupId) as Promise<BrowserSnapshot>,
+  setPinned: (tabId: string, pinned: boolean) => ipcRenderer.invoke("tabs:set-pinned", tabId, pinned) as Promise<BrowserSnapshot>,
+  hibernate: (tabId: string) => ipcRenderer.invoke("tabs:hibernate", tabId) as Promise<BrowserSnapshot>,
+  wake: (tabId: string) => ipcRenderer.invoke("tabs:wake", tabId) as Promise<BrowserSnapshot>,
   subscribe: (listener: (snapshot: BrowserSnapshot) => void) => {
     const handler = (_event: IpcRendererEvent, snapshot: BrowserSnapshot) => listener(snapshot);
     ipcRenderer.on("tabs:changed", handler);
@@ -91,6 +115,13 @@ contextBridge.exposeInMainWorld("autopilot", {
     selectedSources: () => ipcRenderer.invoke("bookmarks:selected-sources") as Promise<string[]>,
     setSources: (sources: string[]) => ipcRenderer.invoke("bookmarks:set-sources", sources) as Promise<BrowserBookmarkNode[]>
   },
+  workspaces: {
+    state: () => ipcRenderer.invoke("workspaces:state") as Promise<WorkspaceState>,
+    switch: (workspaceId: string) => ipcRenderer.invoke("workspaces:switch", workspaceId) as Promise<WorkspaceState>,
+    update: (profile: WorkspaceProfile) => ipcRenderer.invoke("workspaces:update", profile) as Promise<WorkspaceState>,
+    persistBrowserSnapshot: (workspaceId: string) =>
+      ipcRenderer.invoke("workspaces:persist-browser-snapshot", workspaceId) as Promise<WorkspaceState>
+  },
   email: {
     status: () => ipcRenderer.invoke("email:status") as Promise<EmailConnectionStatus>,
     list: () => ipcRenderer.invoke("email:list") as Promise<EmailMessageSummary[]>,
@@ -101,6 +132,38 @@ contextBridge.exposeInMainWorld("autopilot", {
       ipcRenderer.invoke("email:analyze-actions", messages) as Promise<EmailActionAnalysisResult>,
     disconnect: () => ipcRenderer.invoke("email:disconnect") as Promise<EmailConnectionStatus>
   },
+  productivity: {
+    listTasks: () => ipcRenderer.invoke("productivity:list-tasks") as Promise<ProductivityTask[]>,
+    listDrafts: () => ipcRenderer.invoke("productivity:list-drafts") as Promise<ProductivityDraft[]>,
+    upsertDraft: (draft: Partial<ProductivityDraft> & Pick<ProductivityDraft, "title" | "body" | "artifactKind" | "source">) =>
+      ipcRenderer.invoke("productivity:upsert-draft", draft) as Promise<ProductivityDraft[]>,
+    deleteDraft: (draftId: string) => ipcRenderer.invoke("productivity:delete-draft", draftId) as Promise<ProductivityDraft[]>,
+    updateTask: (taskId: string, patch: Partial<ProductivityTask>) =>
+      ipcRenderer.invoke("productivity:update-task", taskId, patch) as Promise<ProductivityTask[]>,
+    setTaskState: (taskId: string, state: ProductivityTaskState) =>
+      ipcRenderer.invoke("productivity:set-task-state", taskId, state) as Promise<ProductivityTask[]>,
+    sync: () => ipcRenderer.invoke("productivity:sync") as Promise<ProductivityTaskSyncResult>
+  },
+  assistant: {
+    sources: () => ipcRenderer.invoke("assistant:sources") as Promise<AssistantContextSource[]>,
+    ask: (request: AssistantRequest) => ipcRenderer.invoke("assistant:ask", request) as Promise<AssistantResponse>,
+    generatePrompts: (request: DesignPromptSuggestionRequest) =>
+      ipcRenderer.invoke("assistant:generate-prompts", request) as Promise<DesignPromptSuggestionResponse>
+  },
+  artifacts: {
+    list: () => ipcRenderer.invoke("artifacts:list") as Promise<Artifact[]>,
+    create: (input: ArtifactCreateInput) => ipcRenderer.invoke("artifacts:create", input) as Promise<Artifact>,
+    update: (input: ArtifactUpdateInput) => ipcRenderer.invoke("artifacts:update", input) as Promise<Artifact[]>,
+    export: (artifactId: string) => ipcRenderer.invoke("artifacts:export", artifactId) as Promise<ArtifactExportResult>,
+    exportToCoding: (artifactId: string) => ipcRenderer.invoke("artifacts:export-to-coding", artifactId) as Promise<ArtifactExportToCodingResult>
+  },
+  agent: {
+    planFromEmail: (input: AgentPlanFromEmailRequest) => ipcRenderer.invoke("agent:plan-from-email", input) as Promise<AgentPlanResult>,
+    startRun: (input: AgentStartRunRequest) => ipcRenderer.invoke("agent:start-run", input) as Promise<AgentPlanResult>,
+    listPlans: () => ipcRenderer.invoke("agent:list-plans") as Promise<ActionPlan[]>,
+    listRuns: () => ipcRenderer.invoke("agent:list-runs") as Promise<AgentRun[]>,
+    approveFinalStep: (planId: string) => ipcRenderer.invoke("agent:approve-final-step", planId) as Promise<AgentRun[]>
+  },
   coding: {
     getSnapshot: () => ipcRenderer.invoke("coding:snapshot") as Promise<CodingSnapshot>,
     openProject: () => ipcRenderer.invoke("coding:open-project") as Promise<CodingSnapshot>,
@@ -109,10 +172,21 @@ contextBridge.exposeInMainWorld("autopilot", {
     readPath: (targetPath: string) => ipcRenderer.invoke("coding:read-path", targetPath) as Promise<CodingFileReadResult>,
     writeFile: (targetPath: string, content: string) =>
       ipcRenderer.invoke("coding:write-file", targetPath, content) as Promise<CodingWriteResult>,
+    deletePath: (targetPath: string) => ipcRenderer.invoke("coding:delete-path", targetPath) as Promise<CodingDeleteResult>,
     setAccessMode: (mode: CodingAccessMode) => ipcRenderer.invoke("coding:set-access-mode", mode) as Promise<CodingSnapshot>,
     search: (query: string) => ipcRenderer.invoke("coding:search", query) as Promise<CodingSearchResult[]>,
     runCommand: (input: CodingCommandRequest) => ipcRenderer.invoke("coding:run-command", input) as Promise<CodingCommandResult>,
-    browse: (input: string) => ipcRenderer.invoke("coding:browse", input) as Promise<CodingResearchResult>
+    browse: (input: string) => ipcRenderer.invoke("coding:browse", input) as Promise<CodingResearchResult>,
+    pluginStatuses: () => ipcRenderer.invoke("coding:plugin-statuses") as Promise<CodingPluginStatus[]>,
+    installPlugin: (pluginId: string) => ipcRenderer.invoke("coding:install-plugin", pluginId) as Promise<CodingPluginInstallResult>,
+    cancelPluginInstall: (pluginId: string) =>
+      ipcRenderer.invoke("coding:cancel-plugin-install", pluginId) as Promise<CodingPluginInstallResult>,
+    listDownloads: () => ipcRenderer.invoke("downloads:list") as Promise<CodingDownloadEntry[]>,
+    openDownload: (id: string) => ipcRenderer.invoke("downloads:open", id) as Promise<{ success: boolean; reason?: string }>
+  },
+  downloads: {
+    list: () => ipcRenderer.invoke("downloads:list") as Promise<CodingDownloadEntry[]>,
+    open: (id: string) => ipcRenderer.invoke("downloads:open", id) as Promise<{ success: boolean; reason?: string }>
   },
   passwords: passwordsApi
 });

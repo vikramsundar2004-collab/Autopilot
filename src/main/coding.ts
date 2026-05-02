@@ -1,5 +1,5 @@
 import { app, dialog, type BrowserWindow } from "electron";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -8,8 +8,11 @@ import type {
   CodingAccessMode,
   CodingCommandRequest,
   CodingCommandResult,
+  CodingDeleteResult,
   CodingDirectoryEntry,
   CodingFileReadResult,
+  CodingPluginInstallResult,
+  CodingPluginStatus,
   CodingProject,
   CodingResearchResult,
   CodingSearchResult,
@@ -26,6 +29,29 @@ const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 60_000;
+const PLUGIN_CHECK_TIMEOUT_MS = 15_000;
+const PLUGIN_OUTPUT_LIMIT = 8000;
+
+type PluginDefinition = {
+  id: string;
+  name: string;
+  command: string;
+  checkCommand: string;
+  installCommand: string;
+  installArgs?: string[];
+  installer: "shell" | "winget";
+  estimatedSeconds: number;
+};
+
+type RunningPluginInstall = {
+  child: ChildProcessWithoutNullStreams;
+  command: string;
+  startedAt: number;
+  estimatedSeconds: number;
+  cwd: string;
+  stdoutChunks: Buffer[];
+  stderrChunks: Buffer[];
+};
 
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
@@ -127,6 +153,103 @@ const DOCUMENT_MIME_BY_EXTENSION = new Map([
   [".pdf", "application/pdf"]
 ]);
 
+const PLUGIN_DEFINITIONS: PluginDefinition[] = [
+  {
+    id: "node",
+    name: "Node.js CLI",
+    command: "winget install --id OpenJS.NodeJS.LTS --exact --silent",
+    checkCommand: "node --version",
+    installCommand: "winget install --id OpenJS.NodeJS.LTS --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
+    installArgs: [
+      "install",
+      "--id",
+      "OpenJS.NodeJS.LTS",
+      "--exact",
+      "--silent",
+      "--accept-package-agreements",
+      "--accept-source-agreements",
+      "--disable-interactivity"
+    ],
+    installer: "winget",
+    estimatedSeconds: 180
+  },
+  {
+    id: "git",
+    name: "Git",
+    command: "winget install --id Git.Git --exact --silent",
+    checkCommand: "git --version",
+    installCommand: "winget install --id Git.Git --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
+    installArgs: [
+      "install",
+      "--id",
+      "Git.Git",
+      "--exact",
+      "--silent",
+      "--accept-package-agreements",
+      "--accept-source-agreements",
+      "--disable-interactivity"
+    ],
+    installer: "winget",
+    estimatedSeconds: 180
+  },
+  {
+    id: "python",
+    name: "Python",
+    command: "winget install --id Python.Python.3.12 --exact --silent",
+    checkCommand: "python --version",
+    installCommand: "winget install --id Python.Python.3.12 --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
+    installArgs: [
+      "install",
+      "--id",
+      "Python.Python.3.12",
+      "--exact",
+      "--silent",
+      "--accept-package-agreements",
+      "--accept-source-agreements",
+      "--disable-interactivity"
+    ],
+    installer: "winget",
+    estimatedSeconds: 240
+  },
+  {
+    id: "eslint",
+    name: "ESLint",
+    command: "npm install -g eslint",
+    checkCommand: "eslint --version",
+    installCommand: "npm install -g eslint",
+    installer: "shell",
+    estimatedSeconds: 90
+  },
+  {
+    id: "prettier",
+    name: "Prettier",
+    command: "npm install -g prettier",
+    checkCommand: "prettier --version",
+    installCommand: "npm install -g prettier",
+    installer: "shell",
+    estimatedSeconds: 90
+  },
+  {
+    id: "gh",
+    name: "GitHub CLI",
+    command: "winget install --id GitHub.cli --exact --silent",
+    checkCommand: "gh --version",
+    installCommand: "winget install --id GitHub.cli --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
+    installArgs: [
+      "install",
+      "--id",
+      "GitHub.cli",
+      "--exact",
+      "--silent",
+      "--accept-package-agreements",
+      "--accept-source-agreements",
+      "--disable-interactivity"
+    ],
+    installer: "winget",
+    estimatedSeconds: 180
+  }
+];
+
 function getProjectsFilePath(): string {
   return path.join(app.getPath("userData"), PROJECTS_FILE);
 }
@@ -146,6 +269,11 @@ function isInside(rootPath: string, targetPath: string): boolean {
 
 function isProtectedAppPath(targetPath: string): boolean {
   return isInside(getAppRootPath(), path.resolve(targetPath));
+}
+
+function isSensitiveEnvFilePath(targetPath: string): boolean {
+  const baseName = path.basename(targetPath).toLowerCase();
+  return baseName === ".env" || baseName === "env.local" || baseName.startsWith(".env.");
 }
 
 function toRelativePath(rootPath: string, targetPath: string): string {
@@ -291,11 +419,143 @@ async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   }
 }
 
+function getShellInvocation(command: string): { shell: string; args: string[] } {
+  return process.platform === "win32"
+    ? {
+        shell: "powershell.exe",
+        args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
+      }
+    : {
+        shell: "/bin/sh",
+        args: ["-lc", command]
+      };
+}
+
+function escapePowerShellSingleQuotedString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function toPowerShellStringArray(values: string[]): string {
+  return `@(${values.map(escapePowerShellSingleQuotedString).join(",")})`;
+}
+
+function getPluginInstallInvocation(plugin: PluginDefinition): { shell: string; args: string[]; windowsHide: boolean } {
+  if (process.platform === "win32" && plugin.installer === "winget" && plugin.installArgs) {
+    const powerShellCommand = [
+      "$ErrorActionPreference = 'Stop'",
+      "$winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source",
+      "if (-not $winget) { Write-Error 'winget is not available. Install App Installer from Microsoft Store, then try again.'; exit 127 }",
+      `$arguments = ${toPowerShellStringArray(plugin.installArgs)}`,
+      "$process = Start-Process -FilePath $winget -ArgumentList $arguments -Verb RunAs -Wait -PassThru",
+      "exit $process.ExitCode"
+    ].join("; ");
+
+    return {
+      shell: "powershell.exe",
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powerShellCommand],
+      windowsHide: false
+    };
+  }
+
+  const invocation = getShellInvocation(plugin.installCommand);
+  return {
+    ...invocation,
+    windowsHide: true
+  };
+}
+
+function formatPluginOutput(value: string): string {
+  return value
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-6)
+    .join(" ")
+    .slice(0, 600);
+}
+
+function getPluginFailureReason(plugin: PluginDefinition, exitCode: number | null, signal: NodeJS.Signals | null, stdout: string, stderr: string): string {
+  if (signal) {
+    return "Install cancelled.";
+  }
+
+  const output = formatPluginOutput(stderr || stdout);
+  const codeLabel = exitCode ?? "unknown";
+  const lowerOutput = output.toLowerCase();
+  const manualCommand = plugin.installCommand;
+  if (plugin.installer === "winget" && /cancel|denied|elevat|admin|permission|requires? administrator|uac/u.test(lowerOutput)) {
+    return `Windows did not finish the elevated ${plugin.name} installer. Approve the Windows security prompt, or run this in an Administrator terminal: ${manualCommand}${output ? ` Details: ${output}` : ""}`;
+  }
+
+  if (plugin.installer === "winget" && exitCode === 1602) {
+    return `The ${plugin.name} installer was cancelled before it finished. Try again and approve the Windows prompt, or run: ${manualCommand}`;
+  }
+
+  if (plugin.installer === "winget" && exitCode === 1603) {
+    return `The ${plugin.name} installer hit a Windows Installer failure. Restart Autopilot or Windows Terminal as administrator, then run: ${manualCommand}${output ? ` Details: ${output}` : ""}`;
+  }
+
+  return `${plugin.name} installer exited with code ${codeLabel}.${output ? ` Details: ${output}` : ` Command: ${manualCommand}`}`;
+}
+
+function runShellCommand(command: string, cwd: string, timeoutMs: number): Promise<{
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  timedOut: boolean;
+  error?: string;
+}> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const { shell, args } = getShellInvocation(command);
+    const child = spawn(shell, args, {
+      cwd,
+      windowsHide: true,
+      env: process.env
+    });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      resolve({
+        exitCode: null,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+        stderr: Buffer.concat(stderrChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+        durationMs: Date.now() - startedAt,
+        timedOut,
+        error: error.message
+      });
+    });
+    child.on("close", (exitCode) => {
+      clearTimeout(timeout);
+      resolve({
+        exitCode,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+        stderr: Buffer.concat(stderrChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+        durationMs: Date.now() - startedAt,
+        timedOut
+      });
+    });
+  });
+}
+
 export class CodingWorkspace {
   private projects: CodingProject[] = [];
   private activeRootPath: string | null = null;
   private accessMode: CodingAccessMode = "ask";
   private loaded = false;
+  private pluginInstalls = new Map<string, RunningPluginInstall>();
+  private pluginLastStatuses = new Map<string, CodingPluginStatus>();
 
   async getSnapshot(): Promise<CodingSnapshot> {
     await this.ensureLoaded();
@@ -344,6 +604,11 @@ export class CodingWorkspace {
     return this.buildSnapshot();
   }
 
+  async addProjectFromPath(rootPath: string): Promise<CodingSnapshot> {
+    await this.ensureLoaded();
+    return this.addProject(rootPath);
+  }
+
   async setAccessMode(mode: CodingAccessMode): Promise<CodingSnapshot> {
     await this.ensureLoaded();
     this.accessMode = mode;
@@ -362,6 +627,210 @@ export class CodingWorkspace {
     const results: CodingSearchResult[] = [];
     await this.searchDirectory(activeProject.rootPath, activeProject.rootPath, normalizedQuery, results);
     return results;
+  }
+
+  async deletePath(targetPath: string): Promise<CodingDeleteResult> {
+    await this.ensureLoaded();
+    const activeProject = this.getActiveProject();
+    const resolvedPath = path.resolve(targetPath);
+    if (!activeProject || !isInside(activeProject.rootPath, resolvedPath)) {
+      return { success: false, reason: "Open a project before deleting folders." };
+    }
+
+    if (resolvedPath === path.resolve(activeProject.rootPath)) {
+      return { success: false, reason: "Autopilot will not delete the project root." };
+    }
+
+    if (isProtectedAppPath(resolvedPath)) {
+      return { success: false, reason: "Autopilot app source is protected from deletes." };
+    }
+
+    try {
+      const stats = await fs.stat(resolvedPath);
+      if (!stats.isDirectory()) {
+        return { success: false, reason: "Folder deletion only works on folders." };
+      }
+
+      await fs.rm(resolvedPath, { recursive: true, force: false });
+      return {
+        success: true,
+        deletedPath: resolvedPath,
+        snapshot: await this.buildSnapshot()
+      };
+    } catch (error) {
+      return {
+        success: false,
+        reason: error instanceof Error ? error.message : "Could not delete that folder."
+      };
+    }
+  }
+
+  async getPluginStatuses(): Promise<CodingPluginStatus[]> {
+    await this.ensureLoaded();
+    const cwd = app.getPath("home");
+    const statuses: CodingPluginStatus[] = [];
+
+    for (const plugin of PLUGIN_DEFINITIONS) {
+      const running = this.pluginInstalls.get(plugin.id);
+      if (running) {
+        statuses.push(this.createRunningPluginStatus(plugin, running));
+        continue;
+      }
+
+      const lastStatus = this.pluginLastStatuses.get(plugin.id);
+      const check = await runShellCommand(plugin.checkCommand, cwd, PLUGIN_CHECK_TIMEOUT_MS);
+      if (check.exitCode === 0) {
+        statuses.push({
+          id: plugin.id,
+          name: plugin.name,
+          command: plugin.command,
+          status: "installed",
+          installed: true,
+          version: (check.stdout || check.stderr).split(/\r?\n/).find(Boolean)?.trim()
+        });
+      } else if (lastStatus?.status === "failed" || lastStatus?.status === "cancelled") {
+        statuses.push(lastStatus);
+      } else {
+        statuses.push({
+          id: plugin.id,
+          name: plugin.name,
+          command: plugin.command,
+          status: "missing",
+          installed: false,
+          reason: check.timedOut ? "Install check timed out." : check.error || check.stderr || "Not installed."
+        });
+      }
+    }
+
+    return statuses;
+  }
+
+  async installPlugin(pluginId: string): Promise<CodingPluginInstallResult> {
+    await this.ensureLoaded();
+    const plugin = PLUGIN_DEFINITIONS.find((definition) => definition.id === pluginId);
+    if (!plugin) {
+      return { success: false, reason: "Unknown plugin." };
+    }
+
+    const cwd = app.getPath("home");
+    const running = this.pluginInstalls.get(plugin.id);
+    if (running) {
+      return { success: true, status: this.createRunningPluginStatus(plugin, running) };
+    }
+
+    const check = await runShellCommand(plugin.checkCommand, cwd, PLUGIN_CHECK_TIMEOUT_MS);
+    if (check.exitCode === 0) {
+      const status: CodingPluginStatus = {
+        id: plugin.id,
+        name: plugin.name,
+        command: plugin.command,
+        status: "installed",
+        installed: true,
+        version: (check.stdout || check.stderr).split(/\r?\n/).find(Boolean)?.trim(),
+        reason: "Already installed. Install cancelled."
+      };
+      this.pluginLastStatuses.set(plugin.id, status);
+      return { success: true, status };
+    }
+
+    const { shell, args, windowsHide } = getPluginInstallInvocation(plugin);
+    try {
+      const child = spawn(shell, args, {
+        cwd,
+        windowsHide,
+        env: process.env
+      });
+      const install: RunningPluginInstall = {
+        child,
+        command: plugin.installCommand,
+        startedAt: Date.now(),
+        estimatedSeconds: plugin.estimatedSeconds,
+        cwd,
+        stdoutChunks: [],
+        stderrChunks: []
+      };
+      this.pluginInstalls.set(plugin.id, install);
+
+      child.stdout.on("data", (chunk: Buffer) => install.stdoutChunks.push(chunk));
+      child.stderr.on("data", (chunk: Buffer) => install.stderrChunks.push(chunk));
+      child.on("error", (error) => {
+        const status: CodingPluginStatus = {
+          id: plugin.id,
+          name: plugin.name,
+          command: plugin.command,
+          status: "failed",
+          installed: false,
+          reason: error.message,
+          stdout: Buffer.concat(install.stdoutChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+          stderr: Buffer.concat(install.stderrChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT)
+        };
+        this.pluginInstalls.delete(plugin.id);
+        this.pluginLastStatuses.set(plugin.id, status);
+      });
+      child.on("close", (exitCode, signal) => {
+        const stdout = Buffer.concat(install.stdoutChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT);
+        const stderr = Buffer.concat(install.stderrChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT);
+        const wasCancelled = signal !== null;
+        const status: CodingPluginStatus = {
+          id: plugin.id,
+          name: plugin.name,
+          command: plugin.command,
+          status: wasCancelled ? "cancelled" : exitCode === 0 ? "installed" : "failed",
+          installed: !wasCancelled && exitCode === 0,
+          reason:
+            exitCode === 0 && !wasCancelled
+              ? "Installed successfully."
+              : getPluginFailureReason(plugin, exitCode, signal as NodeJS.Signals | null, stdout, stderr),
+          stdout,
+          stderr
+        };
+        this.pluginInstalls.delete(plugin.id);
+        this.pluginLastStatuses.set(plugin.id, status);
+      });
+
+      return { success: true, status: this.createRunningPluginStatus(plugin, install) };
+    } catch (error) {
+      return {
+        success: false,
+        reason: error instanceof Error ? error.message : "Could not start plugin installer."
+      };
+    }
+  }
+
+  async cancelPluginInstall(pluginId: string): Promise<CodingPluginInstallResult> {
+    await this.ensureLoaded();
+    const plugin = PLUGIN_DEFINITIONS.find((definition) => definition.id === pluginId);
+    if (!plugin) {
+      return { success: false, reason: "Unknown plugin." };
+    }
+
+    const running = this.pluginInstalls.get(plugin.id);
+    if (!running) {
+      const status = this.pluginLastStatuses.get(plugin.id) ?? {
+        id: plugin.id,
+        name: plugin.name,
+        command: plugin.command,
+        status: "cancelled" as const,
+        installed: false,
+        reason: "No active install to cancel."
+      };
+      return { success: true, status };
+    }
+
+    running.child.kill();
+    const status: CodingPluginStatus = {
+      id: plugin.id,
+      name: plugin.name,
+      command: plugin.command,
+      status: "cancelled",
+      installed: false,
+      reason: "Install cancellation requested.",
+      stdout: Buffer.concat(running.stdoutChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+      stderr: Buffer.concat(running.stderrChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT)
+    };
+    this.pluginInstalls.delete(plugin.id);
+    this.pluginLastStatuses.set(plugin.id, status);
+    return { success: true, status };
   }
 
   async runCommand(input: CodingCommandRequest): Promise<CodingCommandResult> {
@@ -525,6 +994,19 @@ export class CodingWorkspace {
         return { success: false, reason: "Autopilot can only open files and folders." };
       }
 
+      if (isSensitiveEnvFilePath(resolvedPath)) {
+        return {
+          success: true,
+          kind: "binary",
+          name: path.basename(resolvedPath),
+          path: resolvedPath,
+          relativePath,
+          reason: "Environment files are hidden in the coding workspace so API keys and client secrets do not appear in chats or previews.",
+          size: stats.size,
+          modifiedAt: stats.mtimeMs
+        };
+      }
+
       const extension = path.extname(resolvedPath).toLowerCase();
       const imageMime = IMAGE_MIME_BY_EXTENSION.get(extension);
       if (imageMime) {
@@ -628,6 +1110,10 @@ export class CodingWorkspace {
       return { success: false, reason: "Autopilot app code is read-only inside the coding workspace." };
     }
 
+    if (isSensitiveEnvFilePath(resolvedPath)) {
+      return { success: false, reason: "Environment files are protected so saved API keys and client secrets are not changed from the coding workspace." };
+    }
+
     try {
       const stats = await fs.stat(resolvedPath);
       if (!stats.isFile()) {
@@ -651,6 +1137,21 @@ export class CodingWorkspace {
         reason: error instanceof Error ? error.message : "Could not save that file."
       };
     }
+  }
+
+  private createRunningPluginStatus(plugin: PluginDefinition, install: RunningPluginInstall): CodingPluginStatus {
+    return {
+      id: plugin.id,
+      name: plugin.name,
+      command: plugin.command,
+      status: "installing",
+      installed: false,
+      startedAt: install.startedAt,
+      estimatedSeconds: install.estimatedSeconds,
+      elapsedMs: Date.now() - install.startedAt,
+      stdout: Buffer.concat(install.stdoutChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+      stderr: Buffer.concat(install.stderrChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT)
+    };
   }
 
   private async addProject(rootPath: string): Promise<CodingSnapshot> {

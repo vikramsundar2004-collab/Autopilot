@@ -10,7 +10,11 @@ import type {
   CodingAccessMode,
   CodingCommandRequest,
   CodingCommandResult,
+  CodingDeleteResult,
+  CodingDownloadEntry,
   CodingFileReadResult,
+  CodingPluginInstallResult,
+  CodingPluginStatus,
   CodingResearchResult,
   CodingSearchResult,
   CodingSnapshot,
@@ -30,7 +34,23 @@ import type {
   PasswordSaveResult,
   PendingPasswordSave
 } from "../shared/passwords";
-import type { PageTextCaptureResult } from "../shared/productivity";
+import type {
+  PageTextCaptureResult,
+  ProductivityDraft,
+  ProductivityTask,
+  ProductivityTaskState,
+  ProductivityTaskSyncResult
+} from "../shared/productivity";
+import type {
+  AssistantContextSource,
+  AssistantRequest,
+  AssistantResponse,
+  DesignPromptSuggestionRequest,
+  DesignPromptSuggestionResponse
+} from "../shared/assistant";
+import type { ActionPlan, AgentPlanFromEmailRequest, AgentPlanResult, AgentRun, AgentStartRunRequest } from "../shared/agent";
+import type { Artifact, ArtifactCreateInput, ArtifactExportResult, ArtifactExportToCodingResult, ArtifactUpdateInput } from "../shared/artifacts";
+import type { WorkspaceProfile, WorkspaceState } from "../shared/workspaces";
 
 type ViewBounds = {
   x: number;
@@ -52,7 +72,18 @@ type TabsApi = {
   readPageText: (tabId: string) => Promise<PageTextCaptureResult>;
   print: (tabId: string) => Promise<{ success: boolean; reason?: string }>;
   setWebArea: (bounds: ViewBounds, visible: boolean) => Promise<BrowserSnapshot>;
+  setGroup: (tabId: string, groupId: string | null) => Promise<BrowserSnapshot>;
+  setPinned: (tabId: string, pinned: boolean) => Promise<BrowserSnapshot>;
+  hibernate: (tabId: string) => Promise<BrowserSnapshot>;
+  wake: (tabId: string) => Promise<BrowserSnapshot>;
   subscribe: (listener: (snapshot: BrowserSnapshot) => void) => () => void;
+};
+
+type WorkspacesApi = {
+  state: () => Promise<WorkspaceState>;
+  switch: (workspaceId: string) => Promise<WorkspaceState>;
+  update: (profile: WorkspaceProfile) => Promise<WorkspaceState>;
+  persistBrowserSnapshot: (workspaceId: string) => Promise<WorkspaceState>;
 };
 
 type PasswordsApi = {
@@ -83,10 +114,53 @@ type CodingApi = {
   selectProject: (rootPath: string) => Promise<CodingSnapshot>;
   readPath: (targetPath: string) => Promise<CodingFileReadResult>;
   writeFile: (targetPath: string, content: string) => Promise<CodingWriteResult>;
+  deletePath: (targetPath: string) => Promise<CodingDeleteResult>;
   setAccessMode: (mode: CodingAccessMode) => Promise<CodingSnapshot>;
   search: (query: string) => Promise<CodingSearchResult[]>;
   runCommand: (input: CodingCommandRequest) => Promise<CodingCommandResult>;
   browse: (input: string) => Promise<CodingResearchResult>;
+  pluginStatuses: () => Promise<CodingPluginStatus[]>;
+  installPlugin: (pluginId: string) => Promise<CodingPluginInstallResult>;
+  cancelPluginInstall: (pluginId: string) => Promise<CodingPluginInstallResult>;
+  listDownloads: () => Promise<CodingDownloadEntry[]>;
+  openDownload: (id: string) => Promise<{ success: boolean; reason?: string }>;
+};
+
+type DownloadsApi = {
+  list: () => Promise<CodingDownloadEntry[]>;
+  open: (id: string) => Promise<{ success: boolean; reason?: string }>;
+};
+
+type ProductivityApi = {
+  listTasks: () => Promise<ProductivityTask[]>;
+  listDrafts: () => Promise<ProductivityDraft[]>;
+  upsertDraft: (draft: Partial<ProductivityDraft> & Pick<ProductivityDraft, "title" | "body" | "artifactKind" | "source">) => Promise<ProductivityDraft[]>;
+  deleteDraft: (draftId: string) => Promise<ProductivityDraft[]>;
+  updateTask: (taskId: string, patch: Partial<ProductivityTask>) => Promise<ProductivityTask[]>;
+  setTaskState: (taskId: string, state: ProductivityTaskState) => Promise<ProductivityTask[]>;
+  sync: () => Promise<ProductivityTaskSyncResult>;
+};
+
+type AssistantApi = {
+  sources: () => Promise<AssistantContextSource[]>;
+  ask: (request: AssistantRequest) => Promise<AssistantResponse>;
+  generatePrompts: (request: DesignPromptSuggestionRequest) => Promise<DesignPromptSuggestionResponse>;
+};
+
+type ArtifactsApi = {
+  list: () => Promise<Artifact[]>;
+  create: (input: ArtifactCreateInput) => Promise<Artifact>;
+  update: (input: ArtifactUpdateInput) => Promise<Artifact[]>;
+  export: (artifactId: string) => Promise<ArtifactExportResult>;
+  exportToCoding: (artifactId: string) => Promise<ArtifactExportToCodingResult>;
+};
+
+type AgentApi = {
+  planFromEmail: (input: AgentPlanFromEmailRequest) => Promise<AgentPlanResult>;
+  startRun: (input: AgentStartRunRequest) => Promise<AgentPlanResult>;
+  listPlans: () => Promise<ActionPlan[]>;
+  listRuns: () => Promise<AgentRun[]>;
+  approveFinalStep: (planId: string) => Promise<AgentRun[]>;
 };
 
 declare global {
@@ -99,6 +173,7 @@ declare global {
         electron: string;
       };
       tabs: TabsApi;
+      workspaces: WorkspacesApi;
       bookmarks: {
         list: () => Promise<BrowserBookmarkNode[]>;
         add: (input: AddBookmarkInput) => Promise<BrowserBookmarkNode[]>;
@@ -110,7 +185,12 @@ declare global {
       };
       passwords: PasswordsApi;
       email: EmailApi;
+      productivity: ProductivityApi;
+      assistant: AssistantApi;
+      artifacts: ArtifactsApi;
+      agent: AgentApi;
       coding: CodingApi;
+      downloads: DownloadsApi;
     };
   }
 }
