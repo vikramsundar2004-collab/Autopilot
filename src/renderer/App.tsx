@@ -83,7 +83,7 @@ import type {
 import type { EmailActionSuggestion, EmailConnectionStatus, EmailMessageSummary } from "../shared/email";
 import type { PasswordAvailability, PasswordCredentialSummary, PendingPasswordSave } from "../shared/passwords";
 import type { AssistantContextSource, AssistantContextSourceId, AssistantResponse } from "../shared/assistant";
-import type { ActionPlan, AgentRun } from "../shared/agent";
+import type { ActionPlan, ActionStep, AgentRun } from "../shared/agent";
 import {
   createDesignProjectFromArtifact,
   getActiveArtifactVersion,
@@ -349,6 +349,32 @@ function getTaskStateLabel(state: ProductivityTaskState): string {
   }
 }
 
+function getDraftStatusLabel(status: ProductivityDraft["status"]): string {
+  switch (status) {
+    case "draft":
+      return "Draft";
+    case "needs_review":
+      return "Review";
+    case "approved":
+      return "Approved";
+  }
+}
+
+function getActionStepStateLabel(state: ActionStep["state"]): string {
+  switch (state) {
+    case "pending":
+      return "Pending";
+    case "running":
+      return "Running";
+    case "needs_user":
+      return "Needs you";
+    case "completed":
+      return "Done";
+    case "blocked":
+      return "Blocked";
+  }
+}
+
 function isUrgentActionItem(item: ActionItem): boolean {
   return /\b(urgent|today|deadline|due|overdue|priority|password|lose|blocked|asap|by friday|by monday)\b/i.test(
     `${item.title} ${item.context}`
@@ -393,6 +419,40 @@ function getActionInstruction(item: ActionItem): string {
 
 function getActionSourceSummary(item: ActionItem): string {
   return item.context ? `${item.source} - ${item.context}` : item.source;
+}
+
+type ActionItemHandler = "ai" | "user";
+
+function getActionItemHandler(item: ActionItem): ActionItemHandler {
+  const text = `${item.title} ${item.context}`.toLowerCase();
+
+  // Verbs that require a human: decisions, attendance, sensitive replies.
+  if (/\b(approve|decide|sign|vote|attend|meet with|interview|present|negotiate|introduce|confirm)\b/u.test(text)) {
+    return "user";
+  }
+
+  // Verbs Autopilot can credibly prepare a draft or first pass for.
+  if (/\b(draft|summarize|outline|research|compile|generate|write up|prepare|plan|read|review)\b/u.test(text)) {
+    return "ai";
+  }
+
+  // Source-based fallback: AI can prep emails, web research, and notes.
+  // Calendar attendance and chat replies stay with the user.
+  switch (item.source) {
+    case "Email":
+    case "Web":
+    case "Notes":
+      return "ai";
+    case "Calendar":
+    case "Chat":
+      return "user";
+    default:
+      return "user";
+  }
+}
+
+function getActionHandlerLabel(handler: ActionItemHandler): string {
+  return handler === "ai" ? "AI" : "You";
 }
 
 function getBuiltInWorkspaceView(profile: WorkspaceProfile): WorkspaceView {
@@ -4092,13 +4152,13 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
       {view === "browser" && (
       <aside className="sidebar browser-sidebar" aria-label="Browser navigation">
         <div className="sidebar-scroll">
-          <section className="sidebar-brand" aria-label="Autopilot">
-            <button className="icon-preview-trigger brand-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+          <section className="sidebar-brand" aria-label="Autopilot Browser">
+            <button className="icon-preview-trigger brand-icon-trigger" type="button" aria-label="Preview Autopilot Browser icon" onClick={() => setIconPreviewOpen(true)}>
               <img className="brand-logo" src="./autopilot-logo.svg" alt="" />
             </button>
             <span>
-              <strong>Autopilot</strong>
-              <small>Browser workspaces</small>
+              <strong>Autopilot Browser</strong>
+              <small>Workspaces</small>
             </span>
           </section>
 
@@ -4269,23 +4329,26 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
         </button>
       )}
 
-      <section className={`browser-shell ${view === "browser" ? "" : "app-view"}`} aria-label="Autopilot workspace">
+      <section className={`browser-shell ${view === "browser" ? "" : "app-view"}`} aria-label="Autopilot Browser workspace">
         <header className="titlebar">
           <div className="app-title">
-            <button className="icon-preview-trigger app-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+            <button className="icon-preview-trigger app-icon-trigger" type="button" aria-label="Preview Autopilot Browser icon" onClick={() => setIconPreviewOpen(true)}>
               <img className="app-logo" src="./autopilot-logo.svg" alt="" />
             </button>
-            <strong>
-              {view === "productivity"
-                ? "Autopilot Productivity"
-                : view === "coding"
-                  ? "Autopilot Coding"
-                  : view === "settings"
-                    ? "Autopilot Settings"
-                    : view === "design"
-                      ? "Autopilot Design"
-                      : "Autopilot Browser"}
-            </strong>
+            <strong>Autopilot Browser</strong>
+            {view !== "browser" && (
+              <span className="app-title-section">
+                {view === "productivity"
+                  ? "Productivity"
+                  : view === "coding"
+                    ? "Coding"
+                    : view === "settings"
+                      ? "Settings"
+                      : view === "design"
+                        ? "Design"
+                        : ""}
+              </span>
+            )}
           </div>
         </header>
 
@@ -4368,10 +4431,10 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
           >
             {isBrowserPreview && (
               <div className="web-content-placeholder">
-                <section className="empty-state" aria-label="Autopilot start page">
+                <section className="empty-state" aria-label="Autopilot Browser start page">
                   <h1 className="home-wordmark">
-                    <span>Autopilot</span>
-                    <button className="icon-preview-trigger home-title-icon-trigger" type="button" aria-label="Preview Autopilot icon" onClick={() => setIconPreviewOpen(true)}>
+                    <span>Autopilot Browser</span>
+                    <button className="icon-preview-trigger home-title-icon-trigger" type="button" aria-label="Preview Autopilot Browser icon" onClick={() => setIconPreviewOpen(true)}>
                       <AutopilotNeedle className="home-title-needle" />
                     </button>
                   </h1>
@@ -5926,7 +5989,12 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
                               </small>
                               <span>{draft.preview}</span>
                             </span>
-                            <b>{draft.status === "needs_review" ? "Review" : "Draft"}</b>
+                            <span className="draft-status-pill" data-status={draft.status}>
+                              {draft.status === "approved" && <Check size={12} aria-hidden="true" />}
+                              {draft.status === "needs_review" && <Eye size={12} aria-hidden="true" />}
+                              {draft.status === "draft" && <Sparkles size={12} aria-hidden="true" />}
+                              {getDraftStatusLabel(draft.status)}
+                            </span>
                           </button>
                           <div className="productivity-draft-actions">
                             <button className="secondary-action" type="button" onClick={() => openProductivityDraft(draft)}>
@@ -5965,6 +6033,7 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
                     <div className="action-checklist">
                       {sourcedOpenActionItems.map((item) => {
                         const task = taskByActionId.get(item.id);
+                        const handler = getActionItemHandler(item);
                         return (
                           <article className="checklist-item" key={item.id}>
                             <label>
@@ -5975,7 +6044,17 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
                                 aria-label={`Mark ${item.title} done`}
                               />
                               <span className="checklist-copy">
-                                <strong>{item.title}</strong>
+                                <span className="checklist-title-row">
+                                  <strong>{item.title}</strong>
+                                  <span
+                                    className="action-handler-pill"
+                                    data-handler={handler}
+                                    title={handler === "ai" ? "Autopilot can prepare a draft for your approval" : "This needs you directly"}
+                                  >
+                                    {handler === "ai" ? <Sparkles size={11} aria-hidden="true" /> : <Eye size={11} aria-hidden="true" />}
+                                    {getActionHandlerLabel(handler)}
+                                  </span>
+                                </span>
                                 <small>
                                   {item.source}
                                   {item.context ? ` - ${item.context}` : ""}
@@ -6213,7 +6292,12 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
                   </div>
                 </header>
 
-                {artifactStatus ? <p className="artifact-status" role="status">{artifactStatus}</p> : null}
+                {artifactStatus ? (
+                  <p className={`artifact-status ${artifactBusy ? "ai-busy" : ""}`} role="status">
+                    {artifactBusy && <Sparkles size={14} className="spin" aria-hidden="true" />}
+                    <span>{artifactStatus}</span>
+                  </p>
+                ) : null}
                 {artifactExportResult?.success && <p className="artifact-status success">Export saved at {artifactExportResult.path}</p>}
                 {exportToCodingStatus && <p className="artifact-status success">{exportToCodingStatus}</p>}
 
@@ -6291,6 +6375,9 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
                     <aside className="artifact-editor-panel" aria-label="Artifact editor">
                       <div className="artifact-panel-section">
                         <p className="panel-kicker">Editor</p>
+                        <p className="panel-helper">
+                          Edit directly to save a version yourself. Use the AI prompt to send the sidebar instruction through the model.
+                        </p>
                         <textarea
                           value={artifactEditorDraft}
                           onChange={(event) => setArtifactEditorDraft(event.target.value)}
@@ -6301,7 +6388,7 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
                             <Save size={15} aria-hidden="true" />
                             Save version
                           </button>
-                          <button className="primary-action" type="button" disabled={artifactBusy || artifactPrompt.trim().length === 0} onClick={() => void reviseActiveArtifactWithAi()}>
+                          <button className="primary-action ai-action" type="button" disabled={artifactBusy || artifactPrompt.trim().length === 0} onClick={() => void reviseActiveArtifactWithAi()}>
                             <Sparkles size={15} aria-hidden="true" />
                             Apply AI prompt
                           </button>
@@ -6317,7 +6404,14 @@ ${artifactContentToEditorText(activeArtifactVersion.content)}`
                             {activeActionPlan.steps.map((step) => (
                               <li key={step.id}>
                                 <strong>{step.title}</strong>
-                                <span>{step.state.replace(/_/g, " ")}</span>
+                                <span className="step-status-pill" data-state={step.state}>
+                                  {step.state === "running" && <Sparkles size={11} className="spin" aria-hidden="true" />}
+                                  {step.state === "completed" && <Check size={11} aria-hidden="true" />}
+                                  {step.state === "needs_user" && <Eye size={11} aria-hidden="true" />}
+                                  {step.state === "blocked" && <AlertTriangle size={11} aria-hidden="true" />}
+                                  {step.state === "pending" && <Clock size={11} aria-hidden="true" />}
+                                  {getActionStepStateLabel(step.state)}
+                                </span>
                               </li>
                             ))}
                           </ol>
