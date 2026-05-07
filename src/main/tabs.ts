@@ -7,6 +7,7 @@ import {
   createHomeUrl,
   describeNavigationError,
   findDuplicateTabIds,
+  isHomeUrl,
   isPdfResponseHeaders,
   isPdfUrl,
   isGoogleSignInPopupUrl,
@@ -15,7 +16,8 @@ import {
   type BrowserSnapshot,
   type Tab
 } from "../shared/browserModel.js";
-import type { PageTextCaptureResult } from "../shared/productivity.js";
+import type { PageDomActionResult, PageDomSnapshotResult, PageTextCaptureResult } from "../shared/productivity.js";
+import type { WorkspaceTabRecord } from "../shared/workspaces.js";
 
 type ManagedTab = Tab & {
   view: WebContentsView;
@@ -43,6 +45,36 @@ const EMPTY_BOUNDS: Rectangle = { x: 0, y: 0, width: 0, height: 0 };
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BROWSER_PARTITION = "persist:autopilot";
 const MEMORY_REFRESH_INTERVAL_MS = 4_000;
+const PAGE_AGENT_MAX_SELECTOR_LENGTH = 240;
+
+function sanitizePageAgentSelector(selector: unknown): string | null {
+  if (typeof selector !== "string") {
+    return null;
+  }
+
+  const trimmed = selector.trim();
+  if (!trimmed || trimmed.length > PAGE_AGENT_MAX_SELECTOR_LENGTH) {
+    return null;
+  }
+
+  if (/[{};`<>]/u.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function normalizePageAgentFillValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value.slice(0, 10_000);
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return "";
+}
 
 function metricMemoryBytes(metric: ProcessMetric | undefined): number | undefined {
   const rawMemory = metric?.memory.privateBytes ?? metric?.memory.workingSetSize;
@@ -552,11 +584,22 @@ export class TabController {
   private bounds: Rectangle = EMPTY_BOUNDS;
   private visible = false;
   private memoryRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly recoveringTabIds = new Set<string>();
 
   constructor(window: BrowserWindow) {
     this.window = window;
     this.registerPdfResponseHandler();
     this.memoryRefreshTimer = setInterval(() => this.refreshMemoryMetrics(), MEMORY_REFRESH_INTERVAL_MS);
+    this.window.webContents.on("did-start-loading", () => {
+      this.detachCurrentView();
+    });
+    this.window.webContents.on("dom-ready", () => this.reconcileAttachedView());
+    this.window.webContents.on("did-finish-load", () => this.reconcileAttachedView());
+    this.window.webContents.on("did-stop-loading", () => this.reconcileAttachedView());
+    this.window.webContents.on("render-process-gone", () => {
+      this.visible = false;
+      this.detachCurrentView();
+    });
     this.window.on("closed", () => {
       if (this.memoryRefreshTimer) {
         clearInterval(this.memoryRefreshTimer);
@@ -577,22 +620,45 @@ export class TabController {
     };
   }
 
+  restoreSnapshot(savedTabs: WorkspaceTabRecord[] = [], activeTabId: string | null = null): BrowserSnapshot {
+    for (const tab of this.tabs.values()) {
+      this.detachView(tab.id);
+      if (!tab.view.webContents.isDestroyed()) {
+        tab.view.webContents.close();
+      }
+    }
+
+    this.tabs.clear();
+    this.activeTabId = null;
+    this.attachedViewId = null;
+
+    const validTabs = savedTabs.filter((tab) => typeof tab.url === "string" && tab.url.trim());
+    if (validTabs.length === 0) {
+      return this.createTab();
+    }
+
+    for (const savedTab of validTabs) {
+      this.createRestoredTab(savedTab);
+    }
+
+    const preferredActiveTabId =
+      activeTabId && this.tabs.has(activeTabId)
+        ? activeTabId
+        : validTabs.find((tab) => tab.id === activeTabId)?.id ?? validTabs[0]?.id ?? null;
+    this.activeTabId = preferredActiveTabId && this.tabs.has(preferredActiveTabId) ? preferredActiveTabId : [...this.tabs.keys()][0] ?? null;
+    this.reconcileAttachedView();
+    this.refreshMemoryMetrics();
+    this.emit();
+    return this.getSnapshot();
+  }
+
   createTab(url = createHomeUrl()): BrowserSnapshot {
     const id = crypto.randomUUID();
     const requestedUrl = normalizeAddressInput(typeof url === "string" ? url : "", createHomeUrl());
     const safeUrl = isSafeBrowserUrl(requestedUrl) ? requestedUrl : createHomeUrl();
     const shouldOpenPdfExternally = isExternalPdfUrl(safeUrl);
     const initialUrl = shouldOpenPdfExternally ? createPdfExternalNoticeUrl(safeUrl) : safeUrl;
-    const view = new WebContentsView({
-      webPreferences: {
-        preload: path.join(__dirname, "browserViewPreload.cjs"),
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        webSecurity: true,
-        partition: BROWSER_PARTITION
-      }
-    });
+    const view = this.createBrowserView();
 
     const tab: ManagedTab = {
       id,
@@ -603,6 +669,66 @@ export class TabController {
       canGoForward: false,
       view
     };
+
+    this.registerTabEvents(tab);
+    this.tabs.set(id, tab);
+    this.activeTabId = id;
+    this.loadTabUrl(id, initialUrl);
+    this.refreshMemoryMetrics();
+    if (shouldOpenPdfExternally) {
+      openPdfInSystem(safeUrl);
+    }
+    this.reconcileAttachedView();
+    this.emit();
+    return this.getSnapshot();
+  }
+
+  private createRestoredTab(savedTab: WorkspaceTabRecord): void {
+    const requestedUrl = savedTab.hibernated && savedTab.hibernatedUrl ? savedTab.hibernatedUrl : savedTab.url;
+    const normalizedUrl = normalizeAddressInput(requestedUrl, createHomeUrl());
+    const safeUrl = isSafeBrowserUrl(normalizedUrl) ? normalizedUrl : createHomeUrl();
+    const shouldOpenPdfExternally = isExternalPdfUrl(safeUrl);
+    const initialUrl = shouldOpenPdfExternally ? createPdfExternalNoticeUrl(safeUrl) : safeUrl;
+    const view = this.createBrowserView();
+
+    const tab: ManagedTab = {
+      id: savedTab.id || crypto.randomUUID(),
+      title: shouldOpenPdfExternally ? "PDF opened externally" : readableTitle(savedTab.title ?? "", initialUrl),
+      url: initialUrl,
+      isLoading: false,
+      canGoBack: false,
+      canGoForward: false,
+      memoryBytes: savedTab.memoryBytes,
+      groupId: savedTab.groupId,
+      pinned: savedTab.pinned,
+      hibernated: false,
+      hibernatedUrl: undefined,
+      view
+    };
+
+    this.registerTabEvents(tab);
+    this.tabs.set(tab.id, tab);
+    this.loadTabUrl(tab.id, initialUrl);
+    if (shouldOpenPdfExternally) {
+      openPdfInSystem(safeUrl);
+    }
+  }
+
+  private createBrowserView(): WebContentsView {
+    return new WebContentsView({
+      webPreferences: {
+        preload: path.join(__dirname, "browserViewPreload.cjs"),
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+        partition: BROWSER_PARTITION
+      }
+    });
+  }
+
+  private registerTabEvents(tab: ManagedTab): void {
+    const { id, view } = tab;
 
     view.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
       if (isExternalPdfUrl(popupUrl)) {
@@ -677,11 +803,7 @@ export class TabController {
     });
 
     view.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
-      if (errorCode === -3) {
-        return;
-      }
-
-      if (isMainFrame === false) {
+      if (errorCode === -3 || isMainFrame === false) {
         return;
       }
 
@@ -696,16 +818,13 @@ export class TabController {
       this.markNavigationFailure(id, errorCode, errorDescription, validatedUrl);
     });
 
-    this.tabs.set(id, tab);
-    this.activeTabId = id;
-    this.loadTabUrl(id, initialUrl);
-    this.refreshMemoryMetrics();
-    if (shouldOpenPdfExternally) {
-      openPdfInSystem(safeUrl);
-    }
-    this.reconcileAttachedView();
-    this.emit();
-    return this.getSnapshot();
+    view.webContents.on("render-process-gone", () => {
+      if (this.tabs.get(id)?.view !== view) {
+        return;
+      }
+
+      this.recoverTabView(id);
+    });
   }
 
   closeTab(tabId: string): BrowserSnapshot {
@@ -813,6 +932,11 @@ export class TabController {
   reload(tabId: string): BrowserSnapshot {
     const tab = this.tabs.get(tabId);
     if (tab) {
+      if (tab.view.webContents.isDestroyed()) {
+        this.recoverTabView(tabId);
+        return this.getSnapshot();
+      }
+
       tab.view.webContents.reload();
     }
 
@@ -924,6 +1048,322 @@ export class TabController {
       return {
         success: false,
         reason: error instanceof Error && error.message ? error.message : "Unable to read the current page."
+      };
+    }
+  }
+
+  async readDOM(tabId: string): Promise<PageDomSnapshotResult> {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+      return { success: false, reason: "No active page to inspect." };
+    }
+
+    try {
+      const capture = (await tab.view.webContents.executeJavaScript(
+        `(() => {
+          const normalize = (value, limit = 180) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, limit);
+          const visible = (element) => {
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return Boolean((rect.width || rect.height) && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0");
+          };
+          const cssEscape = (value) => window.CSS && CSS.escape ? CSS.escape(String(value)) : String(value).replace(/[^a-zA-Z0-9_-]/g, "\\\\$&");
+          const quoteAttr = (value) => JSON.stringify(String(value));
+          const selectorFor = (element) => {
+            const tag = element.tagName.toLowerCase();
+            const id = element.getAttribute("id");
+            if (id) {
+              return "#" + cssEscape(id);
+            }
+
+            const stableAttrs = ["data-testid", "data-test", "aria-label", "name"];
+            for (const attr of stableAttrs) {
+              const value = element.getAttribute(attr);
+              if (value) {
+                return tag + "[" + attr + "=" + quoteAttr(value) + "]";
+              }
+            }
+
+            const parent = element.parentElement;
+            if (!parent) {
+              return tag;
+            }
+
+            const siblings = Array.from(parent.children).filter((child) => child.tagName === element.tagName);
+            const position = Math.max(1, siblings.indexOf(element) + 1);
+            return tag + ":nth-of-type(" + position + ")";
+          };
+          const kindFor = (element) => {
+            const tag = element.tagName.toLowerCase();
+            if (tag === "a") return "link";
+            if (tag === "button" || element.getAttribute("role") === "button") return "button";
+            if (tag === "input") return "input";
+            if (tag === "textarea") return "textarea";
+            if (tag === "select") return "select";
+            if (element.isContentEditable) return "contenteditable";
+            return "other";
+          };
+          const dangerousPattern = /\\b(send|submit|delete|remove|pay|purchase|checkout|confirm|order|buy|publish|share|sign)\\b/i;
+          const isApprovalRequired = (element, label) => {
+            const tag = element.tagName.toLowerCase();
+            const type = normalize(element.getAttribute("type"), 40).toLowerCase();
+            return tag === "button" && type === "submit" || tag === "input" && type === "submit" || dangerousPattern.test(label);
+          };
+          const candidates = Array.from(document.querySelectorAll("a[href],button,input,textarea,select,[role='button'],[contenteditable='true']")).slice(0, 200);
+          const elements = candidates
+            .map((element) => {
+              const tagName = element.tagName.toLowerCase();
+              const text = normalize(element.innerText || element.textContent || "", 220);
+              const placeholder = normalize(element.getAttribute("placeholder"), 120);
+              const name = normalize(element.getAttribute("name"), 120);
+              const ariaLabel = normalize(element.getAttribute("aria-label"), 140);
+              const title = normalize(element.getAttribute("title"), 140);
+              const value = "value" in element ? normalize(element.value, 180) : "";
+              const label = normalize(ariaLabel || text || placeholder || title || name || value || tagName, 180);
+              const approvalRequired = isApprovalRequired(element, label);
+              return {
+                selector: selectorFor(element),
+                kind: kindFor(element),
+                label,
+                tagName,
+                text,
+                placeholder: placeholder || undefined,
+                name: name || undefined,
+                type: normalize(element.getAttribute("type"), 60) || undefined,
+                href: tagName === "a" ? element.href || undefined : undefined,
+                value: value || undefined,
+                disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"),
+                visible: visible(element),
+                approvalRequired,
+                approvalReason: approvalRequired ? "External-impact controls require approval before Autopilot clicks them." : undefined
+              };
+            })
+            .filter((element) => element.visible && element.label)
+            .slice(0, 80);
+
+          return {
+            title: document.title || "",
+            url: location.href,
+            text: (document.body?.innerText || "").replace(/\\s+\\n/g, "\\n").trim().slice(0, 12000),
+            elements
+          };
+        })()`,
+        true
+      )) as Partial<PageDomSnapshotResult & { title: unknown; url: unknown; text: unknown; elements: unknown }>;
+
+      return {
+        success: true,
+        title: typeof capture.title === "string" ? capture.title.trim().slice(0, 140) : tab.title,
+        url: typeof capture.url === "string" ? capture.url : tab.url,
+        text: typeof capture.text === "string" ? capture.text : "",
+        elements: Array.isArray(capture.elements) ? capture.elements.slice(0, 80) : []
+      };
+    } catch (error) {
+      return {
+        success: false,
+        reason: error instanceof Error && error.message ? error.message : "Unable to inspect the current page."
+      };
+    }
+  }
+
+  async clickBySelector(tabId: string, selector: string): Promise<PageDomActionResult> {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+      return { success: false, action: "click", reason: "No active page to click.", selector };
+    }
+
+    const safeSelector = sanitizePageAgentSelector(selector);
+    if (!safeSelector) {
+      return { success: false, action: "click", reason: "Selector is empty or unsafe.", selector };
+    }
+
+    try {
+      const result = (await tab.view.webContents.executeJavaScript(
+        `(() => {
+          const selector = ${JSON.stringify(safeSelector)};
+          const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, 180);
+          const element = document.querySelector(selector);
+          if (!element) {
+            return { success: false, reason: "No element matched that selector." };
+          }
+
+          const label = normalize(element.getAttribute("aria-label") || element.innerText || element.textContent || element.getAttribute("title") || element.getAttribute("name") || element.getAttribute("value") || selector);
+          const tag = element.tagName.toLowerCase();
+          const type = normalize(element.getAttribute("type")).toLowerCase();
+          const dangerousPattern = /\\b(send|submit|delete|remove|pay|purchase|checkout|confirm|order|buy|publish|share|sign)\\b/i;
+          if (tag === "button" && type === "submit" || tag === "input" && type === "submit" || dangerousPattern.test(label)) {
+            return { success: false, reason: "Approval required before clicking an external-impact control.", label };
+          }
+
+          if (element.disabled || element.getAttribute("aria-disabled") === "true") {
+            return { success: false, reason: "That element is disabled.", label };
+          }
+
+          element.scrollIntoView({ block: "center", inline: "center" });
+          element.click();
+          return { success: true, label };
+        })()`,
+        true
+      )) as Partial<{ success: boolean; reason: string; label: string }>;
+
+      if (result.success) {
+        return { success: true, action: "click", selector: safeSelector, label: typeof result.label === "string" ? result.label : safeSelector };
+      }
+
+      return {
+        success: false,
+        action: "click",
+        selector: safeSelector,
+        reason: typeof result.reason === "string" ? result.reason : "Unable to click that element."
+      };
+    } catch (error) {
+      return {
+        success: false,
+        action: "click",
+        selector: safeSelector,
+        reason: error instanceof Error && error.message ? error.message : "Unable to click that element."
+      };
+    }
+  }
+
+  async fillBySelector(tabId: string, selector: string, value: unknown): Promise<PageDomActionResult> {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+      return { success: false, action: "fill", reason: "No active page to fill.", selector };
+    }
+
+    const safeSelector = sanitizePageAgentSelector(selector);
+    if (!safeSelector) {
+      return { success: false, action: "fill", reason: "Selector is empty or unsafe.", selector };
+    }
+
+    const safeValue = normalizePageAgentFillValue(value);
+
+    try {
+      const result = (await tab.view.webContents.executeJavaScript(
+        `(() => {
+          const selector = ${JSON.stringify(safeSelector)};
+          const value = ${JSON.stringify(safeValue)};
+          const normalize = (input) => String(input || "").replace(/\\s+/g, " ").trim().slice(0, 180);
+          const element = document.querySelector(selector);
+          if (!element) {
+            return { success: false, reason: "No element matched that selector." };
+          }
+
+          const label = normalize(element.getAttribute("aria-label") || element.getAttribute("placeholder") || element.getAttribute("name") || element.innerText || selector);
+          if (element.disabled || element.getAttribute("aria-disabled") === "true") {
+            return { success: false, reason: "That field is disabled.", label };
+          }
+
+          if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+            element.focus();
+            element.value = value;
+            element.dispatchEvent(new Event("input", { bubbles: true }));
+            element.dispatchEvent(new Event("change", { bubbles: true }));
+            return { success: true, label, value };
+          }
+
+          if (element.isContentEditable) {
+            element.focus();
+            element.textContent = value;
+            element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+            element.dispatchEvent(new Event("change", { bubbles: true }));
+            return { success: true, label, value };
+          }
+
+          return { success: false, reason: "Matched element is not a fillable field.", label };
+        })()`,
+        true
+      )) as Partial<{ success: boolean; reason: string; label: string; value: string }>;
+
+      if (result.success) {
+        return {
+          success: true,
+          action: "fill",
+          selector: safeSelector,
+          label: typeof result.label === "string" ? result.label : safeSelector,
+          value: safeValue
+        };
+      }
+
+      return {
+        success: false,
+        action: "fill",
+        selector: safeSelector,
+        reason: typeof result.reason === "string" ? result.reason : "Unable to fill that field."
+      };
+    } catch (error) {
+      return {
+        success: false,
+        action: "fill",
+        selector: safeSelector,
+        reason: error instanceof Error && error.message ? error.message : "Unable to fill that field."
+      };
+    }
+  }
+
+  async scrollTo(tabId: string, target: string | number): Promise<PageDomActionResult> {
+    const tab = this.tabs.get(tabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+      return { success: false, action: "scroll", reason: "No active page to scroll." };
+    }
+
+    if (typeof target === "number" && Number.isFinite(target)) {
+      const y = Math.max(0, Math.round(target));
+      try {
+        await tab.view.webContents.executeJavaScript(
+          `(() => {
+            window.scrollTo({ top: ${y}, behavior: "smooth" });
+            return true;
+          })()`,
+          true
+        );
+        return { success: true, action: "scroll", value: String(y) };
+      } catch (error) {
+        return {
+          success: false,
+          action: "scroll",
+          reason: error instanceof Error && error.message ? error.message : "Unable to scroll that page."
+        };
+      }
+    }
+
+    const safeSelector = sanitizePageAgentSelector(target);
+    if (!safeSelector) {
+      return { success: false, action: "scroll", reason: "Scroll target is empty or unsafe.", selector: typeof target === "string" ? target : undefined };
+    }
+
+    try {
+      const result = (await tab.view.webContents.executeJavaScript(
+        `(() => {
+          const selector = ${JSON.stringify(safeSelector)};
+          const element = document.querySelector(selector);
+          if (!element) {
+            return { success: false, reason: "No element matched that selector." };
+          }
+
+          element.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+          return { success: true };
+        })()`,
+        true
+      )) as Partial<{ success: boolean; reason: string }>;
+
+      if (result.success) {
+        return { success: true, action: "scroll", selector: safeSelector };
+      }
+
+      return {
+        success: false,
+        action: "scroll",
+        selector: safeSelector,
+        reason: typeof result.reason === "string" ? result.reason : "Unable to scroll to that element."
+      };
+    } catch (error) {
+      return {
+        success: false,
+        action: "scroll",
+        selector: safeSelector,
+        reason: error instanceof Error && error.message ? error.message : "Unable to scroll to that element."
       };
     }
   }
@@ -1113,9 +1553,71 @@ export class TabController {
     this.emit();
   }
 
+  private recoverTabView(tabId: string, reloadUrl?: string): void {
+    const tab = this.tabs.get(tabId);
+    if (!tab || this.recoveringTabIds.has(tabId)) {
+      return;
+    }
+
+    this.recoveringTabIds.add(tabId);
+    const previousView = tab.view;
+    const targetUrl = reloadUrl ?? tab.hibernatedUrl ?? tab.url ?? createHomeUrl();
+
+    if (this.attachedViewId === tabId) {
+      try {
+        this.host.removeChildView(previousView);
+      } catch {
+        // The crashed view may already be detached by Chromium.
+      }
+      this.attachedViewId = null;
+    }
+
+    if (!previousView.webContents.isDestroyed()) {
+      previousView.webContents.close();
+    }
+
+    const recoveredView = this.createBrowserView();
+    tab.view = recoveredView;
+    tab.isLoading = true;
+    tab.canGoBack = false;
+    tab.canGoForward = false;
+    tab.memoryBytes = undefined;
+    tab.navigationError = undefined;
+    tab.hibernated = false;
+    tab.hibernatedUrl = undefined;
+    this.registerTabEvents(tab);
+    this.emit();
+
+    if (this.activeTabId === tabId) {
+      this.reconcileAttachedView();
+    }
+
+    this.loadTabUrl(tabId, targetUrl);
+    setImmediate(() => this.recoveringTabIds.delete(tabId));
+  }
+
   private loadTabUrl(tabId: string, url: string): void {
     const tab = this.tabs.get(tabId);
-    if (!tab || tab.view.webContents.isDestroyed()) {
+    if (!tab) {
+      return;
+    }
+
+    if (isHomeUrl(url)) {
+      tab.url = url;
+      tab.title = readableTitle("", url);
+      tab.isLoading = false;
+      tab.navigationError = undefined;
+      tab.canGoBack = false;
+      tab.canGoForward = false;
+      if (this.activeTabId === tabId) {
+        this.detachCurrentView();
+      }
+      this.emit();
+      return;
+    }
+
+    if (tab.view.webContents.isDestroyed()) {
+      this.recoverTabView(tabId, url);
       return;
     }
 
@@ -1166,13 +1668,32 @@ export class TabController {
       return;
     }
 
+    if (isHomeUrl(activeTab.url)) {
+      this.detachCurrentView();
+      return;
+    }
+
+    if (activeTab.view.webContents.isDestroyed()) {
+      this.recoverTabView(activeTab.id);
+      return;
+    }
+
     if (this.attachedViewId !== this.activeTabId) {
       this.detachCurrentView();
-      this.host.addChildView(activeTab.view);
+      try {
+        this.host.addChildView(activeTab.view);
+      } catch {
+        this.recoverTabView(activeTab.id);
+        return;
+      }
       this.attachedViewId = this.activeTabId;
     }
 
-    activeTab.view.setBounds(this.bounds);
+    try {
+      activeTab.view.setBounds(this.bounds);
+    } catch {
+      this.recoverTabView(activeTab.id);
+    }
   }
 
   private detachView(tabId: string): void {
@@ -1182,7 +1703,12 @@ export class TabController {
 
     const tab = this.tabs.get(tabId);
     if (tab) {
-      this.host.removeChildView(tab.view);
+      try {
+        this.host.removeChildView(tab.view);
+      } catch {
+        // The view may already be gone after a renderer crash. The next
+        // reconciliation pass will attach the recovered view.
+      }
     }
     this.attachedViewId = null;
   }

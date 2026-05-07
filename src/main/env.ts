@@ -37,9 +37,22 @@ function readAppConfig(filePath: string): Record<string, string> {
       gmail?: {
         clientId?: unknown;
       };
+      supabase?: {
+        url?: unknown;
+        anonKey?: unknown;
+        projectRef?: unknown;
+      };
     };
     const clientId = typeof parsed.gmail?.clientId === "string" ? parsed.gmail.clientId.trim() : "";
-    return clientId ? { AUTOPILOT_GOOGLE_CLIENT_ID: clientId } : {};
+    const supabaseUrl = typeof parsed.supabase?.url === "string" ? parsed.supabase.url.trim() : "";
+    const supabaseAnonKey = typeof parsed.supabase?.anonKey === "string" ? parsed.supabase.anonKey.trim() : "";
+    const supabaseProjectRef = typeof parsed.supabase?.projectRef === "string" ? parsed.supabase.projectRef.trim() : "";
+    return {
+      ...(clientId ? { AUTOPILOT_GOOGLE_CLIENT_ID: clientId } : {}),
+      ...(supabaseUrl ? { AUTOPILOT_SUPABASE_URL: supabaseUrl } : {}),
+      ...(supabaseAnonKey ? { AUTOPILOT_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
+      ...(supabaseProjectRef ? { AUTOPILOT_SUPABASE_PROJECT_REF: supabaseProjectRef } : {})
+    };
   } catch {
     return {};
   }

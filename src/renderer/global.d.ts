@@ -7,17 +7,30 @@ import type {
 } from "../shared/bookmarks";
 import type { BrowserSnapshot } from "../shared/browserModel";
 import type {
+  CodingAgentPlanResult,
+  CodingAgentRun,
   CodingAccessMode,
   CodingCommandRequest,
   CodingCommandResult,
   CodingDeleteResult,
   CodingDownloadEntry,
   CodingFileReadResult,
+  CodingGitDiffResult,
+  CodingGitStatusResult,
+  CodingLanguageToolStatus,
+  CodingOpenFileResult,
   CodingPluginInstallResult,
   CodingPluginStatus,
+  CodingRepoOverviewResult,
+  CodingResearchReportResult,
   CodingResearchResult,
   CodingSearchResult,
   CodingSnapshot,
+  CodingTerminalInputRequest,
+  CodingTerminalInputResult,
+  CodingTerminalOpenRequest,
+  CodingTerminalOpenResult,
+  CodingTerminalOutputEvent,
   CodingWriteResult
 } from "../shared/coding";
 import type {
@@ -35,12 +48,15 @@ import type {
   PendingPasswordSave
 } from "../shared/passwords";
 import type {
+  PageDomActionResult,
+  PageDomSnapshotResult,
   PageTextCaptureResult,
   ProductivityDraft,
   ProductivityTask,
   ProductivityTaskState,
   ProductivityTaskSyncResult
 } from "../shared/productivity";
+import type { AutopilotRunLogEvent } from "../shared/observability";
 import type {
   AssistantContextSource,
   AssistantRequest,
@@ -50,6 +66,19 @@ import type {
 } from "../shared/assistant";
 import type { ActionPlan, AgentPlanFromEmailRequest, AgentPlanResult, AgentRun, AgentStartRunRequest } from "../shared/agent";
 import type { Artifact, ArtifactCreateInput, ArtifactExportResult, ArtifactExportToCodingResult, ArtifactUpdateInput } from "../shared/artifacts";
+import type {
+  AutomationCreateRecipeInput,
+  AutomationIntent,
+  AutomationRecipe,
+  AutomationRun,
+  AutomationRunResult,
+  AutomationSourceWorkspace,
+  AutomationUpdateRecipeInput
+} from "../shared/automation";
+import type { ArtifactQualityReport } from "../shared/artifactQuality";
+import type { ProactiveWorkPlan } from "../shared/proactiveWork";
+import type { TodaysCallPlan } from "../shared/todaysCall";
+import type { ProductivityRouteWorkItemResult, WorkAssignment, WorkItem } from "../shared/workItems";
 import type { WorkspaceProfile, WorkspaceState } from "../shared/workspaces";
 
 type ViewBounds = {
@@ -70,6 +99,10 @@ type TabsApi = {
   forward: (tabId: string) => Promise<BrowserSnapshot>;
   reload: (tabId: string) => Promise<BrowserSnapshot>;
   readPageText: (tabId: string) => Promise<PageTextCaptureResult>;
+  readDOM: (tabId: string) => Promise<PageDomSnapshotResult>;
+  clickBySelector: (tabId: string, selector: string) => Promise<PageDomActionResult>;
+  fillBySelector: (tabId: string, selector: string, value: unknown) => Promise<PageDomActionResult>;
+  scrollTo: (tabId: string, target: string | number) => Promise<PageDomActionResult>;
   print: (tabId: string) => Promise<{ success: boolean; reason?: string }>;
   setWebArea: (bounds: ViewBounds, visible: boolean) => Promise<BrowserSnapshot>;
   setGroup: (tabId: string, groupId: string | null) => Promise<BrowserSnapshot>;
@@ -110,6 +143,7 @@ type EmailApi = {
 type CodingApi = {
   getSnapshot: () => Promise<CodingSnapshot>;
   openProject: () => Promise<CodingSnapshot>;
+  openFiles: () => Promise<CodingOpenFileResult>;
   createProject: () => Promise<CodingSnapshot>;
   selectProject: (rootPath: string) => Promise<CodingSnapshot>;
   readPath: (targetPath: string) => Promise<CodingFileReadResult>;
@@ -117,8 +151,18 @@ type CodingApi = {
   deletePath: (targetPath: string) => Promise<CodingDeleteResult>;
   setAccessMode: (mode: CodingAccessMode) => Promise<CodingSnapshot>;
   search: (query: string) => Promise<CodingSearchResult[]>;
+  openTerminal: (input?: CodingTerminalOpenRequest) => Promise<CodingTerminalOpenResult>;
+  sendTerminalInput: (input: CodingTerminalInputRequest) => Promise<CodingTerminalInputResult>;
+  subscribeTerminalOutput: (listener: (event: CodingTerminalOutputEvent) => void) => () => void;
   runCommand: (input: CodingCommandRequest) => Promise<CodingCommandResult>;
+  repoOverview: () => Promise<CodingRepoOverviewResult>;
+  languageToolStatuses: () => Promise<CodingLanguageToolStatus[]>;
+  createAgentPlan: (goal: string) => Promise<CodingAgentPlanResult>;
+  startAgentRun: (goal: string) => Promise<CodingAgentPlanResult | { success: true; plan: Extract<CodingAgentPlanResult, { success: true }>["plan"]; run: CodingAgentRun }>;
+  gitStatus: () => Promise<CodingGitStatusResult>;
+  gitDiff: (filePath?: string) => Promise<CodingGitDiffResult>;
   browse: (input: string) => Promise<CodingResearchResult>;
+  research: (input: string) => Promise<CodingResearchReportResult>;
   pluginStatuses: () => Promise<CodingPluginStatus[]>;
   installPlugin: (pluginId: string) => Promise<CodingPluginInstallResult>;
   cancelPluginInstall: (pluginId: string) => Promise<CodingPluginInstallResult>;
@@ -134,11 +178,40 @@ type DownloadsApi = {
 type ProductivityApi = {
   listTasks: () => Promise<ProductivityTask[]>;
   listDrafts: () => Promise<ProductivityDraft[]>;
+  listWorkItems: () => Promise<WorkItem[]>;
+  listWorkAssignments: () => Promise<WorkAssignment[]>;
+  buildTodaysCall: () => Promise<TodaysCallPlan>;
+  startSafeWork: (limit?: number) => Promise<{
+    success: boolean;
+    startedCount: number;
+    consideredCount: number;
+    reason?: string;
+    plan: ProactiveWorkPlan;
+    results: ProductivityRouteWorkItemResult[];
+    workItems: WorkItem[];
+    allAssignments: WorkAssignment[];
+  }>;
   upsertDraft: (draft: Partial<ProductivityDraft> & Pick<ProductivityDraft, "title" | "body" | "artifactKind" | "source">) => Promise<ProductivityDraft[]>;
   deleteDraft: (draftId: string) => Promise<ProductivityDraft[]>;
   updateTask: (taskId: string, patch: Partial<ProductivityTask>) => Promise<ProductivityTask[]>;
   setTaskState: (taskId: string, state: ProductivityTaskState) => Promise<ProductivityTask[]>;
-  sync: () => Promise<ProductivityTaskSyncResult>;
+  updateWorkAssignment: (assignmentId: string, patch: Partial<WorkAssignment>) => Promise<WorkAssignment[]>;
+  routeWorkItem: (workItemId: string) => Promise<ProductivityRouteWorkItemResult>;
+  sync: (sourceIds?: string[]) => Promise<ProductivityTaskSyncResult>;
+};
+
+type AutomationApi = {
+  listRecipes: () => Promise<AutomationRecipe[]>;
+  createRecipe: (input: AutomationCreateRecipeInput) => Promise<AutomationRecipe[]>;
+  updateRecipe: (input: AutomationUpdateRecipeInput) => Promise<AutomationRecipe[]>;
+  deleteRecipe: (recipeId: string) => Promise<AutomationRecipe[]>;
+  runNow: (recipeId: string) => Promise<AutomationRunResult>;
+  listRuns: () => Promise<AutomationRun[]>;
+  detectFromPrompt: (prompt: string, sourceWorkspace?: AutomationSourceWorkspace) => Promise<AutomationIntent>;
+};
+
+type ObservabilityApi = {
+  listRunLog: (limit?: number) => Promise<AutopilotRunLogEvent[]>;
 };
 
 type AssistantApi = {
@@ -161,6 +234,8 @@ type AgentApi = {
   listPlans: () => Promise<ActionPlan[]>;
   listRuns: () => Promise<AgentRun[]>;
   approveFinalStep: (planId: string) => Promise<AgentRun[]>;
+  classifyWorkItem: (workItemId: string) => Promise<unknown>;
+  qualityCheckOutput: (output: string, sourceText: string, options?: { minWords?: number; requireSources?: boolean }) => Promise<ArtifactQualityReport>;
 };
 
 declare global {
@@ -186,6 +261,8 @@ declare global {
       passwords: PasswordsApi;
       email: EmailApi;
       productivity: ProductivityApi;
+      automation: AutomationApi;
+      observability: ObservabilityApi;
       assistant: AssistantApi;
       artifacts: ArtifactsApi;
       agent: AgentApi;

@@ -5,7 +5,8 @@ export const AUTOPILOT_HISTORY_PAGE_MARKER = `data-autopilot-page="history"`;
 export const AUTOPILOT_PDF_NOTICE_MARKER = `data-autopilot-page="pdf-notice"`;
 
 const DATA_HTML_PREFIX = "data:text/html;charset=utf-8,";
-const AUTOPILOT_HOME_TITLE_MARKER = encodeURIComponent("<title>Autopilot Home</title>");
+const AUTOPILOT_HOME_TITLE_MARKER = encodeURIComponent("<title>Autopilot Browser Home</title>");
+const LEGACY_AUTOPILOT_HOME_TITLE_MARKER = encodeURIComponent("<title>Autopilot Home</title>");
 const AUTOPILOT_HISTORY_DATA_MARKER = encodeURIComponent(AUTOPILOT_HISTORY_PAGE_MARKER);
 const AUTOPILOT_PDF_NOTICE_DATA_MARKER = encodeURIComponent(AUTOPILOT_PDF_NOTICE_MARKER);
 
@@ -260,7 +261,7 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Autopilot Home</title>
+<title>Autopilot Browser Home</title>
 <style>
   :root {
     color-scheme: light;
@@ -288,31 +289,42 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
   }
   main {
     width: min(680px, calc(100vw - 48px));
+    container-type: inline-size;
     display: grid;
     gap: 20px;
   }
   h1 {
-    display: inline-flex;
-    align-items: flex-end;
-    gap: 14px;
-    flex-wrap: wrap;
+    display: flex;
+    align-items: center;
+    gap: .12em;
+    flex-wrap: nowrap;
     margin: 0;
-    font-size: clamp(42px, 8vw, 78px);
+    width: max-content;
+    max-width: none;
+    font-size: clamp(24px, 9cqw, 78px);
     font-weight: 800;
     line-height: .94;
     letter-spacing: 0;
+    white-space: nowrap;
+  }
+  h1 > span {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
   .title-compass-button {
     display: grid;
+    flex: 0 0 auto;
     place-items: center;
-    width: clamp(40px, 8vw, 62px);
-    height: clamp(58px, 12vw, 92px);
-    margin-bottom: -8px;
+    width: .52em;
+    height: .78em;
+    margin-bottom: 0;
     border: 0;
     border-radius: 999px;
     background: transparent;
     cursor: zoom-in;
+    font: inherit;
     padding: 0;
+    transform: translateY(.04em);
   }
   .title-compass {
     width: 100%;
@@ -528,7 +540,7 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
 <body>
 <main>
   <h1>
-    <span>Autopilot</span>
+    <span>Autopilot Browser</span>
     <button class="title-compass-button" type="button" id="open-icon-preview" aria-label="Preview Autopilot app icon">
       <svg class="title-compass" viewBox="0 0 64 96" aria-hidden="true">
         <circle class="disc" cx="32" cy="51" r="31" />
@@ -540,9 +552,9 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
     </button>
   </h1>
   <p>Where to next?</p>
-  <form action="https://www.google.com/search" method="get">
+  <form id="autopilot-home-search" autocomplete="off">
     <span class="search-mark" aria-hidden="true"></span>
-    <input name="q" aria-label="Search" placeholder="Search Google or enter an address" autofocus />
+    <input id="autopilot-home-input" name="q" aria-label="Search" placeholder="Search Google or enter an address" autofocus />
     <button type="submit">Search</button>
   </form>
   <nav class="shortcuts" aria-label="Shortcuts">
@@ -613,9 +625,87 @@ export function createHomeUrl(theme: BrowserTheme = DEFAULT_THEME): string {
   </section>
 </div>
 <script>
+  const searchForm = document.getElementById("autopilot-home-search");
+  const searchInput = document.getElementById("autopilot-home-input");
   const openIconPreview = document.getElementById("open-icon-preview");
   const iconPreview = document.getElementById("icon-preview");
   const closeIconPreview = document.getElementById("close-icon-preview");
+
+  function hasExplicitPort(input) {
+    return /^(\\[[^\\]]+\\]|[^:/\\s?#]+):\\d{1,5}([/?#].*)?$/i.test(input);
+  }
+
+  function getInputHost(input) {
+    const hostAndPort = input.split(/[/?#]/, 1)[0];
+    if (!hostAndPort) {
+      return null;
+    }
+
+    if (hostAndPort.startsWith("[")) {
+      const endIndex = hostAndPort.indexOf("]");
+      return endIndex > 1 ? hostAndPort.slice(1, endIndex).toLowerCase() : null;
+    }
+
+    const portSeparator = hostAndPort.lastIndexOf(":");
+    const maybePort = portSeparator > -1 ? hostAndPort.slice(portSeparator + 1) : "";
+    const host = maybePort && /^\\d{1,5}$/.test(maybePort) ? hostAndPort.slice(0, portSeparator) : hostAndPort;
+    return host ? host.toLowerCase() : null;
+  }
+
+  function isLocalHost(host) {
+    if (
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      host === "host.docker.internal" ||
+      host.endsWith(".local") ||
+      host === "::1"
+    ) {
+      return true;
+    }
+
+    const parts = host.split(".").map((part) => Number(part));
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+      return false;
+    }
+
+    return (
+      parts[0] === 0 ||
+      parts[0] === 10 ||
+      parts[0] === 127 ||
+      (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+      (parts[0] === 192 && parts[1] === 168)
+    );
+  }
+
+  function normalizeHomeSearchInput(value) {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:\\/\\//i.test(trimmed)) {
+      return trimmed;
+    }
+
+    const host = getInputHost(trimmed);
+    if (host && (isLocalHost(host) || hasExplicitPort(trimmed))) {
+      return "http://" + trimmed;
+    }
+
+    if (/^[^\\s/]+\\.[^\\s/]{2,}([/?#].*)?$/i.test(trimmed)) {
+      return "https://" + trimmed;
+    }
+
+    return "https://www.google.com/search?q=" + encodeURIComponent(trimmed);
+  }
+
+  searchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const destination = normalizeHomeSearchInput(searchInput.value);
+    if (destination) {
+      window.location.href = destination;
+    }
+  });
 
   function showIconPreview() {
     iconPreview.hidden = false;
@@ -675,7 +765,7 @@ export function createHistoryUrl(entries: BrowserHistoryEntry[] = [], theme: Bro
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Autopilot History</title>
+<title>Autopilot Browser History</title>
 <style>
   :root {
     color-scheme: light;
@@ -814,7 +904,7 @@ export function createHistoryUrl(entries: BrowserHistoryEntry[] = [], theme: Bro
 <body ${AUTOPILOT_HISTORY_PAGE_MARKER}>
 <main>
   <header>
-    <p class="kicker">Autopilot</p>
+    <p class="kicker">Autopilot Browser</p>
     <h1>History</h1>
     <p>All the sites you have visited in this browser.</p>
   </header>
@@ -829,11 +919,18 @@ export function createHistoryUrl(entries: BrowserHistoryEntry[] = [], theme: Bro
 }
 
 export function isHomeUrl(url: string): boolean {
-  return url === AUTOPILOT_HOME_LABEL || (url.startsWith(DATA_HTML_PREFIX) && url.includes(AUTOPILOT_HOME_TITLE_MARKER));
+  return (
+    url === AUTOPILOT_HOME_LABEL ||
+    (url.startsWith(DATA_HTML_PREFIX) && (url.includes(AUTOPILOT_HOME_TITLE_MARKER) || url.includes(LEGACY_AUTOPILOT_HOME_TITLE_MARKER)))
+  );
 }
 
 export function isHistoryPageUrl(url: string): boolean {
   return url === AUTOPILOT_HISTORY_LABEL || (url.startsWith(DATA_HTML_PREFIX) && url.includes(AUTOPILOT_HISTORY_DATA_MARKER));
+}
+
+export function shouldUseNativeBrowserView(url: string | null | undefined): boolean {
+  return Boolean(url && !isHomeUrl(url));
 }
 
 export function isHistoryAddressInput(input: string): boolean {

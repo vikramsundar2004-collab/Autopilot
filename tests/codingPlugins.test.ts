@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CODING_PLUGIN_CATALOG, CODING_PLUGIN_DEFINITIONS } from "../src/shared/codingPlugins";
+
 const electronMock = vi.hoisted(() => ({
   paths: {
     appPath: "",
@@ -79,6 +81,33 @@ describe("CodingWorkspace plugins", () => {
         await rm(root, { recursive: true, force: true });
       }
     }
+  });
+
+  it("offers a broad real install catalog for coding workflows", () => {
+    const ids = CODING_PLUGIN_DEFINITIONS.map((plugin) => plugin.id);
+    expect(CODING_PLUGIN_DEFINITIONS.length).toBeGreaterThanOrEqual(30);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(CODING_PLUGIN_CATALOG).toHaveLength(CODING_PLUGIN_DEFINITIONS.length);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "node",
+        "git",
+        "python",
+        "gh",
+        "typescript",
+        "playwright",
+        "pnpm",
+        "docker",
+        "terraform",
+        "netlify",
+        "vercel",
+        "firebase",
+        "supabase",
+        "codex",
+        "claude-code",
+        "gemini"
+      ])
+    );
   });
 
   it("can install formatter and lint plugins without an active project", async () => {

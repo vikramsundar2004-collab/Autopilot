@@ -1,3 +1,5 @@
+import type { CalendarRecurrence } from "./localCalendar.js";
+
 export type PageTextCaptureResult =
   | {
       success: true;
@@ -8,6 +10,55 @@ export type PageTextCaptureResult =
   | {
       success: false;
       reason: string;
+    };
+
+export type PageDomElementKind = "link" | "button" | "input" | "textarea" | "select" | "contenteditable" | "other";
+
+export type PageDomElementSummary = {
+  selector: string;
+  kind: PageDomElementKind;
+  label: string;
+  tagName: string;
+  text: string;
+  placeholder?: string;
+  name?: string;
+  type?: string;
+  href?: string;
+  value?: string;
+  disabled: boolean;
+  visible: boolean;
+  approvalRequired: boolean;
+  approvalReason?: string;
+};
+
+export type PageDomSnapshotResult =
+  | {
+      success: true;
+      title: string;
+      url: string;
+      text: string;
+      elements: PageDomElementSummary[];
+    }
+  | {
+      success: false;
+      reason: string;
+    };
+
+export type PageDomActionKind = "click" | "fill" | "scroll";
+
+export type PageDomActionResult =
+  | {
+      success: true;
+      action: PageDomActionKind;
+      selector?: string;
+      label?: string;
+      value?: string;
+    }
+  | {
+      success: false;
+      reason: string;
+      action?: PageDomActionKind;
+      selector?: string;
     };
 
 export type ProductivityTaskState = "todo" | "waiting" | "snoozed" | "done";
@@ -27,6 +78,25 @@ export type ProductivityConnectorStatus = {
   lastSyncedAt?: number;
 };
 
+export type ProductivitySyncSourceId = Exclude<ProductivityConnectorStatus["id"], "manual">;
+
+export const PRODUCTIVITY_SYNC_SOURCE_IDS: ProductivitySyncSourceId[] = ["gmail", "google-calendar", "slack", "outlook"];
+export const DEFAULT_PRODUCTIVITY_SYNC_SOURCE_IDS: ProductivitySyncSourceId[] = ["gmail", "google-calendar", "slack"];
+
+export function sanitizeProductivitySyncSourceIds(
+  value: unknown,
+  fallback: ProductivitySyncSourceId[] = DEFAULT_PRODUCTIVITY_SYNC_SOURCE_IDS
+): ProductivitySyncSourceId[] {
+  if (!Array.isArray(value)) {
+    return [...fallback];
+  }
+
+  const validIds = new Set<ProductivitySyncSourceId>(PRODUCTIVITY_SYNC_SOURCE_IDS);
+  const selectedIds = value.filter((sourceId): sourceId is ProductivitySyncSourceId => typeof sourceId === "string" && validIds.has(sourceId as ProductivitySyncSourceId));
+  const uniqueIds = [...new Set(selectedIds)];
+  return uniqueIds.length > 0 ? uniqueIds : [...fallback];
+}
+
 export type ProductivityTaskSource = {
   provider: "gmail" | "google-calendar" | "slack" | "outlook" | "manual" | "web" | "coding";
   label: string;
@@ -34,6 +104,22 @@ export type ProductivityTaskSource = {
   url?: string;
   from?: string;
   subject?: string;
+  calendarId?: string;
+  calendarName?: string;
+  eventStartAt?: number;
+  eventEndAt?: number;
+  eventAllDay?: boolean;
+  eventRecurringId?: string;
+  eventRecurrence?: CalendarRecurrence;
+  eventRecurrenceLabel?: string;
+  eventRecurrenceInterval?: number;
+  eventRecurrenceWeekdays?: number[];
+  actionSummary?: string;
+  actionConfidence?: number;
+  requestedOutput?: string;
+  recommendedAssistant?: string;
+  routeReason?: string;
+  draftSuggested?: boolean;
 };
 
 export type ProductivityTask = {
@@ -69,6 +155,21 @@ export type ProductivityTaskSyncResult = {
   updatedCount: number;
   model?: string;
   reason?: string;
+  sourceResults?: ProductivitySourceSyncResult[];
+};
+
+export type ProductivitySourceSyncResult = {
+  id: ProductivityConnectorStatus["id"];
+  label: string;
+  success: boolean;
+  connected: boolean;
+  configured: boolean;
+  addedCount: number;
+  updatedCount: number;
+  itemCount: number;
+  reason?: string;
+  accountEmail?: string;
+  lastSyncedAt?: number;
 };
 
 export function sanitizeProductivityTasks(value: unknown): ProductivityTask[] {
@@ -192,8 +293,52 @@ function sanitizeTaskSource(value: unknown): ProductivityTaskSource {
     messageId: typeof source.messageId === "string" && source.messageId.trim() ? source.messageId.trim().slice(0, 200) : undefined,
     url: typeof source.url === "string" && source.url.trim() ? source.url.trim().slice(0, 2048) : undefined,
     from: typeof source.from === "string" && source.from.trim() ? source.from.trim().slice(0, 160) : undefined,
-    subject: typeof source.subject === "string" && source.subject.trim() ? source.subject.trim().slice(0, 220) : undefined
+    subject: typeof source.subject === "string" && source.subject.trim() ? source.subject.trim().slice(0, 220) : undefined,
+    calendarId: typeof source.calendarId === "string" && source.calendarId.trim() ? source.calendarId.trim().slice(0, 200) : undefined,
+    calendarName: typeof source.calendarName === "string" && source.calendarName.trim() ? source.calendarName.trim().slice(0, 120) : undefined,
+    eventStartAt: typeof source.eventStartAt === "number" && Number.isFinite(source.eventStartAt) ? source.eventStartAt : undefined,
+    eventEndAt: typeof source.eventEndAt === "number" && Number.isFinite(source.eventEndAt) ? source.eventEndAt : undefined,
+    eventAllDay: typeof source.eventAllDay === "boolean" ? source.eventAllDay : undefined,
+    eventRecurringId: typeof source.eventRecurringId === "string" && source.eventRecurringId.trim() ? source.eventRecurringId.trim().slice(0, 200) : undefined,
+    eventRecurrence: sanitizeCalendarRecurrence(source.eventRecurrence),
+    eventRecurrenceLabel:
+      typeof source.eventRecurrenceLabel === "string" && source.eventRecurrenceLabel.trim()
+        ? source.eventRecurrenceLabel.trim().slice(0, 80)
+        : undefined,
+    eventRecurrenceInterval:
+      typeof source.eventRecurrenceInterval === "number" &&
+      Number.isFinite(source.eventRecurrenceInterval) &&
+      source.eventRecurrenceInterval >= 1 &&
+      source.eventRecurrenceInterval <= 52
+        ? Math.floor(source.eventRecurrenceInterval)
+        : undefined,
+    eventRecurrenceWeekdays: sanitizeCalendarWeekdays(source.eventRecurrenceWeekdays),
+    actionSummary: typeof source.actionSummary === "string" && source.actionSummary.trim() ? source.actionSummary.trim().slice(0, 260) : undefined,
+    actionConfidence:
+      typeof source.actionConfidence === "number" && Number.isFinite(source.actionConfidence)
+        ? Math.max(0, Math.min(100, Math.round(source.actionConfidence)))
+        : undefined,
+    requestedOutput: typeof source.requestedOutput === "string" && source.requestedOutput.trim() ? source.requestedOutput.trim().slice(0, 80) : undefined,
+    recommendedAssistant:
+      typeof source.recommendedAssistant === "string" && source.recommendedAssistant.trim() ? source.recommendedAssistant.trim().slice(0, 80) : undefined,
+    routeReason: typeof source.routeReason === "string" && source.routeReason.trim() ? source.routeReason.trim().slice(0, 220) : undefined,
+    draftSuggested: typeof source.draftSuggested === "boolean" ? source.draftSuggested : undefined
   };
+}
+
+function sanitizeCalendarRecurrence(value: unknown): CalendarRecurrence | undefined {
+  return value === "daily" || value === "weekly" || value === "monthly" || value === "monthly-day" ? value : undefined;
+}
+
+function sanitizeCalendarWeekdays(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const weekdays = [...new Set(value.filter((weekday): weekday is number => Number.isInteger(weekday) && weekday >= 0 && weekday <= 6))].sort(
+    (leftDay, rightDay) => leftDay - rightDay
+  );
+  return weekdays.length > 0 ? weekdays : undefined;
 }
 
 function sanitizeTaskState(value: unknown): ProductivityTaskState {

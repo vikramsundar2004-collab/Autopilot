@@ -198,3 +198,91 @@ export function buildCodingDiff(previous: string, current: string, options: Diff
     hunks: buildHunks(lines, contextLines)
   };
 }
+
+export function parseUnifiedGitDiff(diff: string): CodingDiffResult {
+  const diffLines = diff.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const hunks: CodingDiffHunk[] = [];
+  let currentHunk: CodingDiffHunk | null = null;
+  let oldLine = 0;
+  let newLine = 0;
+  let added = 0;
+  let removed = 0;
+
+  function pushCurrentHunk(): void {
+    if (currentHunk && currentHunk.lines.length > 0) {
+      hunks.push(currentHunk);
+    }
+  }
+
+  for (const rawLine of diffLines) {
+    const hunkMatch = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(rawLine);
+    if (hunkMatch) {
+      pushCurrentHunk();
+      oldLine = Number(hunkMatch[1]);
+      newLine = Number(hunkMatch[2]);
+      currentHunk = {
+        id: `git-hunk-${hunks.length}-${oldLine}-${newLine}`,
+        oldStart: oldLine,
+        newStart: newLine,
+        lines: []
+      };
+      continue;
+    }
+
+    if (!currentHunk || rawLine.startsWith("\\ No newline")) {
+      continue;
+    }
+
+    const marker = rawLine.slice(0, 1);
+    const text = rawLine.slice(1);
+    const lineIndex = currentHunk.lines.length;
+
+    if (marker === "+" && !rawLine.startsWith("+++")) {
+      currentHunk.lines.push({
+        id: makeLineId("added", null, newLine, lineIndex),
+        kind: "added",
+        text,
+        oldLine: null,
+        newLine
+      });
+      added += 1;
+      newLine += 1;
+      continue;
+    }
+
+    if (marker === "-" && !rawLine.startsWith("---")) {
+      currentHunk.lines.push({
+        id: makeLineId("removed", oldLine, null, lineIndex),
+        kind: "removed",
+        text,
+        oldLine,
+        newLine: null
+      });
+      removed += 1;
+      oldLine += 1;
+      continue;
+    }
+
+    if (marker === " ") {
+      currentHunk.lines.push({
+        id: makeLineId("context", oldLine, newLine, lineIndex),
+        kind: "context",
+        text,
+        oldLine,
+        newLine
+      });
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+
+  pushCurrentHunk();
+
+  return {
+    changed: added > 0 || removed > 0,
+    added,
+    removed,
+    tooLarge: false,
+    hunks
+  };
+}

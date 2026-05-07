@@ -9,17 +9,29 @@ import type {
 } from "../shared/bookmarks.js";
 import type { BrowserSnapshot } from "../shared/browserModel.js";
 import type {
+  CodingAgentPlanResult,
   CodingAccessMode,
   CodingCommandRequest,
   CodingCommandResult,
   CodingDeleteResult,
   CodingDownloadEntry,
   CodingFileReadResult,
+  CodingGitDiffResult,
+  CodingGitStatusResult,
+  CodingLanguageToolStatus,
+  CodingOpenFileResult,
   CodingPluginInstallResult,
   CodingPluginStatus,
+  CodingRepoOverviewResult,
+  CodingResearchReportResult,
   CodingResearchResult,
   CodingSearchResult,
   CodingSnapshot,
+  CodingTerminalInputRequest,
+  CodingTerminalInputResult,
+  CodingTerminalOpenRequest,
+  CodingTerminalOpenResult,
+  CodingTerminalOutputEvent,
   CodingWriteResult
 } from "../shared/coding.js";
 import type {
@@ -37,12 +49,15 @@ import type {
   PendingPasswordSave
 } from "../shared/passwords.js";
 import type {
+  PageDomActionResult,
+  PageDomSnapshotResult,
   PageTextCaptureResult,
   ProductivityDraft,
   ProductivityTask,
   ProductivityTaskState,
   ProductivityTaskSyncResult
 } from "../shared/productivity.js";
+import type { AutopilotRunLogEvent } from "../shared/observability.js";
 import type {
   AssistantContextSource,
   AssistantRequest,
@@ -52,6 +67,8 @@ import type {
 } from "../shared/assistant.js";
 import type { ActionPlan, AgentPlanFromEmailRequest, AgentPlanResult, AgentRun, AgentStartRunRequest } from "../shared/agent.js";
 import type { Artifact, ArtifactCreateInput, ArtifactExportResult, ArtifactExportToCodingResult, ArtifactUpdateInput } from "../shared/artifacts.js";
+import type { AutomationCreateRecipeInput, AutomationRecipe, AutomationRun, AutomationRunResult, AutomationUpdateRecipeInput } from "../shared/automation.js";
+import type { ProductivityRouteWorkItemResult, WorkAssignment, WorkItem } from "../shared/workItems.js";
 import type { WorkspaceProfile, WorkspaceState } from "../shared/workspaces.js";
 
 const tabsApi = {
@@ -65,6 +82,13 @@ const tabsApi = {
   forward: (tabId: string) => ipcRenderer.invoke("tabs:forward", tabId) as Promise<BrowserSnapshot>,
   reload: (tabId: string) => ipcRenderer.invoke("tabs:reload", tabId) as Promise<BrowserSnapshot>,
   readPageText: (tabId: string) => ipcRenderer.invoke("tabs:read-page-text", tabId) as Promise<PageTextCaptureResult>,
+  readDOM: (tabId: string) => ipcRenderer.invoke("tabs:read-dom", tabId) as Promise<PageDomSnapshotResult>,
+  clickBySelector: (tabId: string, selector: string) =>
+    ipcRenderer.invoke("tabs:click-by-selector", tabId, selector) as Promise<PageDomActionResult>,
+  fillBySelector: (tabId: string, selector: string, value: unknown) =>
+    ipcRenderer.invoke("tabs:fill-by-selector", tabId, selector, value) as Promise<PageDomActionResult>,
+  scrollTo: (tabId: string, target: string | number) =>
+    ipcRenderer.invoke("tabs:scroll-to", tabId, target) as Promise<PageDomActionResult>,
   print: (tabId: string) => ipcRenderer.invoke("tabs:print", tabId) as Promise<{ success: boolean; reason?: string }>,
   setWebArea: (bounds: Rectangle, visible: boolean) =>
     ipcRenderer.invoke("tabs:web-area", bounds, visible) as Promise<BrowserSnapshot>,
@@ -135,6 +159,10 @@ contextBridge.exposeInMainWorld("autopilot", {
   productivity: {
     listTasks: () => ipcRenderer.invoke("productivity:list-tasks") as Promise<ProductivityTask[]>,
     listDrafts: () => ipcRenderer.invoke("productivity:list-drafts") as Promise<ProductivityDraft[]>,
+    listWorkItems: () => ipcRenderer.invoke("productivity:list-work-items") as Promise<WorkItem[]>,
+    listWorkAssignments: () => ipcRenderer.invoke("productivity:list-work-assignments") as Promise<WorkAssignment[]>,
+    buildTodaysCall: () => ipcRenderer.invoke("productivity:build-todays-call"),
+    startSafeWork: (limit?: number) => ipcRenderer.invoke("productivity:start-safe-work", limit),
     upsertDraft: (draft: Partial<ProductivityDraft> & Pick<ProductivityDraft, "title" | "body" | "artifactKind" | "source">) =>
       ipcRenderer.invoke("productivity:upsert-draft", draft) as Promise<ProductivityDraft[]>,
     deleteDraft: (draftId: string) => ipcRenderer.invoke("productivity:delete-draft", draftId) as Promise<ProductivityDraft[]>,
@@ -142,7 +170,22 @@ contextBridge.exposeInMainWorld("autopilot", {
       ipcRenderer.invoke("productivity:update-task", taskId, patch) as Promise<ProductivityTask[]>,
     setTaskState: (taskId: string, state: ProductivityTaskState) =>
       ipcRenderer.invoke("productivity:set-task-state", taskId, state) as Promise<ProductivityTask[]>,
-    sync: () => ipcRenderer.invoke("productivity:sync") as Promise<ProductivityTaskSyncResult>
+    updateWorkAssignment: (assignmentId: string, patch: Partial<WorkAssignment>) =>
+      ipcRenderer.invoke("productivity:update-work-assignment", assignmentId, patch) as Promise<WorkAssignment[]>,
+    routeWorkItem: (workItemId: string) => ipcRenderer.invoke("productivity:route-work-item", workItemId) as Promise<ProductivityRouteWorkItemResult>,
+    sync: (sourceIds?: string[]) => ipcRenderer.invoke("productivity:sync", sourceIds) as Promise<ProductivityTaskSyncResult>
+  },
+  automation: {
+    listRecipes: () => ipcRenderer.invoke("automation:list-recipes") as Promise<AutomationRecipe[]>,
+    createRecipe: (input: AutomationCreateRecipeInput) => ipcRenderer.invoke("automation:create-recipe", input) as Promise<AutomationRecipe[]>,
+    updateRecipe: (input: AutomationUpdateRecipeInput) => ipcRenderer.invoke("automation:update-recipe", input) as Promise<AutomationRecipe[]>,
+    deleteRecipe: (recipeId: string) => ipcRenderer.invoke("automation:delete-recipe", recipeId) as Promise<AutomationRecipe[]>,
+    runNow: (recipeId: string) => ipcRenderer.invoke("automation:run-now", recipeId) as Promise<AutomationRunResult>,
+    listRuns: () => ipcRenderer.invoke("automation:list-runs") as Promise<AutomationRun[]>,
+    detectFromPrompt: (prompt: string, sourceWorkspace?: string) => ipcRenderer.invoke("automation:detect-from-prompt", prompt, sourceWorkspace)
+  },
+  observability: {
+    listRunLog: (limit?: number) => ipcRenderer.invoke("observability:list-run-log", limit) as Promise<AutopilotRunLogEvent[]>
   },
   assistant: {
     sources: () => ipcRenderer.invoke("assistant:sources") as Promise<AssistantContextSource[]>,
@@ -162,11 +205,15 @@ contextBridge.exposeInMainWorld("autopilot", {
     startRun: (input: AgentStartRunRequest) => ipcRenderer.invoke("agent:start-run", input) as Promise<AgentPlanResult>,
     listPlans: () => ipcRenderer.invoke("agent:list-plans") as Promise<ActionPlan[]>,
     listRuns: () => ipcRenderer.invoke("agent:list-runs") as Promise<AgentRun[]>,
-    approveFinalStep: (planId: string) => ipcRenderer.invoke("agent:approve-final-step", planId) as Promise<AgentRun[]>
+    approveFinalStep: (planId: string) => ipcRenderer.invoke("agent:approve-final-step", planId) as Promise<AgentRun[]>,
+    classifyWorkItem: (workItemId: string) => ipcRenderer.invoke("agent:classify-work-item", workItemId),
+    qualityCheckOutput: (output: string, sourceText: string, options?: { minWords?: number; requireSources?: boolean }) =>
+      ipcRenderer.invoke("agent:quality-check-output", output, sourceText, options)
   },
   coding: {
     getSnapshot: () => ipcRenderer.invoke("coding:snapshot") as Promise<CodingSnapshot>,
     openProject: () => ipcRenderer.invoke("coding:open-project") as Promise<CodingSnapshot>,
+    openFiles: () => ipcRenderer.invoke("coding:open-files") as Promise<CodingOpenFileResult>,
     createProject: () => ipcRenderer.invoke("coding:create-project") as Promise<CodingSnapshot>,
     selectProject: (rootPath: string) => ipcRenderer.invoke("coding:select-project", rootPath) as Promise<CodingSnapshot>,
     readPath: (targetPath: string) => ipcRenderer.invoke("coding:read-path", targetPath) as Promise<CodingFileReadResult>,
@@ -175,8 +222,24 @@ contextBridge.exposeInMainWorld("autopilot", {
     deletePath: (targetPath: string) => ipcRenderer.invoke("coding:delete-path", targetPath) as Promise<CodingDeleteResult>,
     setAccessMode: (mode: CodingAccessMode) => ipcRenderer.invoke("coding:set-access-mode", mode) as Promise<CodingSnapshot>,
     search: (query: string) => ipcRenderer.invoke("coding:search", query) as Promise<CodingSearchResult[]>,
+    openTerminal: (input?: CodingTerminalOpenRequest) =>
+      ipcRenderer.invoke("coding:open-terminal", input) as Promise<CodingTerminalOpenResult>,
+    sendTerminalInput: (input: CodingTerminalInputRequest) =>
+      ipcRenderer.invoke("coding:terminal-input", input) as Promise<CodingTerminalInputResult>,
+    subscribeTerminalOutput: (listener: (event: CodingTerminalOutputEvent) => void) => {
+      const handler = (_event: IpcRendererEvent, outputEvent: CodingTerminalOutputEvent) => listener(outputEvent);
+      ipcRenderer.on("coding:terminal-output", handler);
+      return () => ipcRenderer.removeListener("coding:terminal-output", handler);
+    },
     runCommand: (input: CodingCommandRequest) => ipcRenderer.invoke("coding:run-command", input) as Promise<CodingCommandResult>,
+    repoOverview: () => ipcRenderer.invoke("coding:repo-overview") as Promise<CodingRepoOverviewResult>,
+    languageToolStatuses: () => ipcRenderer.invoke("coding:language-tool-statuses") as Promise<CodingLanguageToolStatus[]>,
+    createAgentPlan: (goal: string) => ipcRenderer.invoke("coding:create-agent-plan", goal) as Promise<CodingAgentPlanResult>,
+    startAgentRun: (goal: string) => ipcRenderer.invoke("coding:start-agent-run", goal),
+    gitStatus: () => ipcRenderer.invoke("coding:git-status") as Promise<CodingGitStatusResult>,
+    gitDiff: (filePath?: string) => ipcRenderer.invoke("coding:git-diff", filePath) as Promise<CodingGitDiffResult>,
     browse: (input: string) => ipcRenderer.invoke("coding:browse", input) as Promise<CodingResearchResult>,
+    research: (input: string) => ipcRenderer.invoke("coding:research", input) as Promise<CodingResearchReportResult>,
     pluginStatuses: () => ipcRenderer.invoke("coding:plugin-statuses") as Promise<CodingPluginStatus[]>,
     installPlugin: (pluginId: string) => ipcRenderer.invoke("coding:install-plugin", pluginId) as Promise<CodingPluginInstallResult>,
     cancelPluginInstall: (pluginId: string) =>

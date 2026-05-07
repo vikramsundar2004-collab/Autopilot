@@ -4,22 +4,40 @@ import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import type {
-  CodingAccessMode,
-  CodingCommandRequest,
-  CodingCommandResult,
-  CodingDeleteResult,
-  CodingDirectoryEntry,
-  CodingFileReadResult,
-  CodingPluginInstallResult,
-  CodingPluginStatus,
-  CodingProject,
-  CodingResearchResult,
-  CodingSearchResult,
-  CodingSnapshot,
-  CodingTreeNode,
-  CodingWriteResult
+import {
+  createCodingAgentPlanFromOverview,
+  parseGitPorcelainStatus,
+  type CodingAgentPlanResult,
+  type CodingAccessMode,
+  type CodingCommandRequest,
+  type CodingCommandResult,
+  type CodingDeleteResult,
+  type CodingDirectoryEntry,
+  type CodingFileReadResult,
+  type CodingGitDiffResult,
+  type CodingGitStatusResult,
+  type CodingLanguageToolStatus,
+  type CodingPluginInstallResult,
+  type CodingPluginStatus,
+  type CodingOpenFileResult,
+  type CodingProject,
+  type CodingRepoOverview,
+  type CodingRepoOverviewResult,
+  type CodingResearchPass,
+  type CodingResearchReportResult,
+  type CodingResearchResult,
+  type CodingResearchSource,
+  type CodingSearchResult,
+  type CodingSnapshot,
+  type CodingTerminalInputRequest,
+  type CodingTerminalInputResult,
+  type CodingTerminalOpenRequest,
+  type CodingTerminalOpenResult,
+  type CodingTerminalOutputEvent,
+  type CodingTreeNode,
+  type CodingWriteResult
 } from "../shared/coding.js";
+import { CODING_PLUGIN_DEFINITIONS, type CodingPluginDefinition } from "../shared/codingPlugins.js";
 
 const PROJECTS_FILE = "coding-projects.json";
 const MAX_TREE_DEPTH = 5;
@@ -29,19 +47,16 @@ const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 60_000;
+const REPO_COMMAND_TIMEOUT_MS = 8_000;
+const MAX_GIT_DIFF_BYTES = 80_000;
 const PLUGIN_CHECK_TIMEOUT_MS = 15_000;
 const PLUGIN_OUTPUT_LIMIT = 8000;
+const RESEARCH_FETCH_TIMEOUT_MS = 12_000;
+const MAX_RESEARCH_INPUT_LENGTH = 280;
+const MAX_RESEARCH_SOURCES = 8;
+const LANGUAGE_TOOL_CHECK_TIMEOUT_MS = 5_000;
 
-type PluginDefinition = {
-  id: string;
-  name: string;
-  command: string;
-  checkCommand: string;
-  installCommand: string;
-  installArgs?: string[];
-  installer: "shell" | "winget";
-  estimatedSeconds: number;
-};
+type PluginDefinition = CodingPluginDefinition;
 
 type RunningPluginInstall = {
   child: ChildProcessWithoutNullStreams;
@@ -51,6 +66,19 @@ type RunningPluginInstall = {
   cwd: string;
   stdoutChunks: Buffer[];
   stderrChunks: Buffer[];
+};
+
+type RunningTerminalSession = {
+  child: ChildProcessWithoutNullStreams;
+  cwd: string;
+  shell: string;
+  shellName: string;
+  output: string;
+  running: boolean;
+  startedAt: number;
+  updatedAt: number;
+  pid?: number;
+  exitCode?: number | null;
 };
 
 const SKIPPED_DIRECTORIES = new Set([
@@ -153,100 +181,21 @@ const DOCUMENT_MIME_BY_EXTENSION = new Map([
   [".pdf", "application/pdf"]
 ]);
 
-const PLUGIN_DEFINITIONS: PluginDefinition[] = [
+const PLUGIN_DEFINITIONS: PluginDefinition[] = CODING_PLUGIN_DEFINITIONS;
+const LANGUAGE_TOOL_DEFINITIONS: CodingLanguageToolStatus[] = [
   {
-    id: "node",
-    name: "Node.js CLI",
-    command: "winget install --id OpenJS.NodeJS.LTS --exact --silent",
-    checkCommand: "node --version",
-    installCommand: "winget install --id OpenJS.NodeJS.LTS --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
-    installArgs: [
-      "install",
-      "--id",
-      "OpenJS.NodeJS.LTS",
-      "--exact",
-      "--silent",
-      "--accept-package-agreements",
-      "--accept-source-agreements",
-      "--disable-interactivity"
-    ],
-    installer: "winget",
-    estimatedSeconds: 180
+    language: "typescript",
+    serverName: "TypeScript Language Server",
+    serverCommand: "typescript-language-server",
+    available: false,
+    installCommand: "npm install -g typescript typescript-language-server"
   },
   {
-    id: "git",
-    name: "Git",
-    command: "winget install --id Git.Git --exact --silent",
-    checkCommand: "git --version",
-    installCommand: "winget install --id Git.Git --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
-    installArgs: [
-      "install",
-      "--id",
-      "Git.Git",
-      "--exact",
-      "--silent",
-      "--accept-package-agreements",
-      "--accept-source-agreements",
-      "--disable-interactivity"
-    ],
-    installer: "winget",
-    estimatedSeconds: 180
-  },
-  {
-    id: "python",
-    name: "Python",
-    command: "winget install --id Python.Python.3.12 --exact --silent",
-    checkCommand: "python --version",
-    installCommand: "winget install --id Python.Python.3.12 --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
-    installArgs: [
-      "install",
-      "--id",
-      "Python.Python.3.12",
-      "--exact",
-      "--silent",
-      "--accept-package-agreements",
-      "--accept-source-agreements",
-      "--disable-interactivity"
-    ],
-    installer: "winget",
-    estimatedSeconds: 240
-  },
-  {
-    id: "eslint",
-    name: "ESLint",
-    command: "npm install -g eslint",
-    checkCommand: "eslint --version",
-    installCommand: "npm install -g eslint",
-    installer: "shell",
-    estimatedSeconds: 90
-  },
-  {
-    id: "prettier",
-    name: "Prettier",
-    command: "npm install -g prettier",
-    checkCommand: "prettier --version",
-    installCommand: "npm install -g prettier",
-    installer: "shell",
-    estimatedSeconds: 90
-  },
-  {
-    id: "gh",
-    name: "GitHub CLI",
-    command: "winget install --id GitHub.cli --exact --silent",
-    checkCommand: "gh --version",
-    installCommand: "winget install --id GitHub.cli --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
-    installArgs: [
-      "install",
-      "--id",
-      "GitHub.cli",
-      "--exact",
-      "--silent",
-      "--accept-package-agreements",
-      "--accept-source-agreements",
-      "--disable-interactivity"
-    ],
-    installer: "winget",
-    estimatedSeconds: 180
+    language: "python",
+    serverName: "Pyright",
+    serverCommand: "pyright-langserver",
+    available: false,
+    installCommand: "npm install -g pyright"
   }
 ];
 
@@ -271,7 +220,7 @@ function isProtectedAppPath(targetPath: string): boolean {
   return isInside(getAppRootPath(), path.resolve(targetPath));
 }
 
-function isSensitiveEnvFilePath(targetPath: string): boolean {
+function isEnvironmentFilePath(targetPath: string): boolean {
   const baseName = path.basename(targetPath).toLowerCase();
   return baseName === ".env" || baseName === "env.local" || baseName.startsWith(".env.");
 }
@@ -282,6 +231,10 @@ function toRelativePath(rootPath: string, targetPath: string): string {
 }
 
 function inferLanguage(fileName: string): string {
+  if (isEnvironmentFilePath(fileName)) {
+    return "dotenv";
+  }
+
   const extension = path.extname(fileName).toLowerCase().replace(".", "");
   if (!extension) {
     return "text";
@@ -301,7 +254,7 @@ function inferLanguage(fileName: string): string {
 function isTextFilePath(filePath: string): boolean {
   const extension = path.extname(filePath).toLowerCase();
   const baseName = path.basename(filePath).toLowerCase();
-  return TEXT_EXTENSIONS.has(extension) || TEXT_FILE_NAMES.has(baseName) || baseName.startsWith(".env.");
+  return TEXT_EXTENSIONS.has(extension) || TEXT_FILE_NAMES.has(baseName) || isEnvironmentFilePath(filePath);
 }
 
 function looksLikeTextSample(sample: Buffer): boolean {
@@ -379,8 +332,53 @@ function normalizeResearchInput(input: string): string {
   return `https://www.google.com/search?q=${encodeURIComponent(trimmedInput)}`;
 }
 
+function normalizeResearchQuery(input: string): string {
+  return input.replace(/\s+/g, " ").trim().slice(0, MAX_RESEARCH_INPUT_LENGTH);
+}
+
+function buildGoogleNewsSearchUrl(query: string): string {
+  return `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+}
+
+function buildRecursiveResearchQueries(input: string): string[] {
+  const baseQuery = normalizeResearchQuery(input);
+  const currentYear = new Date().getFullYear();
+  const queryCandidates = [
+    baseQuery,
+    /\b(latest|recent|news|today|this week|current)\b/iu.test(baseQuery) ? `${baseQuery} industry analysis` : `${baseQuery} latest news ${currentYear}`,
+    `${baseQuery} trends market analysis ${currentYear}`
+  ];
+
+  return [...new Set(queryCandidates.map((query) => normalizeResearchQuery(query)).filter(Boolean))].slice(0, 3);
+}
+
+function decodeTextEntities(value: string): string {
+  const namedEntities: Record<string, string> = {
+    amp: "&",
+    apos: "'",
+    gt: ">",
+    lt: "<",
+    nbsp: " ",
+    quot: "\""
+  };
+
+  return value.replace(/&(#x?[0-9a-f]+|[a-z]+);/giu, (entity, token: string) => {
+    if (token.startsWith("#x")) {
+      const codePoint = Number.parseInt(token.slice(2), 16);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : entity;
+    }
+
+    if (token.startsWith("#")) {
+      const codePoint = Number.parseInt(token.slice(1), 10);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : entity;
+    }
+
+    return namedEntities[token.toLowerCase()] ?? entity;
+  });
+}
+
 function stripHtml(value: string): string {
-  return value
+  return decodeTextEntities(value)
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
@@ -391,6 +389,115 @@ function stripHtml(value: string): string {
 function extractTitle(html: string, fallback: string): string {
   const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
   return stripHtml(title ?? fallback).slice(0, 120) || fallback;
+}
+
+function extractXmlTag(xml: string, tagName: string): string {
+  return xml.match(new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "i"))?.[1] ?? "";
+}
+
+function getGoogleNewsSources(xml: string): CodingResearchSource[] {
+  const sources: CodingResearchSource[] = [];
+  for (const itemMatch of xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)) {
+    const itemXml = itemMatch[1] ?? "";
+    const title = stripHtml(extractXmlTag(itemXml, "title")).slice(0, 180);
+    const url = decodeTextEntities(extractXmlTag(itemXml, "link")).trim();
+    if (!title || !url) {
+      continue;
+    }
+
+    const sourceName = stripHtml(extractXmlTag(itemXml, "source")).slice(0, 80) || undefined;
+    const description = stripHtml(extractXmlTag(itemXml, "description")).slice(0, 280);
+    const pubDate = extractXmlTag(itemXml, "pubDate");
+    const publishedAt = pubDate ? Date.parse(pubDate) : Number.NaN;
+    sources.push({
+      title,
+      url,
+      snippet: description || title,
+      provider: "google-news",
+      sourceName,
+      publishedAt: Number.isFinite(publishedAt) ? publishedAt : undefined,
+      status: 200
+    });
+
+    if (sources.length >= 5) {
+      break;
+    }
+  }
+
+  return sources;
+}
+
+async function fetchResearchText(url: string): Promise<{ url: string; status: number; contentType: string; text: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RESEARCH_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "user-agent": "AutopilotCoding/0.1 (+https://github.com/vikramsundar2004-collab/Autopilot)"
+      }
+    });
+    const contentType = response.headers.get("content-type") ?? "";
+    const text = contentType.includes("text") || contentType.includes("xml") || contentType.includes("html") ? await response.text() : "";
+    return {
+      url: response.url,
+      status: response.status,
+      contentType,
+      text
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function uniqueResearchSources(sources: CodingResearchSource[]): CodingResearchSource[] {
+  const seen = new Set<string>();
+  const uniqueSources: CodingResearchSource[] = [];
+  for (const source of sources) {
+    const key = `${source.url}|${source.title}`.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    uniqueSources.push(source);
+    if (uniqueSources.length >= MAX_RESEARCH_SOURCES) {
+      break;
+    }
+  }
+
+  return uniqueSources;
+}
+
+function formatResearchSourceDate(value: number | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
+}
+
+function buildResearchAnswer(input: string, iterations: CodingResearchPass[], sources: CodingResearchSource[]): string {
+  if (sources.length === 0) {
+    return `I ran ${iterations.length} recursive research ${iterations.length === 1 ? "pass" : "passes"} for "${input}", but no usable sources came back. Try a narrower industry, company, or time window.`;
+  }
+
+  const topSignals = sources
+    .slice(0, 5)
+    .map((source, index) => {
+      const sourceLabel = [source.sourceName, formatResearchSourceDate(source.publishedAt)].filter(Boolean).join(" - ");
+      return `${index + 1}. ${source.title}${sourceLabel ? ` (${sourceLabel})` : ""}`;
+    })
+    .join("\n");
+
+  return [
+    `I ran ${iterations.length} recursive research ${iterations.length === 1 ? "pass" : "passes"} for "${input}" using Google News/search routes.`,
+    "",
+    "Latest signals:",
+    topSignals,
+    "",
+    "Ask a follow-up in the research bar to recurse on one slice, compare competitors, or turn this into a brief."
+  ].join("\n");
 }
 
 function sortEntries(a: CodingDirectoryEntry, b: CodingDirectoryEntry): number {
@@ -429,6 +536,23 @@ function getShellInvocation(command: string): { shell: string; args: string[] } 
         shell: "/bin/sh",
         args: ["-lc", command]
       };
+}
+
+function getInteractiveTerminalInvocation(): { shell: string; args: string[]; shellName: string } {
+  if (process.platform === "win32") {
+    return {
+      shell: "powershell.exe",
+      args: ["-NoLogo", "-NoExit"],
+      shellName: "Windows PowerShell"
+    };
+  }
+
+  const shell = process.env.SHELL || "/bin/sh";
+  return {
+    shell,
+    args: [],
+    shellName: path.basename(shell) || "Shell"
+  };
 }
 
 function escapePowerShellSingleQuotedString(value: string): string {
@@ -499,7 +623,7 @@ function getPluginFailureReason(plugin: PluginDefinition, exitCode: number | nul
   return `${plugin.name} installer exited with code ${codeLabel}.${output ? ` Details: ${output}` : ` Command: ${manualCommand}`}`;
 }
 
-function runShellCommand(command: string, cwd: string, timeoutMs: number): Promise<{
+function runShellCommand(command: string, cwd: string, timeoutMs: number, outputLimit = PLUGIN_OUTPUT_LIMIT): Promise<{
   exitCode: number | null;
   stdout: string;
   stderr: string;
@@ -529,8 +653,8 @@ function runShellCommand(command: string, cwd: string, timeoutMs: number): Promi
       clearTimeout(timeout);
       resolve({
         exitCode: null,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
-        stderr: Buffer.concat(stderrChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+        stdout: Buffer.concat(stdoutChunks).toString("utf8").slice(-outputLimit),
+        stderr: Buffer.concat(stderrChunks).toString("utf8").slice(-outputLimit),
         durationMs: Date.now() - startedAt,
         timedOut,
         error: error.message
@@ -540,13 +664,153 @@ function runShellCommand(command: string, cwd: string, timeoutMs: number): Promi
       clearTimeout(timeout);
       resolve({
         exitCode,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
-        stderr: Buffer.concat(stderrChunks).toString("utf8").slice(-PLUGIN_OUTPUT_LIMIT),
+        stdout: Buffer.concat(stdoutChunks).toString("utf8").slice(-outputLimit),
+        stderr: Buffer.concat(stderrChunks).toString("utf8").slice(-outputLimit),
         durationMs: Date.now() - startedAt,
         timedOut
       });
     });
   });
+}
+
+async function checkCommandAvailable(command: string, cwd: string): Promise<{ available: boolean; reason?: string }> {
+  const probe = process.platform === "win32" ? `where.exe ${quoteShellArgument(command)}` : `command -v ${quoteShellArgument(command)}`;
+  const result = await runShellCommand(probe, cwd, LANGUAGE_TOOL_CHECK_TIMEOUT_MS, 1200);
+  if (result.exitCode === 0 && result.stdout.trim()) {
+    return { available: true };
+  }
+
+  const reason = result.error || result.stderr.trim() || result.stdout.trim() || `${command} was not found on PATH.`;
+  return {
+    available: false,
+    reason: reason.replace(/\s+/g, " ").trim().slice(0, 240)
+  };
+}
+
+function quoteShellArgument(value: string): string {
+  if (process.platform === "win32") {
+    return escapePowerShellSingleQuotedString(value);
+  }
+
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function readPackageJson(rootPath: string): Promise<{ scripts?: Record<string, unknown>; dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown> } | null> {
+  try {
+    const raw = await fs.readFile(path.join(rootPath, "package.json"), "utf8");
+    return JSON.parse(raw) as { scripts?: Record<string, unknown>; dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown> };
+  } catch {
+    return null;
+  }
+}
+
+async function detectPackageManager(rootPath: string): Promise<CodingRepoOverview["packageManager"]> {
+  if (await pathExists(path.join(rootPath, "pnpm-lock.yaml"))) {
+    return "pnpm";
+  }
+
+  if (await pathExists(path.join(rootPath, "yarn.lock"))) {
+    return "yarn";
+  }
+
+  if (await pathExists(path.join(rootPath, "bun.lockb")) || (await pathExists(path.join(rootPath, "bun.lock")))) {
+    return "bun";
+  }
+
+  if (await pathExists(path.join(rootPath, "package-lock.json")) || (await pathExists(path.join(rootPath, "package.json")))) {
+    return "npm";
+  }
+
+  return "unknown";
+}
+
+function getPackageRunCommand(packageManager: CodingRepoOverview["packageManager"]): string {
+  if (packageManager === "pnpm" || packageManager === "yarn" || packageManager === "bun") {
+    return packageManager;
+  }
+
+  return "npm run";
+}
+
+function getPackageScripts(packageManager: CodingRepoOverview["packageManager"], packageJson: Awaited<ReturnType<typeof readPackageJson>>): CodingRepoOverview["scripts"] {
+  const rawScripts = packageJson?.scripts ?? {};
+  return Object.entries(rawScripts)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .map(([name, value]) => ({
+      name,
+      command: `${getPackageRunCommand(packageManager)} ${name}${value ? ` (${value})` : ""}`
+    }))
+    .slice(0, 12);
+}
+
+async function collectKeyFiles(rootPath: string): Promise<string[]> {
+  const candidates = [
+    "package.json",
+    "README.md",
+    "src/main/main.ts",
+    "src/main/coding.ts",
+    "src/renderer/App.tsx",
+    "src/renderer/styles.css",
+    "src/shared/coding.ts",
+    "vite.config.ts",
+    "tsconfig.json",
+    "tsconfig.electron.json",
+    "electron.vite.config.ts"
+  ];
+  const keyFiles: string[] = [];
+  for (const candidate of candidates) {
+    if (await pathExists(path.join(rootPath, candidate))) {
+      keyFiles.push(candidate);
+    }
+  }
+
+  return keyFiles;
+}
+
+async function collectFrameworkHints(rootPath: string, packageJson: Awaited<ReturnType<typeof readPackageJson>>): Promise<string[]> {
+  const dependencyNames = new Set([
+    ...Object.keys(packageJson?.dependencies ?? {}),
+    ...Object.keys(packageJson?.devDependencies ?? {})
+  ]);
+  const hints: string[] = [];
+  const dependencyHints: Array<[string, string]> = [
+    ["electron", "Electron"],
+    ["react", "React"],
+    ["vite", "Vite"],
+    ["typescript", "TypeScript"],
+    ["vitest", "Vitest"],
+    ["next", "Next.js"],
+    ["@vitejs/plugin-react", "Vite React"]
+  ];
+  for (const [dependency, label] of dependencyHints) {
+    if (dependencyNames.has(dependency)) {
+      hints.push(label);
+    }
+  }
+
+  if (await pathExists(path.join(rootPath, "src", "main"))) {
+    hints.push("main process");
+  }
+
+  if (await pathExists(path.join(rootPath, "src", "renderer"))) {
+    hints.push("renderer");
+  }
+
+  return [...new Set(hints)];
+}
+
+function buildRepoOverviewSummary(input: {
+  projectName: string;
+  packageManager: CodingRepoOverview["packageManager"];
+  scripts: CodingRepoOverview["scripts"];
+  frameworkHints: string[];
+  keyFiles: string[];
+  changedFiles: number;
+}): string {
+  const stackLabel = input.frameworkHints.length > 0 ? input.frameworkHints.join(", ") : "no framework hints detected";
+  const scriptLabel = input.scripts.length > 0 ? `${input.scripts.length} package script${input.scripts.length === 1 ? "" : "s"}` : "no package scripts";
+  const fileLabel = input.keyFiles.length > 0 ? `key files include ${input.keyFiles.slice(0, 4).join(", ")}` : "no known key files found";
+  return `${input.projectName} looks like a ${input.packageManager} project with ${stackLabel}, ${scriptLabel}, and ${fileLabel}. Git currently reports ${input.changedFiles} changed file${input.changedFiles === 1 ? "" : "s"}.`;
 }
 
 export class CodingWorkspace {
@@ -556,11 +820,168 @@ export class CodingWorkspace {
   private loaded = false;
   private pluginInstalls = new Map<string, RunningPluginInstall>();
   private pluginLastStatuses = new Map<string, CodingPluginStatus>();
+  private terminalSession: RunningTerminalSession | null = null;
+  private terminalOutputListeners = new Set<(event: CodingTerminalOutputEvent) => void>();
 
   async getSnapshot(): Promise<CodingSnapshot> {
     await this.ensureLoaded();
     await this.pruneMissingProjects();
     return this.buildSnapshot();
+  }
+
+  async getLanguageToolStatuses(): Promise<CodingLanguageToolStatus[]> {
+    await this.ensureLoaded();
+    const cwd = this.activeRootPath ?? app.getPath("home");
+    const statuses: CodingLanguageToolStatus[] = [];
+    for (const tool of LANGUAGE_TOOL_DEFINITIONS) {
+      const probe = await checkCommandAvailable(tool.serverCommand, cwd);
+      statuses.push({
+        ...tool,
+        available: probe.available,
+        reason: probe.available ? undefined : probe.reason
+      });
+    }
+
+    return statuses;
+  }
+
+  async getRepoOverview(): Promise<CodingRepoOverviewResult> {
+    await this.ensureLoaded();
+    await this.pruneMissingProjects();
+    const activeProject = this.getActiveProject();
+    if (!activeProject) {
+      return {
+        success: false,
+        reason: "Open a local project before asking Autopilot to understand the repo.",
+        generatedAt: Date.now()
+      };
+    }
+
+    const packageJson = await readPackageJson(activeProject.rootPath);
+    const packageManager = await detectPackageManager(activeProject.rootPath);
+    const scripts = getPackageScripts(packageManager, packageJson);
+    const [keyFiles, frameworkHints, gitStatus] = await Promise.all([
+      collectKeyFiles(activeProject.rootPath),
+      collectFrameworkHints(activeProject.rootPath, packageJson),
+      this.getGitStatusForRoot(activeProject.rootPath)
+    ]);
+    const changedFiles = gitStatus.success ? gitStatus.changedFiles : [];
+    const overview: CodingRepoOverview = {
+      projectName: activeProject.name,
+      rootPath: activeProject.rootPath,
+      generatedAt: Date.now(),
+      packageManager,
+      scripts,
+      frameworkHints,
+      keyFiles,
+      gitBranch: gitStatus.success ? gitStatus.branch : "not a git repo",
+      changedFiles,
+      summary: buildRepoOverviewSummary({
+        projectName: activeProject.name,
+        packageManager,
+        scripts,
+        frameworkHints,
+        keyFiles,
+        changedFiles: changedFiles.length
+      })
+    };
+
+    return {
+      success: true,
+      overview
+    };
+  }
+
+  async createAgentPlan(goal: string): Promise<CodingAgentPlanResult> {
+    const overviewResult = await this.getRepoOverview();
+    if (!overviewResult.success) {
+      return {
+        success: false,
+        reason: overviewResult.reason,
+        generatedAt: Date.now()
+      };
+    }
+
+    const now = Date.now();
+    return {
+      success: true,
+      plan: createCodingAgentPlanFromOverview({
+        id: `coding-plan-${now}`,
+        goal,
+        overview: overviewResult.overview,
+        now
+      })
+    };
+  }
+
+  async getGitStatus(): Promise<CodingGitStatusResult> {
+    await this.ensureLoaded();
+    await this.pruneMissingProjects();
+    const activeProject = this.getActiveProject();
+    if (!activeProject) {
+      return {
+        success: false,
+        reason: "Open a local project before reviewing git changes.",
+        generatedAt: Date.now()
+      };
+    }
+
+    return this.getGitStatusForRoot(activeProject.rootPath);
+  }
+
+  async getGitDiff(filePath?: string): Promise<CodingGitDiffResult> {
+    await this.ensureLoaded();
+    const activeProject = this.getActiveProject();
+    if (!activeProject) {
+      return {
+        success: false,
+        filePath,
+        reason: "Open a local project before reviewing diffs.",
+        generatedAt: Date.now()
+      };
+    }
+
+    const resolvedFilePath = filePath ? path.resolve(filePath) : undefined;
+    if (resolvedFilePath && !isInside(activeProject.rootPath, resolvedFilePath)) {
+      return {
+        success: false,
+        rootPath: activeProject.rootPath,
+        filePath,
+        reason: "Diff review can only read files inside the active project.",
+        generatedAt: Date.now()
+      };
+    }
+
+    const relativeFilePath = resolvedFilePath ? toRelativePath(activeProject.rootPath, resolvedFilePath) : undefined;
+    const command = relativeFilePath ? `git diff --no-ext-diff -- ${quoteShellArgument(relativeFilePath)}` : "git diff --no-ext-diff";
+    const result = await runShellCommand(command, activeProject.rootPath, REPO_COMMAND_TIMEOUT_MS, MAX_GIT_DIFF_BYTES);
+    if (result.timedOut) {
+      return {
+        success: false,
+        rootPath: activeProject.rootPath,
+        filePath,
+        reason: "Git diff timed out before Autopilot could read it.",
+        generatedAt: Date.now()
+      };
+    }
+
+    if (result.exitCode !== 0) {
+      return {
+        success: false,
+        rootPath: activeProject.rootPath,
+        filePath,
+        reason: result.stderr.trim() || result.stdout.trim() || result.error || "Git diff failed.",
+        generatedAt: Date.now()
+      };
+    }
+
+    return {
+      success: true,
+      rootPath: activeProject.rootPath,
+      filePath: relativeFilePath,
+      diff: result.stdout,
+      generatedAt: Date.now()
+    };
   }
 
   async openProject(window: BrowserWindow): Promise<CodingSnapshot> {
@@ -575,6 +996,62 @@ export class CodingWorkspace {
     }
 
     return this.addProject(result.filePaths[0]);
+  }
+
+  async openFiles(window: BrowserWindow): Promise<CodingOpenFileResult> {
+    await this.ensureLoaded();
+    const activeProject = this.getActiveProject();
+    const result = await dialog.showOpenDialog(window, {
+      title: "Open files",
+      buttonLabel: "Open files",
+      defaultPath: activeProject?.rootPath ?? app.getPath("documents"),
+      properties: ["openFile", "multiSelections"]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return {
+        success: false,
+        reason: "No files selected.",
+        snapshot: await this.buildSnapshot(),
+        files: []
+      };
+    }
+
+    const resolvedFilePaths = result.filePaths.map((filePath) => path.resolve(filePath));
+    let snapshot: CodingSnapshot;
+    if (activeProject && resolvedFilePaths.every((filePath) => isInside(activeProject.rootPath, filePath))) {
+      snapshot = await this.buildSnapshot();
+    } else {
+      snapshot = await this.addProject(path.dirname(resolvedFilePaths[0]));
+    }
+
+    const files: CodingOpenFileResult["files"] = [];
+    for (const filePath of resolvedFilePaths) {
+      const currentProject = this.getActiveProject();
+      if (!currentProject || !isInside(currentProject.rootPath, filePath)) {
+        continue;
+      }
+
+      const openedFile = await this.readPath(filePath);
+      if (openedFile.success && openedFile.kind !== "directory") {
+        files.push(openedFile);
+      }
+    }
+
+    if (files.length === 0) {
+      return {
+        success: false,
+        reason: "Autopilot could not open any selected files.",
+        snapshot,
+        files
+      };
+    }
+
+    return {
+      success: true,
+      snapshot: await this.buildSnapshot(),
+      files
+    };
   }
 
   async createProject(window: BrowserWindow): Promise<CodingSnapshot> {
@@ -833,6 +1310,186 @@ export class CodingWorkspace {
     return { success: true, status };
   }
 
+  onTerminalOutput(listener: (event: CodingTerminalOutputEvent) => void): () => void {
+    this.terminalOutputListeners.add(listener);
+    return () => this.terminalOutputListeners.delete(listener);
+  }
+
+  private buildTerminalOpenResult(session: RunningTerminalSession): Extract<CodingTerminalOpenResult, { success: true }> {
+    return {
+      success: true,
+      cwd: session.cwd,
+      shell: session.shell,
+      shellName: session.shellName,
+      output: session.output,
+      running: session.running,
+      startedAt: session.startedAt,
+      updatedAt: session.updatedAt,
+      pid: session.pid
+    };
+  }
+
+  private emitTerminalOutput(session: RunningTerminalSession, chunk: string): void {
+    const event: CodingTerminalOutputEvent = {
+      output: session.output,
+      chunk,
+      cwd: session.cwd,
+      shellName: session.shellName,
+      running: session.running,
+      updatedAt: session.updatedAt,
+      pid: session.pid,
+      exitCode: session.exitCode
+    };
+    for (const listener of this.terminalOutputListeners) {
+      listener(event);
+    }
+  }
+
+  private appendTerminalOutput(session: RunningTerminalSession, chunk: string): void {
+    session.output = `${session.output}${chunk}`.slice(-40_000);
+    session.updatedAt = Date.now();
+    this.emitTerminalOutput(session, chunk);
+  }
+
+  async openTerminal(input: CodingTerminalOpenRequest = {}): Promise<CodingTerminalOpenResult> {
+    await this.ensureLoaded();
+    const activeProject = this.getActiveProject();
+    const cwd = path.resolve(input.cwd || activeProject?.rootPath || app.getPath("home"));
+    const invocation = getInteractiveTerminalInvocation();
+
+    try {
+      const stats = await fs.stat(cwd);
+      if (!stats.isDirectory()) {
+        return {
+          success: false,
+          cwd,
+          shell: invocation.shell,
+          shellName: invocation.shellName,
+          reason: "PowerShell needs a folder to open from."
+        };
+      }
+    } catch (error) {
+      return {
+        success: false,
+        cwd,
+        shell: invocation.shell,
+        shellName: invocation.shellName,
+        reason: error instanceof Error ? error.message : "PowerShell could not access that folder."
+      };
+    }
+
+    if (this.terminalSession?.running && this.terminalSession.cwd === cwd) {
+      return this.buildTerminalOpenResult(this.terminalSession);
+    }
+
+    if (this.terminalSession?.running) {
+      this.terminalSession.child.kill();
+      this.terminalSession.running = false;
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const resolveOnce = (result: CodingTerminalOpenResult) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        resolve(result);
+      };
+
+      try {
+        const child = spawn(invocation.shell, invocation.args, {
+          cwd,
+          windowsHide: true,
+          env: process.env
+        });
+        const session: RunningTerminalSession = {
+          child,
+          cwd,
+          shell: invocation.shell,
+          shellName: invocation.shellName,
+          output: "",
+          running: true,
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+          pid: child.pid
+        };
+        this.terminalSession = session;
+
+        child.stdout.on("data", (chunk: Buffer) => this.appendTerminalOutput(session, chunk.toString("utf8")));
+        child.stderr.on("data", (chunk: Buffer) => this.appendTerminalOutput(session, chunk.toString("utf8")));
+
+        child.once("error", (error) =>
+          resolveOnce({
+            success: false,
+            cwd,
+            shell: invocation.shell,
+            shellName: invocation.shellName,
+            reason: error.message
+          })
+        );
+        child.once("spawn", () => {
+          resolveOnce(this.buildTerminalOpenResult(session));
+        });
+        child.once("close", (exitCode) => {
+          session.running = false;
+          session.exitCode = exitCode;
+          this.appendTerminalOutput(session, `\r\n[${session.shellName} exited with code ${exitCode ?? "unknown"}]\r\n`);
+        });
+      } catch (error) {
+        resolveOnce({
+          success: false,
+          cwd,
+          shell: invocation.shell,
+          shellName: invocation.shellName,
+          reason: error instanceof Error ? error.message : "PowerShell could not start."
+        });
+      }
+    });
+  }
+
+  async sendTerminalInput(input: CodingTerminalInputRequest): Promise<CodingTerminalInputResult> {
+    const value = input.input;
+    if (!value.trim()) {
+      return {
+        success: false,
+        reason: "Enter a PowerShell command.",
+        output: this.terminalSession?.output,
+        running: this.terminalSession?.running
+      };
+    }
+
+    let session = this.terminalSession;
+    if (!session?.running) {
+      const opened = await this.openTerminal();
+      if (!opened.success) {
+        return {
+          success: false,
+          reason: opened.reason
+        };
+      }
+
+      session = this.terminalSession;
+    }
+
+    if (!session?.running) {
+      return {
+        success: false,
+        reason: "PowerShell is not running.",
+        output: session?.output,
+        running: false
+      };
+    }
+
+    session.child.stdin.write(`${value}\r\n`);
+    return {
+      success: true,
+      output: session.output,
+      running: session.running
+    };
+  }
+
   async runCommand(input: CodingCommandRequest): Promise<CodingCommandResult> {
     await this.ensureLoaded();
     const command = input.command.trim();
@@ -941,21 +1598,15 @@ export class CodingWorkspace {
 
     const url = normalizeResearchInput(trimmedInput);
     try {
-      const response = await fetch(url, {
-        headers: {
-          "user-agent": "AutopilotCoding/0.1 (+https://github.com/vikramsundar2004-collab/Autopilot)"
-        }
-      });
-      const contentType = response.headers.get("content-type") ?? "";
-      const text = contentType.includes("text") || contentType.includes("html") ? await response.text() : "";
-      const title = contentType.includes("html") ? extractTitle(text, response.url) : response.url;
-      const snippet = stripHtml(text).slice(0, 700);
+      const response = await fetchResearchText(url);
+      const title = response.contentType.includes("html") ? extractTitle(response.text, response.url) : response.url;
+      const snippet = stripHtml(response.text).slice(0, 700);
       return {
         success: true,
         input,
         url: response.url,
         title,
-        snippet: snippet || `Loaded ${contentType || "response"} with status ${response.status}.`,
+        snippet: snippet || `Loaded ${response.contentType || "response"} with status ${response.status}.`,
         status: response.status
       };
     } catch (error) {
@@ -966,6 +1617,92 @@ export class CodingWorkspace {
         reason: error instanceof Error ? error.message : "Autopilot could not browse that page."
       };
     }
+  }
+
+  async research(input: string): Promise<CodingResearchReportResult> {
+    const query = normalizeResearchQuery(input);
+    if (!query) {
+      return {
+        success: false,
+        input,
+        reason: "Ask a research question or name an industry to investigate.",
+        generatedAt: Date.now(),
+        iterations: [],
+        sources: []
+      };
+    }
+
+    const iterations: CodingResearchPass[] = [];
+    for (const researchQuery of buildRecursiveResearchQueries(query)) {
+      const url = buildGoogleNewsSearchUrl(researchQuery);
+      try {
+        const response = await fetchResearchText(url);
+        const sources = getGoogleNewsSources(response.text);
+        iterations.push({
+          query: researchQuery,
+          url: response.url,
+          status: "searched",
+          summary:
+            sources.length > 0
+              ? `Found ${sources.length} recent source${sources.length === 1 ? "" : "s"} from Google News.`
+              : `Google News responded with status ${response.status}, but no source items were parsed.`,
+          sources
+        });
+      } catch (error) {
+        iterations.push({
+          query: researchQuery,
+          url,
+          status: "failed",
+          summary: "This research pass could not complete.",
+          sources: [],
+          reason: error instanceof Error ? error.message : "Google research pass failed."
+        });
+      }
+    }
+
+    let sources = uniqueResearchSources(iterations.flatMap((iteration) => iteration.sources));
+    if (sources.length === 0) {
+      const fallback = await this.browse(query);
+      if (fallback.success) {
+        sources = [
+          {
+            title: fallback.title,
+            url: fallback.url,
+            snippet: fallback.snippet,
+            provider: "google-search",
+            sourceName: "Google Search",
+            status: fallback.status
+          }
+        ];
+        iterations.push({
+          query,
+          url: fallback.url,
+          status: "searched",
+          summary: "Fell back to a Google search page because news search did not return usable source cards.",
+          sources
+        });
+      }
+    }
+
+    if (sources.length === 0) {
+      return {
+        success: false,
+        input: query,
+        reason: "Autopilot could not find usable Google research results for that prompt.",
+        generatedAt: Date.now(),
+        iterations,
+        sources: []
+      };
+    }
+
+    return {
+      success: true,
+      input: query,
+      answer: buildResearchAnswer(query, iterations, sources),
+      generatedAt: Date.now(),
+      iterations,
+      sources
+    };
   }
 
   async readPath(targetPath: string): Promise<CodingFileReadResult> {
@@ -992,19 +1729,6 @@ export class CodingWorkspace {
 
       if (!stats.isFile()) {
         return { success: false, reason: "Autopilot can only open files and folders." };
-      }
-
-      if (isSensitiveEnvFilePath(resolvedPath)) {
-        return {
-          success: true,
-          kind: "binary",
-          name: path.basename(resolvedPath),
-          path: resolvedPath,
-          relativePath,
-          reason: "Environment files are hidden in the coding workspace so API keys and client secrets do not appear in chats or previews.",
-          size: stats.size,
-          modifiedAt: stats.mtimeMs
-        };
       }
 
       const extension = path.extname(resolvedPath).toLowerCase();
@@ -1106,12 +1830,8 @@ export class CodingWorkspace {
       return { success: false, reason: "Open a project before saving files." };
     }
 
-    if (isProtectedAppPath(resolvedPath)) {
+    if (isProtectedAppPath(resolvedPath) && !isEnvironmentFilePath(resolvedPath)) {
       return { success: false, reason: "Autopilot app code is read-only inside the coding workspace." };
-    }
-
-    if (isSensitiveEnvFilePath(resolvedPath)) {
-      return { success: false, reason: "Environment files are protected so saved API keys and client secrets are not changed from the coding workspace." };
     }
 
     try {
@@ -1137,6 +1857,38 @@ export class CodingWorkspace {
         reason: error instanceof Error ? error.message : "Could not save that file."
       };
     }
+  }
+
+  private async getGitStatusForRoot(rootPath: string): Promise<CodingGitStatusResult> {
+    const [branchResult, statusResult] = await Promise.all([
+      runShellCommand("git branch --show-current", rootPath, REPO_COMMAND_TIMEOUT_MS),
+      runShellCommand("git status --porcelain=v1", rootPath, REPO_COMMAND_TIMEOUT_MS)
+    ]);
+    if (statusResult.timedOut) {
+      return {
+        success: false,
+        rootPath,
+        reason: "Git status timed out before Autopilot could read the repo state.",
+        generatedAt: Date.now()
+      };
+    }
+
+    if (statusResult.exitCode !== 0) {
+      return {
+        success: false,
+        rootPath,
+        reason: statusResult.stderr.trim() || statusResult.stdout.trim() || statusResult.error || "Git status failed.",
+        generatedAt: Date.now()
+      };
+    }
+
+    return {
+      success: true,
+      rootPath,
+      branch: branchResult.exitCode === 0 && branchResult.stdout.trim() ? branchResult.stdout.trim() : "unknown",
+      changedFiles: parseGitPorcelainStatus(statusResult.stdout),
+      generatedAt: Date.now()
+    };
   }
 
   private createRunningPluginStatus(plugin: PluginDefinition, install: RunningPluginInstall): CodingPluginStatus {

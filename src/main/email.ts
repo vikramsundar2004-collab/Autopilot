@@ -7,6 +7,12 @@ import path from "node:path";
 
 import { mapWithConcurrency } from "../shared/async.js";
 import {
+  EMAIL_ACTION_ANALYSIS_CANDIDATE_LIMIT,
+  GOOGLE_SYNC_SCOPE,
+  getEmailActionAnalysisCandidates,
+  getGmailMaxResults,
+  getGoogleConnectionCapabilities,
+  getGrantedGoogleScopes,
   parseEmailSender,
   type EmailActionAnalysisResult,
   type EmailActionSuggestion,
@@ -17,7 +23,12 @@ import {
   type EmailSyncResult
 } from "../shared/email.js";
 
-type OpenAuthorizationUrl = (url: string) => Promise<void> | void;
+type GoogleAuthorizationControls = {
+  signal: AbortSignal;
+  cancel: (reason?: string) => void;
+};
+
+type OpenAuthorizationUrl = (url: string, controls: GoogleAuthorizationControls) => Promise<void> | void;
 
 type GmailTokenResponse = {
   access_token?: string;
@@ -92,12 +103,12 @@ type OpenAiActionPayload = {
 
 const STORE_VERSION = 1;
 const GMAIL_PROVIDER: EmailProviderId = "gmail";
-const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GMAIL_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 const GMAIL_REDIRECT_PATH = "/oauth/gmail/callback";
 const DEFAULT_GMAIL_REDIRECT_PORT = 53682;
+const DEFAULT_GOOGLE_SIGN_IN_TIMEOUT_MS = 1000 * 60 * 5;
 const DEFAULT_GMAIL_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_GMAIL_RETRY_ATTEMPTS = 2;
 const DEFAULT_GMAIL_MESSAGE_FETCH_CONCURRENCY = 4;
@@ -119,6 +130,11 @@ function getGoogleRedirectPort(): number {
   return Number.isInteger(value) && value > 1024 && value < 65536 ? value : DEFAULT_GMAIL_REDIRECT_PORT;
 }
 
+function getGoogleSignInTimeoutMs(): number {
+  const value = Number.parseInt(process.env.AUTOPILOT_GOOGLE_SIGN_IN_TIMEOUT_MS || "", 10);
+  return Number.isInteger(value) && value >= 30000 && value <= 10 * 60 * 1000 ? value : DEFAULT_GOOGLE_SIGN_IN_TIMEOUT_MS;
+}
+
 function getGmailRequestTimeoutMs(): number {
   const value = Number.parseInt(process.env.AUTOPILOT_GMAIL_REQUEST_TIMEOUT_MS || "", 10);
   return Number.isInteger(value) && value >= 3000 && value <= 60000 ? value : DEFAULT_GMAIL_REQUEST_TIMEOUT_MS;
@@ -132,6 +148,10 @@ function getGmailRetryAttempts(): number {
 function getGmailMessageFetchConcurrency(): number {
   const value = Number.parseInt(process.env.AUTOPILOT_GMAIL_MESSAGE_CONCURRENCY || "", 10);
   return Number.isInteger(value) && value >= 1 && value <= 8 ? value : DEFAULT_GMAIL_MESSAGE_FETCH_CONCURRENCY;
+}
+
+function getConfiguredGmailMaxResults(): number {
+  return getGmailMaxResults(process.env.AUTOPILOT_GMAIL_MAX_RESULTS);
 }
 
 function getOpenAiApiKey(): string {
@@ -171,6 +191,20 @@ function writeOAuthResponse(response: ServerResponse, title: string, message: st
   response.end(`<!doctype html><html><head><title>${title}</title></head><body style="font-family: system-ui; padding: 32px;"><h1>${title}</h1><p>${message}</p></body></html>`);
 }
 
+function closeServerSafely(server: ReturnType<typeof createServer>): void {
+  try {
+    server.close();
+  } catch {
+    // Already closed.
+  }
+}
+
+function getGoogleSignInAbortReason(signal: AbortSignal): string {
+  return typeof signal.reason === "string" && signal.reason.trim()
+    ? signal.reason
+    : "Google sign-in was cancelled. Click Connect Google to try again.";
+}
+
 async function requestGmailAuthorizationCode(
   clientId: string,
   challenge: string,
@@ -178,12 +212,46 @@ async function requestGmailAuthorizationCode(
 ): Promise<{ code: string; redirectUri: string }> {
   const state = base64Url(randomBytes(16));
   const server = createServer();
+  const abortController = new AbortController();
+  let settled = false;
+  let timeout: NodeJS.Timeout | null = null;
+
+  const finish = (
+    resolve: (value: { code: string; redirectUri: string }) => void,
+    reject: (reason?: unknown) => void,
+    value: { code: string; redirectUri: string } | Error
+  ): void => {
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    if (timeout) {
+      clearTimeout(timeout);
+      timeout = null;
+    }
+    closeServerSafely(server);
+
+    if (value instanceof Error) {
+      reject(value);
+      return;
+    }
+
+    resolve(value);
+  };
 
   const codePromise = new Promise<{ code: string; redirectUri: string }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      server.close();
-      reject(new Error("Google sign-in timed out."));
-    }, 1000 * 60 * 5);
+    timeout = setTimeout(() => {
+      abortController.abort("Google sign-in timed out. Click Connect Google to try again.");
+    }, getGoogleSignInTimeoutMs());
+
+    abortController.signal.addEventListener(
+      "abort",
+      () => {
+        finish(resolve, reject, new Error(getGoogleSignInAbortReason(abortController.signal)));
+      },
+      { once: true }
+    );
 
     server.on("request", (request, response) => {
       const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -195,45 +263,48 @@ async function requestGmailAuthorizationCode(
 
       const error = requestUrl.searchParams.get("error");
       if (error) {
-        clearTimeout(timeout);
-        writeOAuthResponse(response, "Autopilot Gmail sign-in failed", "Google did not complete the sign-in.");
-        server.close();
-        reject(new Error(error));
+        writeOAuthResponse(response, "Autopilot Google sign-in failed", "Google did not complete the sign-in.");
+        finish(resolve, reject, new Error(error));
         return;
       }
 
       if (requestUrl.searchParams.get("state") !== state) {
-        clearTimeout(timeout);
-        writeOAuthResponse(response, "Autopilot Gmail sign-in failed", "The sign-in response did not match this Autopilot session.");
-        server.close();
-        reject(new Error("Google sign-in state did not match."));
+        writeOAuthResponse(response, "Autopilot Google sign-in failed", "The sign-in response did not match this Autopilot session.");
+        finish(resolve, reject, new Error("Google sign-in state did not match."));
         return;
       }
 
       const code = requestUrl.searchParams.get("code");
       if (!code) {
-        clearTimeout(timeout);
-        writeOAuthResponse(response, "Autopilot Gmail sign-in failed", "Google did not return an authorization code.");
-        server.close();
-        reject(new Error("Google did not return an authorization code."));
+        writeOAuthResponse(response, "Autopilot Google sign-in failed", "Google did not return an authorization code.");
+        finish(resolve, reject, new Error("Google did not return an authorization code."));
         return;
       }
 
       const address = server.address() as AddressInfo;
-      clearTimeout(timeout);
-      writeOAuthResponse(response, "Autopilot Gmail connected", "You can close this tab and return to Autopilot.");
-      server.close();
-      resolve({
+      writeOAuthResponse(response, "Autopilot Google connected", "Gmail and Calendar access are connected. You can close this tab and return to Autopilot.");
+      finish(resolve, reject, {
         code,
         redirectUri: `http://127.0.0.1:${address.port}${GMAIL_REDIRECT_PATH}`
       });
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.listen(getGoogleRedirectPort(), "127.0.0.1", () => resolve());
-    server.on("error", reject);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(getGoogleRedirectPort(), "127.0.0.1", () => {
+        server.removeListener("error", reject);
+        resolve();
+      });
+    });
+  } catch (error) {
+    abortController.abort("Could not start Google sign-in. If another sign-in tab is open, close it and try Connect Google again.");
+    void codePromise.catch(() => undefined);
+    throw error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EADDRINUSE"
+      ? new Error("A previous Google sign-in is still waiting. Close the old sign-in tab, then click Connect Google again.")
+      : error;
+  }
 
   const address = server.address() as AddressInfo;
   const redirectUri = `http://127.0.0.1:${address.port}${GMAIL_REDIRECT_PATH}`;
@@ -242,7 +313,7 @@ async function requestGmailAuthorizationCode(
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
-    scope: GMAIL_SCOPE,
+    scope: GOOGLE_SYNC_SCOPE,
     access_type: "offline",
     prompt: "consent",
     state,
@@ -250,7 +321,21 @@ async function requestGmailAuthorizationCode(
     code_challenge_method: "S256"
   }).toString();
 
-  await openAuthorizationUrl(authUrl.toString());
+  const controls: GoogleAuthorizationControls = {
+    signal: abortController.signal,
+    cancel: (reason?: string) => {
+      if (!abortController.signal.aborted) {
+        abortController.abort(reason || "Google sign-in was cancelled. Click Connect Google to try again.");
+      }
+    }
+  };
+
+  try {
+    await openAuthorizationUrl(authUrl.toString(), controls);
+  } catch (error) {
+    controls.cancel(error instanceof Error ? error.message : "Could not open Google sign-in.");
+  }
+
   return codePromise.then((result) => ({
     ...result,
     redirectUri
@@ -491,11 +576,45 @@ function cleanOpenAiActionTitle(value: unknown): string {
 }
 
 function cleanOpenAiActionContext(value: unknown): string {
-  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 120) : "";
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 220) : "";
 }
 
 function cleanOpenAiPriority(value: unknown): EmailActionSuggestion["priority"] {
   return value === "high" || value === "medium" || value === "low" ? value : undefined;
+}
+
+function cleanOpenAiActionSummary(value: unknown): string | undefined {
+  const summary = typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 260) : "";
+  return summary || undefined;
+}
+
+function cleanOpenAiConfidence(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = value > 1 ? value / 100 : value;
+  return Math.max(0, Math.min(1, normalized));
+}
+
+function cleanOpenAiRecommendedAssistant(value: unknown): EmailActionSuggestion["recommendedAssistant"] {
+  return value === "productivity" || value === "design" || value === "coding" || value === "automation" ? value : undefined;
+}
+
+function cleanOpenAiRequestedOutput(value: unknown): EmailActionSuggestion["requestedOutput"] {
+  return value === "reply" ||
+    value === "document" ||
+    value === "slide_deck" ||
+    value === "website_design" ||
+    value === "code_change" ||
+    value === "research_brief" ||
+    value === "scheduling" ||
+    value === "task"
+    ? value
+    : undefined;
+}
+
+function cleanOpenAiBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function parseOpenAiActionSuggestions(content: string, messages: EmailMessageSummary[]): EmailActionSuggestion[] {
@@ -527,10 +646,22 @@ function parseOpenAiActionSuggestions(content: string, messages: EmailMessageSum
 
     const sourceMessageId = typeof action.sourceMessageId === "string" && messageIds.has(action.sourceMessageId) ? action.sourceMessageId : undefined;
     const sourceMessage = sourceMessageId ? messages.find((message) => message.id === sourceMessageId) : undefined;
+    if (!sourceMessageId || !sourceMessage) {
+      continue;
+    }
+
+    const confidence = cleanOpenAiConfidence(action.confidence) ?? 0.72;
+    if (confidence < 0.55) {
+      continue;
+    }
+
+    const summary = cleanOpenAiActionSummary(action.summary);
+    const reason = cleanOpenAiActionSummary(action.reason);
     const context =
       cleanOpenAiActionContext(action.context) ||
-      (sourceMessage ? `${sourceMessage.from} - ${sourceMessage.subject}`.slice(0, 120) : "Gmail inbox");
-    const key = `${sourceMessageId ?? ""}:${context}:${title}`.toLowerCase();
+      summary ||
+      `${sourceMessage.from} - ${sourceMessage.subject}`.slice(0, 220);
+    const key = `${sourceMessageId}:${context}:${title}`.toLowerCase();
     if (seenKeys.has(key)) {
       continue;
     }
@@ -540,27 +671,95 @@ function parseOpenAiActionSuggestions(content: string, messages: EmailMessageSum
       title,
       context,
       sourceMessageId,
-      priority: cleanOpenAiPriority(action.priority)
+      priority: cleanOpenAiPriority(action.priority),
+      summary,
+      confidence,
+      recommendedAssistant: cleanOpenAiRecommendedAssistant(action.recommendedAssistant),
+      requestedOutput: cleanOpenAiRequestedOutput(action.requestedOutput),
+      reason,
+      draftSuggested: cleanOpenAiBoolean(action.draftSuggested)
     });
   }
 
-  return suggestions.slice(0, 10);
+  const priorityWeight: Record<NonNullable<EmailActionSuggestion["priority"]>, number> = { high: 0, medium: 1, low: 2 };
+  return suggestions
+    .sort((left, right) => (priorityWeight[left.priority ?? "medium"] - priorityWeight[right.priority ?? "medium"]) || (right.confidence ?? 0) - (left.confidence ?? 0))
+    .slice(0, 10);
+}
+
+function createLocalEmailActionSuggestions(messages: EmailMessageSummary[]): EmailActionSuggestion[] {
+  const candidates = getEmailActionAnalysisCandidates(messages, Math.min(24, messages.length));
+  const suggestions: EmailActionSuggestion[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const message of candidates) {
+    const text = `${message.from} ${message.fromEmail} ${message.subject} ${message.snippet} ${message.actionText ?? ""}`.toLowerCase();
+    const isMarketing =
+      /\b(newsletter|unsubscribe|promotion|sale|discount|receipt|digest|weekly update|advertisement)\b/u.test(text) &&
+      !/\b(failed|failure|security|urgent|deadline|due|please|can you|could you|reply|respond|review|schedule)\b/u.test(text);
+    if (isMarketing) {
+      continue;
+    }
+
+    let title = "";
+    let priority: EmailActionSuggestion["priority"] = "medium";
+    if (/\b(github|gitlab|workflow|ci|build|test|failed|failure|blocked|error)\b/u.test(text)) {
+      title = `Review and fix: ${message.subject}`;
+      priority = "high";
+    } else if (/\b(security alert|password reset|account|login|storage|billing)\b/u.test(text)) {
+      title = `Review account alert: ${message.subject}`;
+      priority = "high";
+    } else if (/\b(slide|deck|presentation)\b/u.test(text)) {
+      title = `Prepare slides for: ${message.subject}`;
+    } else if (/\b(document|report|proposal|resume|write up|write-up)\b/u.test(text)) {
+      title = `Prepare document for: ${message.subject}`;
+    } else if (/\b(schedule|meeting|interview|call|calendar|available|availability)\b/u.test(text)) {
+      title = `Schedule or confirm: ${message.subject}`;
+    } else if (/\b(reply|respond|follow up|follow-up|please|can you|could you|\?)\b/u.test(text)) {
+      title = `Reply to ${message.from || "sender"} about: ${message.subject}`;
+    } else if (message.unread && /\b(urgent|deadline|due|today|tomorrow|action required|needs action|assignment|homework)\b/u.test(text)) {
+      title = `Follow up on: ${message.subject}`;
+    }
+
+    const cleanedTitle = title.replace(/\s+/g, " ").trim().slice(0, 180);
+    if (!cleanedTitle) {
+      continue;
+    }
+
+    const context = `${message.from} - ${message.subject}`.replace(/\s+/g, " ").trim().slice(0, 120);
+    const key = `${message.id}:${cleanedTitle}`.toLowerCase();
+    if (seenKeys.has(key)) {
+      continue;
+    }
+
+    seenKeys.add(key);
+    suggestions.push({
+      title: cleanedTitle,
+      context,
+      sourceMessageId: message.id,
+      priority
+    });
+  }
+
+  return suggestions.slice(0, 14);
 }
 
 async function fetchOpenAiActionSuggestions(messages: EmailMessageSummary[]): Promise<EmailActionAnalysisResult> {
   const apiKey = getOpenAiApiKey();
   const model = getOpenAiModel();
+  const candidates = getEmailActionAnalysisCandidates(messages, EMAIL_ACTION_ANALYSIS_CANDIDATE_LIMIT);
   if (!apiKey) {
+    const localCandidates = createLocalEmailActionSuggestions(messages);
     return {
-      success: false,
+      success: true,
       configured: false,
       actions: [],
       model,
-      reason: "Paste AUTOPILOT_OPENAI_API_KEY into .env.local, then restart Autopilot to enable AI email action planning."
+      reason: `OpenAI email analysis is not configured, so Autopilot did not add guessed email tasks to the Action Queue. ${localCandidates.length} possible emails stay in the Inbox for review.`
     };
   }
 
-  if (messages.length === 0) {
+  if (candidates.length === 0) {
     return {
       success: true,
       configured: true,
@@ -588,11 +787,11 @@ async function fetchOpenAiActionSuggestions(messages: EmailMessageSummary[]): Pr
           {
             role: "system",
             content:
-              "You turn inbox emails into a concise action plan. Return JSON only as {\"actions\":[{\"title\":\"specific next action\",\"context\":\"sender - subject\",\"sourceMessageId\":\"email id\",\"priority\":\"high|medium|low\"}]}. Only include actions the user actually needs to do. Do not invent tasks from newsletters, alerts, receipts, marketing, or FYI messages."
+              "You turn inbox emails into a concise, high-precision work queue. Return JSON only as {\"actions\":[{\"title\":\"specific next action\",\"summary\":\"plain-English summary of what is needed\",\"context\":\"sender - subject plus the useful detail\",\"sourceMessageId\":\"email id\",\"priority\":\"high|medium|low\",\"confidence\":0.0,\"recommendedAssistant\":\"productivity|design|coding|automation\",\"requestedOutput\":\"reply|document|slide_deck|website_design|code_change|research_brief|scheduling|task\",\"reason\":\"why this is a real task\",\"draftSuggested\":true}]}. Only include real user work. Exclude newsletters, generic FYI, marketing, receipts, alerts without required response, and anything below 0.55 confidence."
           },
           {
             role: "user",
-            content: `Read these Gmail messages and extract the exact tasks the user should do today. If there are no real user actions, return {"actions":[]}.\n\n${buildOpenAiEmailDigest(messages)}`
+            content: `Read these ranked Gmail candidates and extract only the exact tasks the user or Autopilot should handle. Preserve the sourceMessageId for every task. If there are no real user actions, return {"actions":[]}.\n\n${buildOpenAiEmailDigest(candidates)}`
           }
         ]
       }),
@@ -613,7 +812,7 @@ async function fetchOpenAiActionSuggestions(messages: EmailMessageSummary[]): Pr
     return {
       success: true,
       configured: true,
-      actions: parseOpenAiActionSuggestions(content, messages),
+      actions: parseOpenAiActionSuggestions(content, candidates),
       model
     };
   } catch (error) {
@@ -668,13 +867,17 @@ export class EmailService {
   getStatus(): EmailConnectionStatus {
     const clientId = getGoogleClientId();
     const account = this.getAccount();
+    const grantedScopes = getGrantedGoogleScopes(account?.scope);
+    const capabilities = getGoogleConnectionCapabilities(grantedScopes);
     if (!clientId) {
       return {
         provider: GMAIL_PROVIDER,
         configured: false,
         connected: false,
         accountEmail: account?.accountEmail ?? null,
-        reason: "Paste AUTOPILOT_GOOGLE_CLIENT_ID into .env.local, then rebuild or restart Autopilot to enable Gmail sync."
+        grantedScopes,
+        capabilities,
+        reason: "Paste AUTOPILOT_GOOGLE_CLIENT_ID into .env.local, then rebuild or restart Autopilot to enable Google sync."
       };
     }
 
@@ -684,6 +887,8 @@ export class EmailService {
         configured: true,
         connected: false,
         accountEmail: account?.accountEmail ?? null,
+        grantedScopes,
+        capabilities,
         reason: "Secure token storage is unavailable on this device."
       };
     }
@@ -693,8 +898,10 @@ export class EmailService {
       configured: true,
       connected: Boolean(account),
       accountEmail: account?.accountEmail ?? null,
+      grantedScopes,
+      capabilities,
       updatedAt: account?.updatedAt,
-      reason: account ? undefined : "Connect Gmail to pull inbox messages."
+      reason: account ? undefined : "Connect Google to pull Gmail messages and Calendar events."
     };
   }
 
@@ -751,7 +958,7 @@ export class EmailService {
         encryptedAccessToken: this.encrypt(token.access_token),
         encryptedRefreshToken: this.encrypt(token.refresh_token || ""),
         expiresAt: now + (token.expires_in ?? 3600) * 1000,
-        scope: token.scope || GMAIL_SCOPE,
+        scope: token.scope || GOOGLE_SYNC_SCOPE,
         updatedAt: now
       };
       this.writeAccounts([account]);
@@ -789,7 +996,7 @@ export class EmailService {
     try {
       const accessToken = await this.getValidAccessToken(account);
       const list = await getJson<GmailListResponse>(
-        `${GMAIL_API_BASE}/messages?maxResults=25&q=${encodeURIComponent("in:inbox newer_than:30d")}`,
+        `${GMAIL_API_BASE}/messages?maxResults=${getConfiguredGmailMaxResults()}&q=${encodeURIComponent("in:inbox newer_than:30d")}`,
         accessToken
       );
       const messageRefs = list.messages ?? [];
@@ -817,6 +1024,41 @@ export class EmailService {
         status: this.getStatus(),
         messages: this.listCachedMessages(),
         reason: error instanceof Error ? error.message : "Gmail sync failed."
+      };
+    }
+  }
+
+  async getGoogleAccessToken(
+    requiredScopes: string[] = []
+  ): Promise<{ success: true; accessToken: string; accountEmail: string; scope: string } | { success: false; reason: string }> {
+    const account = this.getAccount();
+    if (!account) {
+      return {
+        success: false,
+        reason: "Connect Google before syncing Calendar."
+      };
+    }
+
+    const grantedScopes = new Set(getGrantedGoogleScopes(account.scope));
+    const missingScopes = requiredScopes.filter((scope) => !grantedScopes.has(scope));
+    if (missingScopes.length > 0) {
+      return {
+        success: false,
+        reason: "Reconnect Google from Productivity so Autopilot can read Calendar events."
+      };
+    }
+
+    try {
+      return {
+        success: true,
+        accessToken: await this.getValidAccessToken(account),
+        accountEmail: account.accountEmail,
+        scope: account.scope
+      };
+    } catch (error) {
+      return {
+        success: false,
+        reason: error instanceof Error ? error.message : "Google token refresh failed."
       };
     }
   }

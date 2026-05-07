@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sanitizeProductivityDrafts, sanitizeProductivityTasks } from "../src/shared/productivity";
+import { sanitizeProductivityDrafts, sanitizeProductivitySyncSourceIds, sanitizeProductivityTasks } from "../src/shared/productivity";
 import { extractActionItemTitles, sanitizeActionItems, sanitizeProductivitySources, type ActionItem } from "../src/renderer/productivity";
 
 describe("extractActionItemTitles", () => {
@@ -55,6 +55,12 @@ Thanks!`)
     expect(sanitizeProductivitySources(["browser"])).toEqual(["gmail", "google-calendar"]);
   });
 
+  it("keeps backend productivity sync scoped to supported selected sources", () => {
+    expect(sanitizeProductivitySyncSourceIds(["gmail", "browser", "google-calendar", "gmail"])).toEqual(["gmail", "google-calendar"]);
+    expect(sanitizeProductivitySyncSourceIds(["outlook"])).toEqual(["outlook"]);
+    expect(sanitizeProductivitySyncSourceIds(undefined)).toEqual(["gmail", "google-calendar", "slack"]);
+  });
+
   it("sorts durable tasks by open state and priority", () => {
     const tasks = sanitizeProductivityTasks([
       {
@@ -90,6 +96,42 @@ Thanks!`)
     ]);
 
     expect(tasks.map((task) => task.id)).toEqual(["todo-high", "waiting-high", "done-low"]);
+  });
+
+  it("keeps AI email analysis metadata on durable task sources", () => {
+    const tasks = sanitizeProductivityTasks([
+      {
+        id: "email-task",
+        title: "Draft response to teacher",
+        context: "Prepare a short reply",
+        state: "todo",
+        priority: "high",
+        source: {
+          provider: "gmail",
+          label: "Teacher - Resume slides",
+          messageId: "message-1",
+          from: "Teacher",
+          subject: "Resume slides",
+          actionSummary: "Teacher needs a reply and updated slides.",
+          actionConfidence: 91.4,
+          requestedOutput: "reply",
+          recommendedAssistant: "productivity",
+          routeReason: "The email directly asks for a response.",
+          draftSuggested: true
+        },
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ]);
+
+    expect(tasks[0]?.source).toMatchObject({
+      actionSummary: "Teacher needs a reply and updated slides.",
+      actionConfidence: 91,
+      requestedOutput: "reply",
+      recommendedAssistant: "productivity",
+      routeReason: "The email directly asks for a response.",
+      draftSuggested: true
+    });
   });
 
   it("keeps durable productivity drafts clean and sorted", () => {

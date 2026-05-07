@@ -237,6 +237,18 @@ export function upsertWorkspaceTabSnapshot(state: WorkspaceState, workspaceId: s
   };
 }
 
+export function getMostRecentWorkspaceTabId(savedTabs: WorkspaceTabRecord[]): string | null {
+  const mostRecentTab = savedTabs.reduce<WorkspaceTabRecord | null>((currentMostRecent, tab) => {
+    if (!currentMostRecent || tab.lastActiveAt > currentMostRecent.lastActiveAt) {
+      return tab;
+    }
+
+    return currentMostRecent;
+  }, null);
+
+  return mostRecentTab?.id ?? null;
+}
+
 function getWorkspaceSortOrder(id: string): number {
   const index = DEFAULT_WORKSPACE_PROFILES.findIndex((profile) => profile.id === id);
   return index === -1 ? DEFAULT_WORKSPACE_PROFILES.length : index;

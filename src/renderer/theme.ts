@@ -4,6 +4,75 @@ const STORAGE_KEY = "autopilot.theme";
 
 const themeEntries = Object.keys(DEFAULT_THEME) as Array<keyof BrowserTheme>;
 
+export const BLUE_THEME: BrowserTheme = {
+  bg: "#ffffff",
+  surface: "#ffffff",
+  surface2: "#eef5ff",
+  primary: "#153e75",
+  primaryHover: "#0d2d57",
+  sidebarBg: "#0b2447",
+  sidebarBgSoft: "#254f85",
+  sidebarText: "#f6fbff",
+  sidebarTextMuted: "#b8cbe1",
+  sidebarBorder: "#41678f",
+  titlebarBg: "#102f5f",
+  sage: "#5f9fc8",
+  sageMuted: "#e3eef9",
+  clay: "#c47d4f",
+  text: "#102033",
+  textMuted: "#607086",
+  border: "#bacadd",
+  danger: "#a43a43",
+  focus: "#2f6bdf"
+};
+
+const LEGACY_BLUE_THEME: BrowserTheme = {
+  bg: "#e8f0f8",
+  surface: "#f8fbff",
+  surface2: "#d9e7f5",
+  primary: "#153e75",
+  primaryHover: "#0d2d57",
+  sidebarBg: "#0b2447",
+  sidebarBgSoft: "#254f85",
+  sidebarText: "#f6fbff",
+  sidebarTextMuted: "#b8cbe1",
+  sidebarBorder: "#41678f",
+  titlebarBg: "#102f5f",
+  sage: "#5f9fc8",
+  sageMuted: "#e3eef9",
+  clay: "#c47d4f",
+  text: "#102033",
+  textMuted: "#607086",
+  border: "#bacadd",
+  danger: "#a43a43",
+  focus: "#2f6bdf"
+};
+
+export type ThemePreset = {
+  id: "classic" | "blue";
+  label: string;
+  description: string;
+  theme: BrowserTheme;
+  swatches: string[];
+};
+
+export const THEME_PRESETS: ThemePreset[] = [
+  {
+    id: "classic",
+    label: "Classic",
+    description: "Forest, parchment, and clay.",
+    theme: DEFAULT_THEME,
+    swatches: [DEFAULT_THEME.sidebarBg, DEFAULT_THEME.primary, DEFAULT_THEME.surface, DEFAULT_THEME.clay]
+  },
+  {
+    id: "blue",
+    label: "Blue Pilot",
+    description: "Deep navy chrome with white browser surfaces.",
+    theme: BLUE_THEME,
+    swatches: [BLUE_THEME.sidebarBg, BLUE_THEME.primary, BLUE_THEME.surface, BLUE_THEME.clay]
+  }
+];
+
 const LEGACY_DARK_THEME: BrowserTheme = {
   bg: "#020817",
   surface: "#081020",
@@ -38,6 +107,10 @@ export function sanitizeTheme(input: Partial<BrowserTheme>): BrowserTheme {
   }, { ...DEFAULT_THEME });
 }
 
+function themeMatches(theme: Partial<BrowserTheme>, target: BrowserTheme): boolean {
+  return themeEntries.every((key) => theme[key]?.toLowerCase() === target[key].toLowerCase());
+}
+
 export function loadTheme(storage: Storage = localStorage): BrowserTheme {
   const raw = storage.getItem(STORAGE_KEY);
   if (!raw) {
@@ -63,7 +136,15 @@ export function loadTheme(storage: Storage = localStorage): BrowserTheme {
       "focus"
     ];
     const isLegacyDefault = legacyKeys.every((key) => legacyTheme[key]?.toLowerCase() === LEGACY_DARK_THEME[key].toLowerCase());
-    return isLegacyDefault ? DEFAULT_THEME : theme;
+    if (isLegacyDefault) {
+      return DEFAULT_THEME;
+    }
+
+    if (themeMatches(theme, LEGACY_BLUE_THEME)) {
+      return BLUE_THEME;
+    }
+
+    return theme;
   } catch {
     return DEFAULT_THEME;
   }

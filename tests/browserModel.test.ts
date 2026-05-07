@@ -18,7 +18,8 @@ import {
   isPdfResponseHeaders,
   isPdfUrl,
   normalizeAddressInput,
-  readableTitle
+  readableTitle,
+  shouldUseNativeBrowserView
 } from "../src/shared/browserModel";
 
 describe("normalizeAddressInput", () => {
@@ -182,5 +183,18 @@ describe("createHomeUrl", () => {
     expect(decodedHome).toContain('id="open-icon-preview"');
     expect(decodedHome).toContain('id="icon-preview"');
     expect(decodedHome).toContain("icon-preview-logo");
+  });
+});
+
+describe("shouldUseNativeBrowserView", () => {
+  it("keeps the Autopilot home in the React renderer so startup has a reliable fallback", () => {
+    expect(shouldUseNativeBrowserView(null)).toBe(false);
+    expect(shouldUseNativeBrowserView(AUTOPILOT_HOME_LABEL)).toBe(false);
+    expect(shouldUseNativeBrowserView(createHomeUrl())).toBe(false);
+  });
+
+  it("uses the native Chromium view for external and internal browser pages after navigation", () => {
+    expect(shouldUseNativeBrowserView("https://example.com")).toBe(true);
+    expect(shouldUseNativeBrowserView(createHistoryUrl())).toBe(true);
   });
 });

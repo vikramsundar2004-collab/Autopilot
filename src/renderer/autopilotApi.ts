@@ -23,20 +23,35 @@ import type {
   EmailMessageSummary,
   EmailSyncResult
 } from "../shared/email";
-import type {
-  CodingAccessMode,
-  CodingCommandRequest,
-  CodingCommandResult,
-  CodingDeleteResult,
-  CodingDownloadEntry,
-  CodingFileReadResult,
-  CodingPluginInstallResult,
-  CodingPluginStatus,
-  CodingResearchResult,
-  CodingSearchResult,
-  CodingSnapshot,
-  CodingWriteResult
+import {
+  createCodingAgentPlanFromOverview,
+  parseGitPorcelainStatus,
+  type CodingAgentPlanResult,
+  type CodingAgentRun,
+  type CodingAccessMode,
+  type CodingCommandRequest,
+  type CodingCommandResult,
+  type CodingDeleteResult,
+  type CodingDownloadEntry,
+  type CodingFileReadResult,
+  type CodingGitDiffResult,
+  type CodingGitStatusResult,
+  type CodingOpenFileResult,
+  type CodingPluginInstallResult,
+  type CodingPluginStatus,
+  type CodingRepoOverviewResult,
+  type CodingResearchReportResult,
+  type CodingResearchResult,
+  type CodingSearchResult,
+  type CodingSnapshot,
+  type CodingTerminalInputRequest,
+  type CodingTerminalInputResult,
+  type CodingTerminalOpenRequest,
+  type CodingTerminalOpenResult,
+  type CodingTerminalOutputEvent,
+  type CodingWriteResult
 } from "../shared/coding";
+import { CODING_PLUGIN_CATALOG } from "../shared/codingPlugins";
 import type {
   PasswordAvailability,
   PasswordCredentialSummary,
@@ -45,6 +60,8 @@ import type {
   PendingPasswordSave
 } from "../shared/passwords";
 import type {
+  PageDomActionResult,
+  PageDomSnapshotResult,
   PageTextCaptureResult,
   ProductivityDraft,
   ProductivityTask,
@@ -60,6 +77,19 @@ import type {
 } from "../shared/assistant";
 import type { ActionPlan, AgentPlanFromEmailRequest, AgentPlanResult, AgentRun, AgentStartRunRequest } from "../shared/agent";
 import {
+  detectAutomationIntent,
+  type AutomationCreateRecipeInput,
+  type AutomationIntent,
+  type AutomationRecipe,
+  type AutomationRun,
+  type AutomationRunResult,
+  type AutomationSourceWorkspace,
+  type AutomationUpdateRecipeInput
+} from "../shared/automation";
+import { evaluateDocumentQuality, type ArtifactQualityReport } from "../shared/artifactQuality";
+import { buildProactiveWorkPlan, type ProactiveWorkPlan } from "../shared/proactiveWork";
+import { buildTodaysCallPlan, type TodaysCallPlan } from "../shared/todaysCall";
+import {
   defaultArtifactContent,
   type Artifact,
   type ArtifactCreateInput,
@@ -67,6 +97,7 @@ import {
   type ArtifactExportToCodingResult,
   type ArtifactUpdateInput
 } from "../shared/artifacts";
+import type { ProductivityRouteWorkItemResult, WorkAssignment, WorkItem } from "../shared/workItems";
 import { DEFAULT_WORKSPACE_PROFILES, type WorkspaceProfile, type WorkspaceState } from "../shared/workspaces";
 
 type ViewBounds = {
@@ -87,6 +118,10 @@ type TabsApi = {
   forward: (tabId: string) => Promise<BrowserSnapshot>;
   reload: (tabId: string) => Promise<BrowserSnapshot>;
   readPageText: (tabId: string) => Promise<PageTextCaptureResult>;
+  readDOM: (tabId: string) => Promise<PageDomSnapshotResult>;
+  clickBySelector: (tabId: string, selector: string) => Promise<PageDomActionResult>;
+  fillBySelector: (tabId: string, selector: string, value: unknown) => Promise<PageDomActionResult>;
+  scrollTo: (tabId: string, target: string | number) => Promise<PageDomActionResult>;
   print: (tabId: string) => Promise<{ success: boolean; reason?: string }>;
   setWebArea: (bounds: ViewBounds, visible: boolean) => Promise<BrowserSnapshot>;
   setGroup: (tabId: string, groupId: string | null) => Promise<BrowserSnapshot>;
@@ -137,6 +172,7 @@ type EmailApi = {
 type CodingApi = {
   getSnapshot: () => Promise<CodingSnapshot>;
   openProject: () => Promise<CodingSnapshot>;
+  openFiles: () => Promise<CodingOpenFileResult>;
   createProject: () => Promise<CodingSnapshot>;
   selectProject: (rootPath: string) => Promise<CodingSnapshot>;
   readPath: (targetPath: string) => Promise<CodingFileReadResult>;
@@ -144,8 +180,17 @@ type CodingApi = {
   deletePath: (targetPath: string) => Promise<CodingDeleteResult>;
   setAccessMode: (mode: CodingAccessMode) => Promise<CodingSnapshot>;
   search: (query: string) => Promise<CodingSearchResult[]>;
+  openTerminal: (input?: CodingTerminalOpenRequest) => Promise<CodingTerminalOpenResult>;
+  sendTerminalInput: (input: CodingTerminalInputRequest) => Promise<CodingTerminalInputResult>;
+  subscribeTerminalOutput: (listener: (event: CodingTerminalOutputEvent) => void) => () => void;
   runCommand: (input: CodingCommandRequest) => Promise<CodingCommandResult>;
+  repoOverview: () => Promise<CodingRepoOverviewResult>;
+  createAgentPlan: (goal: string) => Promise<CodingAgentPlanResult>;
+  startAgentRun: (goal: string) => Promise<CodingAgentPlanResult | { success: true; plan: Extract<CodingAgentPlanResult, { success: true }>["plan"]; run: CodingAgentRun }>;
+  gitStatus: () => Promise<CodingGitStatusResult>;
+  gitDiff: (filePath?: string) => Promise<CodingGitDiffResult>;
   browse: (input: string) => Promise<CodingResearchResult>;
+  research: (input: string) => Promise<CodingResearchReportResult>;
   pluginStatuses: () => Promise<CodingPluginStatus[]>;
   installPlugin: (pluginId: string) => Promise<CodingPluginInstallResult>;
   cancelPluginInstall: (pluginId: string) => Promise<CodingPluginInstallResult>;
@@ -161,11 +206,36 @@ type DownloadsApi = {
 type ProductivityApi = {
   listTasks: () => Promise<ProductivityTask[]>;
   listDrafts: () => Promise<ProductivityDraft[]>;
+  listWorkItems: () => Promise<WorkItem[]>;
+  listWorkAssignments: () => Promise<WorkAssignment[]>;
+  buildTodaysCall: () => Promise<TodaysCallPlan>;
+  startSafeWork: (limit?: number) => Promise<{
+    success: boolean;
+    startedCount: number;
+    consideredCount: number;
+    reason?: string;
+    plan: ProactiveWorkPlan;
+    results: ProductivityRouteWorkItemResult[];
+    workItems: WorkItem[];
+    allAssignments: WorkAssignment[];
+  }>;
   upsertDraft: (draft: Partial<ProductivityDraft> & Pick<ProductivityDraft, "title" | "body" | "artifactKind" | "source">) => Promise<ProductivityDraft[]>;
   deleteDraft: (draftId: string) => Promise<ProductivityDraft[]>;
   updateTask: (taskId: string, patch: Partial<ProductivityTask>) => Promise<ProductivityTask[]>;
   setTaskState: (taskId: string, state: ProductivityTaskState) => Promise<ProductivityTask[]>;
-  sync: () => Promise<ProductivityTaskSyncResult>;
+  updateWorkAssignment: (assignmentId: string, patch: Partial<WorkAssignment>) => Promise<WorkAssignment[]>;
+  routeWorkItem: (workItemId: string) => Promise<ProductivityRouteWorkItemResult>;
+  sync: (sourceIds?: string[]) => Promise<ProductivityTaskSyncResult>;
+};
+
+type AutomationApi = {
+  listRecipes: () => Promise<AutomationRecipe[]>;
+  createRecipe: (input: AutomationCreateRecipeInput) => Promise<AutomationRecipe[]>;
+  updateRecipe: (input: AutomationUpdateRecipeInput) => Promise<AutomationRecipe[]>;
+  deleteRecipe: (recipeId: string) => Promise<AutomationRecipe[]>;
+  runNow: (recipeId: string) => Promise<AutomationRunResult>;
+  listRuns: () => Promise<AutomationRun[]>;
+  detectFromPrompt: (prompt: string, sourceWorkspace?: AutomationSourceWorkspace) => Promise<AutomationIntent>;
 };
 
 type AssistantApi = {
@@ -188,6 +258,8 @@ type AgentApi = {
   listPlans: () => Promise<ActionPlan[]>;
   listRuns: () => Promise<AgentRun[]>;
   approveFinalStep: (planId: string) => Promise<AgentRun[]>;
+  classifyWorkItem: (workItemId: string) => Promise<unknown>;
+  qualityCheckOutput: (output: string, sourceText: string, options?: { minWords?: number; requireSources?: boolean }) => Promise<ArtifactQualityReport>;
 };
 
 export type AutopilotApi = {
@@ -203,6 +275,7 @@ export type AutopilotApi = {
   passwords: PasswordsApi;
   email: EmailApi;
   productivity: ProductivityApi;
+  automation: AutomationApi;
   assistant: AssistantApi;
   artifacts: ArtifactsApi;
   agent: AgentApi;
@@ -235,6 +308,10 @@ export function createPreviewAutopilotApi(): AutopilotApi {
   };
   let previewProductivityTasks: ProductivityTask[] = [];
   let previewProductivityDrafts: ProductivityDraft[] = [];
+  let previewWorkItems: WorkItem[] = [];
+  let previewWorkAssignments: WorkAssignment[] = [];
+  let previewAutomationRecipes: AutomationRecipe[] = [];
+  let previewAutomationRuns: AutomationRun[] = [];
   let previewArtifacts: Artifact[] = [];
   let previewActionPlans: ActionPlan[] = [];
   let previewAgentRuns: AgentRun[] = [];
@@ -291,6 +368,11 @@ export function createPreviewAutopilotApi(): AutopilotApi {
     configured: false,
     connected: false,
     accountEmail: null,
+    grantedScopes: [],
+    capabilities: {
+      gmail: false,
+      calendar: false
+    },
     reason: "Email sync is available in the desktop app when AUTOPILOT_GOOGLE_CLIENT_ID is configured."
   };
 
@@ -567,6 +649,35 @@ export function createPreviewAutopilotApi(): AutopilotApi {
     productivity: {
       listTasks: async () => structuredClone(previewProductivityTasks),
       listDrafts: async () => structuredClone(previewProductivityDrafts),
+      listWorkItems: async () => structuredClone(previewWorkItems),
+      listWorkAssignments: async () => structuredClone(previewWorkAssignments),
+      buildTodaysCall: async () =>
+        buildTodaysCallPlan({
+          workItems: previewWorkItems,
+          assignments: previewWorkAssignments
+        }),
+      startSafeWork: async (limit?: number) => {
+        const plan = buildProactiveWorkPlan({
+          workItems: previewWorkItems,
+          assignments: previewWorkAssignments
+        });
+        const maxToStart = typeof limit === "number" ? Math.max(1, Math.min(8, Math.round(limit))) : 3;
+        const selectedItems = plan.startableItems.slice(0, maxToStart);
+        const results: ProductivityRouteWorkItemResult[] = [];
+        for (const item of selectedItems) {
+          results.push(await previewApi!.productivity.routeWorkItem(item.workItemId));
+        }
+        return {
+          success: results.some((result) => result.success),
+          startedCount: results.filter((result) => result.success).length,
+          consideredCount: plan.startableItems.length,
+          reason: selectedItems.length > 0 ? undefined : "No preview work is ready to start.",
+          plan,
+          results,
+          workItems: structuredClone(previewWorkItems),
+          allAssignments: structuredClone(previewWorkAssignments)
+        };
+      },
       upsertDraft: async (draft: Partial<ProductivityDraft> & Pick<ProductivityDraft, "title" | "body" | "artifactKind" | "source">) => {
         const now = Date.now();
         const nextDraft: ProductivityDraft = {
@@ -607,13 +718,121 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         );
         return structuredClone(previewProductivityTasks);
       },
-      sync: async () => ({
+      updateWorkAssignment: async (assignmentId: string, patch: Partial<WorkAssignment>) => {
+        previewWorkAssignments = previewWorkAssignments.map((assignment) =>
+          assignment.id === assignmentId ? { ...assignment, ...patch, id: assignment.id, workItemId: assignment.workItemId, role: assignment.role, updatedAt: Date.now() } : assignment
+        );
+        return structuredClone(previewWorkAssignments);
+      },
+      routeWorkItem: async (workItemId: string) => {
+        const workItem = previewWorkItems.find((item) => item.id === workItemId);
+        if (!workItem) {
+          return {
+            success: false,
+            reason: "Preview work item was not found.",
+            workItems: structuredClone(previewWorkItems),
+            allAssignments: structuredClone(previewWorkAssignments)
+          };
+        }
+        const now = Date.now();
+        const assignments = workItem.assignedRoles.map((role) => ({
+          id: `preview-assignment:${workItem.id}:${role}`,
+          workItemId: workItem.id,
+          role,
+          state: "queued" as const,
+          title: `${role} work for ${workItem.title}`,
+          reason: "Preview routing only.",
+          outputRefs: [],
+          approvalState: "not_required" as const,
+          createdAt: now,
+          updatedAt: now
+        }));
+        previewWorkAssignments = [...assignments, ...previewWorkAssignments.filter((assignment) => assignment.workItemId !== workItem.id)];
+        previewWorkItems = previewWorkItems.map((item) => (item.id === workItem.id ? { ...item, state: "working" as const, updatedAt: now } : item));
+        return {
+          success: true,
+          workItem: structuredClone(previewWorkItems.find((item) => item.id === workItem.id) ?? workItem),
+          assignments: structuredClone(assignments),
+          workItems: structuredClone(previewWorkItems),
+          allAssignments: structuredClone(previewWorkAssignments)
+        };
+      },
+      sync: async (_sourceIds?: string[]) => ({
         success: false,
         tasks: structuredClone(previewProductivityTasks),
         addedCount: 0,
         updatedCount: 0,
         reason: "Productivity sync is available in the desktop app."
       })
+    },
+    automation: {
+      listRecipes: async () => structuredClone(previewAutomationRecipes),
+      createRecipe: async (input: AutomationCreateRecipeInput) => {
+        const now = Date.now();
+        previewAutomationRecipes = [
+          {
+            id: `preview-recipe:${crypto.randomUUID()}`,
+            name: input.name,
+            goal: input.goal,
+            schedule: input.schedule ?? "manual",
+            sources: input.sources ?? ["web"],
+            outputKind: input.outputKind ?? "brief",
+            artifactKind: input.artifactKind ?? "document",
+            sourceWorkspace: input.sourceWorkspace,
+            qualityBar: input.qualityBar ?? 82,
+            requiresApproval: input.requiresApproval ?? true,
+            enabled: input.enabled ?? true,
+            createdAt: now,
+            updatedAt: now
+          },
+          ...previewAutomationRecipes
+        ];
+        return structuredClone(previewAutomationRecipes);
+      },
+      updateRecipe: async (input: AutomationUpdateRecipeInput) => {
+        previewAutomationRecipes = previewAutomationRecipes.map((recipe) =>
+          recipe.id === input.id
+            ? {
+                ...recipe,
+                ...input,
+                updatedAt: Date.now()
+              }
+            : recipe
+        );
+        return structuredClone(previewAutomationRecipes);
+      },
+      deleteRecipe: async (recipeId: string) => {
+        previewAutomationRecipes = previewAutomationRecipes.filter((recipe) => recipe.id !== recipeId);
+        return structuredClone(previewAutomationRecipes);
+      },
+      runNow: async (recipeId: string): Promise<AutomationRunResult> => {
+        const recipe = previewAutomationRecipes.find((candidate) => candidate.id === recipeId);
+        if (!recipe) {
+          return { success: false, reason: "Preview recipe was not found." };
+        }
+        const now = Date.now();
+        const run: AutomationRun = {
+          id: `preview-run:${crypto.randomUUID()}`,
+          recipeId: recipe.id,
+          recipeName: recipe.name,
+          state: "completed",
+          startedAt: now,
+          completedAt: now,
+          steps: ["Preview automation created a run.", "Desktop mode performs live research and saves artifacts."],
+          sources: [],
+          outputTitle: recipe.name,
+          outputSummary: "Preview automation run.",
+          outputMarkdown: `# ${recipe.name}\n\n${recipe.goal}`,
+          qualityScore: 82,
+          visibleRunLog: ["Preview automation created a run.", "Desktop mode performs live research and saves artifacts."],
+          qualityChecks: ["pass: preview"]
+        };
+        previewAutomationRuns = [run, ...previewAutomationRuns];
+        return { success: true, recipe, run };
+      },
+      listRuns: async () => structuredClone(previewAutomationRuns),
+      detectFromPrompt: async (prompt: string, sourceWorkspace?: AutomationSourceWorkspace) =>
+        detectAutomationIntent(prompt, sourceWorkspace ?? "automation")
     },
     assistant: {
       sources: async () => [
@@ -798,11 +1017,48 @@ export function createPreviewAutopilotApi(): AutopilotApi {
             : run
         );
         return structuredClone(previewAgentRuns);
-      }
+      },
+      classifyWorkItem: async (workItemId: string) => {
+        const workItem = previewWorkItems.find((item) => item.id === workItemId);
+        if (!workItem) {
+          return { success: false, reason: "Preview work item was not found." };
+        }
+        return {
+          success: true,
+          workItem,
+          ownership: workItem.source.provider === "google-calendar" ? "user" : "ai",
+          permissionLevel: workItem.permissionLevel,
+          needsReview: workItem.routeConfidence < 70,
+          routeReason: workItem.routeReason,
+          routeConfidence: workItem.routeConfidence
+        };
+      },
+      qualityCheckOutput: async (output: string, sourceText: string, options?: { minWords?: number; requireSources?: boolean }) =>
+        evaluateDocumentQuality(output, sourceText, options)
     },
     coding: {
       getSnapshot: async () => structuredClone(previewCodingSnapshot),
       openProject: async () => activatePreviewCodingProject(),
+      openFiles: async () => {
+        const snapshot = activatePreviewCodingProject();
+        return {
+          success: true,
+          snapshot,
+          files: [
+            {
+              success: true,
+              kind: "text",
+              name: "README.md",
+              path: "C:/Preview/Autopilot/README.md",
+              relativePath: "README.md",
+              language: "markdown",
+              content: "# Autopilot preview\n\nOpen the desktop app to edit real files on your computer.\n",
+              size: 96,
+              modifiedAt: Date.now()
+            }
+          ]
+        };
+      },
       createProject: async () => activatePreviewCodingProject(),
       selectProject: async () => activatePreviewCodingProject(),
       readPath: async (targetPath: string) => {
@@ -879,6 +1135,20 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         }
         return results;
       },
+      openTerminal: async (input?: CodingTerminalOpenRequest) => ({
+        success: false,
+        cwd: input?.cwd ?? previewCodingSnapshot.activeProject?.rootPath ?? previewProject.rootPath,
+        shell: "powershell.exe",
+        shellName: "Windows PowerShell",
+        reason: "Open the desktop app to launch a real PowerShell terminal."
+      }),
+      sendTerminalInput: async (input: CodingTerminalInputRequest) => ({
+        success: false,
+        reason: "Open the desktop app to run PowerShell commands.",
+        output: `Preview command: ${input.input}`,
+        running: false
+      }),
+      subscribeTerminalOutput: () => () => undefined,
       runCommand: async (input: CodingCommandRequest) => {
         if (previewCodingSnapshot.accessMode !== "full" && !input.approved) {
           return {
@@ -900,6 +1170,90 @@ export function createPreviewAutopilotApi(): AutopilotApi {
           durationMs: 12
         };
       },
+      repoOverview: async () => {
+        const snapshot = activatePreviewCodingProject();
+        const changedFiles = parseGitPorcelainStatus(" M src/renderer/App.tsx\n?? tests/codingAgentPlan.test.ts");
+        return {
+          success: true,
+          overview: {
+            projectName: snapshot.activeProject?.name ?? "Autopilot preview",
+            rootPath: snapshot.activeProject?.rootPath ?? previewProject.rootPath,
+            generatedAt: Date.now(),
+            packageManager: "npm",
+            scripts: [
+              { name: "check", command: "npm run check" },
+              { name: "test", command: "npm test" },
+              { name: "build", command: "npm run build" }
+            ],
+            frameworkHints: ["Electron", "React", "Vite", "TypeScript"],
+            keyFiles: ["src/main/main.ts", "src/main/coding.ts", "src/renderer/App.tsx", "src/shared/coding.ts"],
+            gitBranch: "preview",
+            changedFiles,
+            summary:
+              "Autopilot preview looks like an Electron React project with check, test, and build scripts. The desktop app reads this from the real project on disk."
+          }
+        };
+      },
+      createAgentPlan: async (goal: string) => {
+        const overviewResult = await previewApi?.coding.repoOverview();
+        if (!overviewResult?.success) {
+          return {
+            success: false,
+            reason: "Open the desktop app to create a project plan.",
+            generatedAt: Date.now()
+          };
+        }
+
+        const now = Date.now();
+        return {
+          success: true,
+          plan: createCodingAgentPlanFromOverview({
+            id: `preview-plan-${now}`,
+            goal,
+            overview: overviewResult.overview,
+            now
+          })
+        };
+      },
+      startAgentRun: async (goal: string) => {
+        const planResult = await previewApi?.coding.createAgentPlan(goal);
+        if (!planResult?.success) {
+          return planResult ?? { success: false, reason: "Open the desktop app to start an agent run.", generatedAt: Date.now() };
+        }
+
+        return {
+          success: true,
+          plan: planResult.plan,
+          run: {
+            id: `preview-coding-run:${crypto.randomUUID()}`,
+            planId: planResult.plan.id,
+            phase: planResult.plan.phase,
+            understanding: planResult.plan.summary,
+            schema: planResult.plan.schema,
+            plan: planResult.plan.steps,
+            commands: [],
+            changedFiles: parseGitPorcelainStatus(" M src/renderer/App.tsx\n?? tests/codingAgentPlan.test.ts"),
+            testResults: [],
+            approvalState: "needs_review" as const,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          }
+        };
+      },
+      gitStatus: async () => ({
+        success: true,
+        rootPath: previewCodingSnapshot.activeProject?.rootPath ?? previewProject.rootPath,
+        branch: "preview",
+        changedFiles: parseGitPorcelainStatus(" M src/renderer/App.tsx\n?? tests/codingAgentPlan.test.ts"),
+        generatedAt: Date.now()
+      }),
+      gitDiff: async (filePath?: string) => ({
+        success: true,
+        rootPath: previewCodingSnapshot.activeProject?.rootPath ?? previewProject.rootPath,
+        filePath,
+        diff: "diff --git a/src/renderer/App.tsx b/src/renderer/App.tsx\n+Preview diff appears here in the desktop app.\n",
+        generatedAt: Date.now()
+      }),
       browse: async (input: string) => ({
         success: true,
         input,
@@ -908,38 +1262,70 @@ export function createPreviewAutopilotApi(): AutopilotApi {
         snippet: "The desktop app can browse from the coding workspace and summarize the page response here.",
         status: 200
       }),
+      research: async (input: string) => {
+        const generatedAt = Date.now();
+        const sourceUrl = `https://news.google.com/search?q=${encodeURIComponent(input)}`;
+        return {
+          success: true,
+          input,
+          answer: `I ran a preview recursive research pass for "${input}". The desktop app uses Google News/search routes to collect current sources, then keeps the conversation open for follow-up research loops.`,
+          generatedAt,
+          iterations: [
+            {
+              query: input,
+              url: sourceUrl,
+              status: "searched",
+              summary: "Preview research pass completed.",
+              sources: [
+                {
+                  title: "Preview source for coding research",
+                  url: sourceUrl,
+                  snippet: "Open the desktop app to run live Google-backed research.",
+                  provider: "google-news",
+                  sourceName: "Google News",
+                  status: 200
+                }
+              ]
+            }
+          ],
+          sources: [
+            {
+              title: "Preview source for coding research",
+              url: sourceUrl,
+              snippet: "Open the desktop app to run live Google-backed research.",
+              provider: "google-news",
+              sourceName: "Google News",
+              status: 200
+            }
+          ]
+        };
+      },
       pluginStatuses: async () =>
-        [
-          {
-            id: "node",
-            name: "Node.js CLI",
-            command: "winget install OpenJS.NodeJS.LTS",
-            status: "installed",
-            installed: true,
-            version: "preview"
-          },
-          {
-            id: "git",
-            name: "Git",
-            command: "winget install Git.Git",
-            status: "missing",
+        CODING_PLUGIN_CATALOG.map((plugin, index) => ({
+          id: plugin.id,
+          name: plugin.name,
+          command: plugin.command,
+          status: index === 0 ? ("installed" as const) : ("missing" as const),
+          installed: index === 0,
+          version: index === 0 ? "preview" : undefined,
+          reason: index === 0 ? undefined : "Desktop app checks your computer for installed tools."
+        })) satisfies CodingPluginStatus[],
+      installPlugin: async (pluginId: string) => {
+        const plugin = CODING_PLUGIN_CATALOG.find((candidate) => candidate.id === pluginId);
+        return {
+          success: true,
+          status: {
+            id: pluginId,
+            name: plugin?.name ?? pluginId,
+            command: plugin?.command ?? "preview install",
+            status: "installing" as const,
             installed: false,
-            reason: "Desktop app checks your computer for installed tools."
+            startedAt: Date.now(),
+            estimatedSeconds: 30,
+            elapsedMs: 0
           }
-        ] satisfies CodingPluginStatus[],
-      installPlugin: async (pluginId: string) => ({
-        success: true,
-        status: {
-          id: pluginId,
-          name: pluginId,
-          command: "preview install",
-          status: "installing",
-          installed: false,
-          startedAt: Date.now(),
-          estimatedSeconds: 30,
-          elapsedMs: 0
-        }
-      }),
+        };
+      },
       cancelPluginInstall: async (pluginId: string) => ({
         success: true,
         status: {
@@ -1053,6 +1439,50 @@ export function createPreviewAutopilotApi(): AutopilotApi {
           text: "Please turn this preview page into an action item before Friday."
         };
       },
+      readDOM: async (tabId: string) => {
+        const tab = snapshot.tabs.find((entry) => entry.id === tabId);
+        if (!tab) {
+          return { success: false, reason: "No active page to inspect." };
+        }
+
+        return {
+          success: true,
+          title: tab.title,
+          url: tab.url,
+          text: "Preview pages expose a safe DOM summary only in the desktop app.",
+          elements: [
+            {
+              selector: "button:nth-of-type(1)",
+              kind: "button",
+              label: "Preview action",
+              tagName: "button",
+              text: "Preview action",
+              disabled: false,
+              visible: true,
+              approvalRequired: false
+            }
+          ]
+        };
+      },
+      clickBySelector: async (_tabId: string, selector: string) => ({
+        success: false,
+        action: "click",
+        selector,
+        reason: "Page clicking is available in the desktop app."
+      }),
+      fillBySelector: async (_tabId: string, selector: string) => ({
+        success: false,
+        action: "fill",
+        selector,
+        reason: "Page filling is available in the desktop app."
+      }),
+      scrollTo: async (_tabId: string, target: string | number) => ({
+        success: false,
+        action: "scroll",
+        selector: typeof target === "string" ? target : undefined,
+        value: typeof target === "number" ? String(target) : undefined,
+        reason: "Page scrolling is available in the desktop app."
+      }),
       print: async () => ({ success: false, reason: "Printing is available in the desktop app." }),
       setWebArea: async () => cloneSnapshot(snapshot),
       setGroup: async (tabId: string, groupId: string | null) =>
@@ -1125,6 +1555,10 @@ function withCompatibilityFallback(rawApi: Partial<AutopilotApi>): AutopilotApi 
     productivity: {
       ...fallbackApi.productivity,
       ...rawApi.productivity
+    },
+    automation: {
+      ...fallbackApi.automation,
+      ...rawApi.automation
     },
     assistant: {
       ...fallbackApi.assistant,

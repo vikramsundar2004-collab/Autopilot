@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_THEME } from "../src/shared/browserModel";
-import { contrastRatio, isHexColor, sanitizeTheme } from "../src/renderer/theme";
+import { BLUE_THEME, THEME_PRESETS, contrastRatio, isHexColor, sanitizeTheme } from "../src/renderer/theme";
 
 describe("theme utilities", () => {
   it("accepts six-digit hex colors", () => {
@@ -19,5 +19,14 @@ describe("theme utilities", () => {
 
   it("computes high contrast for the default primary button", () => {
     expect(contrastRatio(DEFAULT_THEME.surface, DEFAULT_THEME.primary)).toBeGreaterThan(4.5);
+  });
+
+  it("ships a valid accessible blue preset", () => {
+    expect(THEME_PRESETS.some((preset) => preset.id === "blue")).toBe(true);
+    expect(BLUE_THEME.bg).toBe("#ffffff");
+    expect(BLUE_THEME.surface).toBe("#ffffff");
+    expect(Object.values(BLUE_THEME).every(isHexColor)).toBe(true);
+    expect(contrastRatio(BLUE_THEME.surface, BLUE_THEME.primary)).toBeGreaterThan(4.5);
+    expect(contrastRatio(BLUE_THEME.sidebarText, BLUE_THEME.sidebarBg)).toBeGreaterThan(4.5);
   });
 });

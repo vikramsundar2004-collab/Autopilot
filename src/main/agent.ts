@@ -26,6 +26,7 @@ import {
 import type { EmailMessageSummary } from "../shared/email.js";
 import type { ArtifactStore } from "./artifacts.js";
 import type { EmailService } from "./email.js";
+import { evaluateArtifactQuality, summarizeQualityFailure, type ArtifactQualityResult } from "../shared/artifactQuality.js";
 
 type AgentStateFile = {
   version: 1;
@@ -172,19 +173,75 @@ export class AgentService {
   private async generateWorkFromMessage(message: EmailMessageSummary, preferredKind?: ArtifactKind): Promise<AgentPlanResult> {
     const requestText = buildEmailWorkRequestText(message);
     const fallbackKind = chooseArtifactKindFromText(requestText, preferredKind);
-    const aiResult = await generateArtifactWithOpenAi(requestText, fallbackKind);
-    const payload = aiResult.payload ?? buildFallbackArtifactPayload(message, fallbackKind);
-    const kind = chooseArtifactKindFromText(`${payload.artifactKind ?? ""} ${requestText}`, preferredKind ?? payload.artifactKind ?? fallbackKind);
+    let aiResult = await generateArtifactWithOpenAi(requestText, fallbackKind);
+    let payload = aiResult.payload ?? buildFallbackArtifactPayload(message, fallbackKind);
+    let kind = chooseArtifactKindFromText(`${payload.artifactKind ?? ""} ${requestText}`, preferredKind ?? payload.artifactKind ?? fallbackKind);
+    let content = buildArtifactContent(kind, payload, message);
+    let qualityResult: ArtifactQualityResult = evaluateArtifactQuality(content, requestText, {
+      requireSources: isResearchLikeRequest(requestText)
+    });
+
+    if (!qualityResult.passed && !aiResult.usedFallback) {
+      const retryPrompt = `${requestText}
+
+QUALITY REQUIREMENTS:
+- Do not restate the source email.
+- Produce a new usable deliverable with clear sections.
+- Include concrete recommendations, next steps, or a ready-to-review draft.
+- Keep copied source phrasing low.
+- For slide decks, include specific slide titles and concrete bullets.
+- For website designs, include semantic HTML, CSS, named sections, and a clear CTA.
+- Do not include "What Autopilot understood" or meta commentary.`;
+      const retryResult = await generateArtifactWithOpenAi(retryPrompt, kind);
+      if (retryResult.payload) {
+        const retryKind = chooseArtifactKindFromText(`${retryResult.payload.artifactKind ?? ""} ${requestText}`, preferredKind ?? retryResult.payload.artifactKind ?? kind);
+        const retryContent = buildArtifactContent(retryKind, retryResult.payload, message);
+        const retryQuality = evaluateArtifactQuality(retryContent, requestText, {
+          requireSources: isResearchLikeRequest(requestText),
+          regeneration: "regenerated"
+        });
+        if (retryQuality.score >= qualityResult.score) {
+          aiResult = retryResult;
+          payload = retryResult.payload;
+          kind = retryKind;
+          content = retryContent;
+          qualityResult = retryQuality;
+        }
+      }
+    }
+
+    if (!qualityResult.passed) {
+      const fallbackPayload = buildFallbackArtifactPayload(message, kind);
+      const fallbackContent = buildArtifactContent(kind, fallbackPayload, message);
+      const fallbackQuality = evaluateArtifactQuality(fallbackContent, requestText, {
+        requireSources: isResearchLikeRequest(requestText),
+        regeneration: "regenerated"
+      });
+      if (fallbackQuality.score >= qualityResult.score) {
+        payload = fallbackPayload;
+        content = fallbackContent;
+        qualityResult = fallbackQuality;
+        aiResult = {
+          ...aiResult,
+          usedFallback: true,
+          reason: `Quality gate replaced weak output. ${summarizeQualityFailure(qualityResult)}`
+        };
+      }
+    }
+
+    const qualitySummary = qualityResult.passed
+      ? ` Quality score: ${qualityResult.score}/100.`
+      : ` Needs review: ${summarizeQualityFailure(qualityResult)}`;
     const artifact = await this.artifactStore.createArtifact({
       kind,
       title: cleanText(payload.title, 140) || fallbackTitle(message, kind),
-      summary: cleanText(payload.summary, 320) || `Generated from ${message.from} - ${message.subject}`,
+      summary: `${cleanText(payload.summary, 260) || `Generated from ${message.from} - ${message.subject}`}${qualitySummary}`.slice(0, 360),
       prompt: requestText,
       source: message.id.startsWith("manual:") ? { provider: "manual", label: "Manual prompt" } : createArtifactSourceFromEmail(message),
-      content: buildArtifactContent(kind, payload, message)
+      content
     });
-    const plan = createActionPlanFromArtifact(message, artifact, payload.finalApprovalReason, payload.humanQuestion);
-    const run = createAgentRun(plan, aiResult.usedFallback, aiResult.reason);
+    const plan = createActionPlanFromArtifact(message, artifact, payload.finalApprovalReason, payload.humanQuestion, qualityResult);
+    const run = createAgentRun(plan, aiResult.usedFallback, aiResult.reason, qualityResult);
 
     const state = await this.ensureState();
     state.plans = [plan, ...state.plans.filter((candidate) => candidate.id !== plan.id)].slice(0, 100);
@@ -394,12 +451,21 @@ async function callOpenAiChatCompletions(
 }
 
 function buildArtifactGenerationPrompt(requestText: string, fallbackKind: ArtifactKind): string {
-  return `Read the email or prompt below and generate the requested work product.
+  return `Read the email or prompt below and generate the requested work product at a high professional quality bar.
 
 Choose artifactKind as one of: document, slide_deck, website_design.
 If the request says slides, deck, pitch, or presentation, use slide_deck.
 If it says website, landing page, mockup, UI, Figma, design, or homepage, use website_design.
 If it asks for a report, proposal, writeup, memo, assignment, or reply draft, use document.
+
+Quality rules:
+- Produce the actual requested deliverable, not a summary of the email.
+- Do not write sections named "What Autopilot understood".
+- Do not say "Autopilot prepared this document from the source email".
+- Transform the source into new work with structure, concrete recommendations, decisions, next steps, or ready-to-send draft copy.
+- Keep copied source wording low. Quote only short fragments when necessary.
+- If information is missing, still draft the useful parts and put one focused question in humanQuestion.
+- If this is research, include source URLs or a source section.
 
 Return JSON only:
 {
@@ -497,7 +563,8 @@ function createActionPlanFromArtifact(
   message: EmailMessageSummary,
   artifact: Artifact,
   finalApprovalReason: string | undefined,
-  humanQuestion: string | undefined
+  humanQuestion: string | undefined,
+  qualityResult: ArtifactQualityResult | null
 ): ActionPlan {
   const now = Date.now();
   const tool = getActionToolForArtifactKind(artifact.kind);
@@ -527,6 +594,20 @@ function createActionPlanFromArtifact(
       artifactId: artifact.id
     }
   ];
+
+  if (qualityResult) {
+    steps.push({
+      id: makeId("step"),
+      title: qualityResult.passed
+        ? `Quality check passed (${qualityResult.score}/100)`
+        : `Quality check needs review (${qualityResult.score}/100)`,
+      tool,
+      state: qualityResult.passed ? "completed" : "needs_user",
+      risk: "local",
+      requiresFinalApproval: false,
+      artifactId: artifact.id
+    });
+  }
 
   if (humanQuestionText) {
     steps.push({
@@ -576,7 +657,12 @@ function createActionPlanFromArtifact(
   };
 }
 
-function createAgentRun(plan: ActionPlan, usedFallback: boolean, fallbackReason?: string): AgentRun {
+function createAgentRun(
+  plan: ActionPlan,
+  usedFallback: boolean,
+  fallbackReason?: string,
+  qualityResult?: ArtifactQualityResult | null
+): AgentRun {
   const now = Date.now();
   const events: AgentRunEvent[] = [
     {
@@ -592,6 +678,16 @@ function createAgentRun(plan: ActionPlan, usedFallback: boolean, fallbackReason?
       message: `Created ${plan.tool.replace("_", " ")} artifact.`
     }
   ];
+  if (qualityResult) {
+    events.push({
+      id: makeId("event"),
+      createdAt: now,
+      level: qualityResult.passed ? "success" : "warning",
+      message: qualityResult.passed
+        ? `Quality checked at ${qualityResult.score}/100.`
+        : `Quality needs review at ${qualityResult.score}/100: ${summarizeQualityFailure(qualityResult)}`
+    });
+  }
   if (usedFallback) {
     events.push({
       id: makeId("event"),
@@ -621,6 +717,7 @@ function createAgentRun(plan: ActionPlan, usedFallback: boolean, fallbackReason?
 }
 
 function buildFallbackArtifactPayload(message: EmailMessageSummary, kind: ArtifactKind): GeneratedArtifactPayload {
+  const details = extractUsefulSourceDetails(cleanBlock(message.actionText || message.snippet || ""));
   return {
     artifactKind: kind,
     title: fallbackTitle(message, kind),
@@ -631,62 +728,103 @@ function buildFallbackArtifactPayload(message: EmailMessageSummary, kind: Artifa
     websiteCss:
       ".artifact-page{min-height:100vh;padding:72px;font-family:Inter,system-ui,sans-serif;background:#fff8ed;color:#123c2b}.artifact-hero{max-width:900px}.artifact-kicker{text-transform:uppercase;color:#b67349;font-weight:800}.artifact-title{font-size:72px;line-height:.95;margin:10px 0 18px}.artifact-copy{font-size:20px;max-width:680px;color:#6b5d4d}.artifact-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:42px}.artifact-card{border:1px solid #cdb99f;border-radius:16px;padding:22px;background:#fffaf2}@media(max-width:760px){.artifact-page{padding:32px}.artifact-title{font-size:44px}.artifact-grid{grid-template-columns:1fr}}",
     websiteSections: [
-      { name: "Hero", summary: "Introduces the requested topic." },
-      { name: "Key Details", summary: "Highlights the details pulled from the source." },
-      { name: "Next Step", summary: "Gives the viewer a clear action." }
+      { name: "Hero", summary: `Frame the request around ${message.subject || "the requested work"}.` },
+      { name: "Key Details", summary: details[0] ?? "Surface the most important source details instead of generic filler." },
+      { name: "Next Step", summary: details[1] ?? "Give the viewer a clear review, export, or approval action." }
     ]
   };
 }
 
 function buildFallbackDocument(message: EmailMessageSummary): string {
-  const body = cleanBlock(message.actionText || message.snippet || "No readable body was available.");
+  const source = cleanBlock(message.actionText || message.snippet || "No readable body was available.");
+  const details = extractUsefulSourceDetails(source);
+  const subject = message.subject || "Generated document";
   return `# ${message.subject || "Generated document"}
 
-## Source
-${message.from}${message.fromEmail ? ` <${message.fromEmail}>` : ""}
+## Executive Summary
+This draft turns the request from ${message.from || "the source"} into a concrete work product. The likely goal is to respond to "${subject}" with something reviewable, specific, and ready for a final approval step.
 
-## What Autopilot understood
-${body}
+## Draft Deliverable
+Use this as the first version:
 
-## Draft
-Autopilot prepared this document from the source email. Review the details, ask for changes in the Design tab, then export or approve the final send/share step.
+- Acknowledge the request and confirm the core outcome.
+- Address the most important details first: ${details[0] ?? "the main request, deadline, and expected response"}.
+- Include the supporting detail that matters: ${details[1] ?? "who needs the work, where it will be used, and what decision it enables"}.
+- Close with a clear next step and ask for any missing detail only if it blocks final delivery.
+
+## Recommended Response
+Hi,
+
+Thanks for sending this over. I can take this forward and prepare the requested work. Based on the details I have, the priority is ${details[0] ?? "to produce a clear first version for review"}.
+
+I will prepare the deliverable with the relevant context, the requested next steps, and any final approval points separated out so nothing is sent or shared before review.
+
+## Action Plan
+- Review the source details and confirm whether any date, audience, or format requirement is missing.
+- Revise this draft in the Design workspace if tone, length, or structure needs to change.
+- Export or approve only after the final send/share step is clear.
+
+## Source Notes
+- From: ${message.from}${message.fromEmail ? ` <${message.fromEmail}>` : ""}
+- Subject: ${subject}
+- Key detail: ${details[2] ?? (cleanText(source, 180) || "No additional readable source detail was available.")}
 `;
+}
+
+function extractUsefulSourceDetails(source: string): string[] {
+  return source
+    .replace(/\r/g, "")
+    .split(/(?<=[.!?])\s+|\n+/u)
+    .map((line) => cleanText(line, 180))
+    .filter((line) => line.length > 20)
+    .filter((line) => !/^https?:\/\//iu.test(line))
+    .slice(0, 4);
 }
 
 function buildFallbackSlides(message: EmailMessageSummary): SlideArtifactSlide[] {
   const subject = message.subject || "Requested work";
-  const context = cleanText(message.snippet || message.actionText, 180) || "Details came from the source email.";
+  const source = cleanBlock(message.actionText || message.snippet || "");
+  const details = extractUsefulSourceDetails(source);
+  const context = (details[0] ?? cleanText(source, 180)) || "Review the source and confirm the missing details.";
   return [
     {
       id: makeId("slide"),
       title: subject,
-      bullets: ["Generated from the source email.", context]
+      bullets: [context, details[1] ?? "Define the audience, deadline, and final approval path before sharing."]
     },
     {
       id: makeId("slide"),
-      title: "What matters",
-      bullets: ["Autopilot identified the requested deliverable.", "The deck is ready for review and revision."]
+      title: "Recommended direction",
+      bullets: [
+        details[2] ?? "Turn the request into a concise, reviewable deliverable.",
+        "Keep the final send, share, submit, or publish step behind user approval."
+      ]
     },
     {
       id: makeId("slide"),
       title: "Next step",
-      bullets: ["Review the slides in Artifact Studio.", "Approve only when ready to share or send."]
+      bullets: [
+        details[3] ?? "Review this first pass in Artifact Studio and revise the content where needed.",
+        "Export or approve only when the wording and format are ready."
+      ]
     }
   ];
 }
 
 function buildFallbackWebsiteHtml(message: EmailMessageSummary): string {
   const title = message.subject || "Generated website design";
-  const copy = cleanText(message.snippet || message.actionText, 260) || "Autopilot generated this web design from the source email.";
+  const source = cleanBlock(message.actionText || message.snippet || "");
+  const details = extractUsefulSourceDetails(source);
+  const copy = (details[0] ?? cleanText(source, 260)) || "Autopilot prepared this design from the available request details.";
   return `<main class="artifact-page">
   <section class="artifact-hero">
     <p class="artifact-kicker">Autopilot design</p>
     <h1 class="artifact-title">${escapeHtml(title)}</h1>
     <p class="artifact-copy">${escapeHtml(copy)}</p>
     <div class="artifact-grid">
-      <article class="artifact-card"><strong>Context</strong><p>Built from the email request.</p></article>
-      <article class="artifact-card"><strong>Direction</strong><p>Ready for AI revision in the Design tab.</p></article>
-      <article class="artifact-card"><strong>Export</strong><p>Export as HTML and CSS when approved.</p></article>
+      <article class="artifact-card"><strong>Context</strong><p>${escapeHtml(details[1] ?? "Use the source request to focus the page on one clear outcome.")}</p></article>
+      <article class="artifact-card"><strong>Direction</strong><p>${escapeHtml(details[2] ?? "Revise copy, sections, and layout in the Design workspace before exporting.")}</p></article>
+      <article class="artifact-card"><strong>Approval</strong><p>${escapeHtml(details[3] ?? "Export as HTML and CSS only after the user approves the final version.")}</p></article>
     </div>
   </section>
 </main>`;
@@ -704,6 +842,10 @@ function buildEmailWorkRequestText(message: EmailMessageSummary): string {
     `Snippet: ${message.snippet}`,
     `Body: ${message.actionText || message.snippet}`
   ].join("\n");
+}
+
+function isResearchLikeRequest(requestText: string): boolean {
+  return /\b(research|brief|sources|market|industry|competitor|analysis|report|cite|citation|latest)\b/iu.test(requestText);
 }
 
 function getResponsesOutputText(body: OpenAiResponsesResponse): string {

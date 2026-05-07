@@ -1,5 +1,6 @@
 import type { EmailMessageSummary } from "./email.js";
 import type { CodingSnapshot } from "./coding.js";
+import { evaluateArtifactQuality, type ArtifactQualityReport } from "./artifactQuality.js";
 
 export type ArtifactKind = "document" | "slide_deck" | "website_design";
 export type ArtifactVisibility = "user_project" | "ai_generated" | "archived";
@@ -77,6 +78,7 @@ export type DesignProject = {
   summary: string;
   kind: ArtifactKind;
   visibility: ArtifactVisibility;
+  generatedByAi: boolean;
   pinned: boolean;
   sourceLabel: string;
   updatedAt: number;
@@ -133,6 +135,34 @@ export type ArtifactExportToCodingResult =
       kind?: ArtifactKind;
       reason: string;
     };
+
+export type DesignSourceContext = {
+  provider: ArtifactSource["provider"];
+  heading: string;
+  description: string;
+  meta: string[];
+  url?: string;
+  requirements: string[];
+};
+
+export type ArtifactExportTarget = {
+  id: "docx" | "pptx" | "html_css" | "coding_project";
+  label: string;
+  detail: string;
+  available: boolean;
+  action: "export" | "to_coding";
+};
+
+export type GeneratedArtifactReview = {
+  kindLabel: string;
+  revisionCount: number;
+  latestPrompt: string;
+  approvalState: "draft" | "needs_review" | "exported";
+  exportReady: boolean;
+  qualityReport: ArtifactQualityReport;
+  exportTargets: ArtifactExportTarget[];
+  notes: string[];
+};
 
 export function createArtifactSourceFromEmail(message: EmailMessageSummary): ArtifactSource {
   return {
@@ -216,7 +246,106 @@ export function getArtifactTextPreview(artifact: Artifact): string {
   }
 }
 
-export function createDesignProjectFromArtifact(artifact: Artifact, needsReview = false): DesignProject {
+export function buildDesignSourceContext(artifact: Artifact): DesignSourceContext {
+  const version = getActiveArtifactVersion(artifact);
+  const heading = artifact.source.provider === "gmail" ? "Original email" : "Original prompt";
+  const description = artifact.source.subject || artifact.source.label || artifact.title;
+  const meta = [
+    artifact.source.from ? `From ${artifact.source.from}` : "",
+    artifact.source.fromEmail ? artifact.source.fromEmail : "",
+    artifact.source.threadId ? `Thread ${artifact.source.threadId}` : "",
+    artifact.source.messageId ? `Message ${artifact.source.messageId}` : "",
+    artifact.source.provider === "manual" ? "Manual request" : ""
+  ].filter(Boolean);
+
+  return {
+    provider: artifact.source.provider,
+    heading,
+    description,
+    meta: uniqueStrings(meta).slice(0, 4),
+    url: artifact.source.url,
+    requirements: buildSourceRequirements(artifact, version)
+  };
+}
+
+export function getArtifactExportTargets(artifact: Artifact): ArtifactExportTarget[] {
+  switch (artifact.kind) {
+    case "document":
+      return [
+        {
+          id: "docx",
+          label: "Export DOCX",
+          detail: "Word-compatible document",
+          available: true,
+          action: "export"
+        }
+      ];
+    case "slide_deck":
+      return [
+        {
+          id: "pptx",
+          label: "Export PPTX",
+          detail: "PowerPoint-compatible deck",
+          available: true,
+          action: "export"
+        }
+      ];
+    case "website_design":
+      return [
+        {
+          id: "html_css",
+          label: "Export HTML/CSS",
+          detail: "Static website folder",
+          available: true,
+          action: "export"
+        },
+        {
+          id: "coding_project",
+          label: "Send to Coding",
+          detail: "Open as an editable local project",
+          available: true,
+          action: "to_coding"
+        }
+      ];
+  }
+}
+
+export function buildGeneratedArtifactReview(artifact: Artifact): GeneratedArtifactReview {
+  const version = getActiveArtifactVersion(artifact);
+  const readiness = getArtifactReadiness(version.content);
+  const qualityReport = evaluateArtifactQuality(version.content, buildArtifactQualitySourceText(artifact, version), {
+    requireSources: isResearchLikeArtifact(artifact, version)
+  });
+  const approvalState =
+    artifact.exportedProjectPath && artifact.exportedProjectPath.trim()
+      ? "exported"
+      : artifact.visibility === "ai_generated"
+        ? "needs_review"
+        : "draft";
+
+  return {
+    kindLabel: getArtifactReviewKindLabel(artifact.kind),
+    revisionCount: artifact.versions.length,
+    latestPrompt: version.prompt,
+    approvalState,
+    exportReady: readiness.ready && qualityReport.exportReady,
+    qualityReport,
+    exportTargets: getArtifactExportTargets(artifact).map((target) => ({
+      ...target,
+      available: target.available && readiness.ready && qualityReport.exportReady
+    })),
+    notes: [
+      readiness.summary,
+      qualityReport.summary,
+      ...qualityReport.failedChecks.slice(0, 2).map((check) => `${check.label}: ${check.detail}`),
+      artifact.versions.length === 1 ? "One saved version." : `${artifact.versions.length} saved versions.`,
+      approvalState === "needs_review" ? "Review before sending, sharing, or exporting outside Autopilot." : "",
+      artifact.exportedProjectPath ? `Last sent to Coding at ${artifact.exportedProjectPath}.` : ""
+    ].filter(Boolean)
+  };
+}
+
+export function createDesignProjectFromArtifact(artifact: Artifact, needsReview = false, generatedByAi = artifact.visibility !== "user_project"): DesignProject {
   return {
     id: `design-project:${artifact.id}`,
     artifactId: artifact.id,
@@ -224,12 +353,17 @@ export function createDesignProjectFromArtifact(artifact: Artifact, needsReview 
     summary: artifact.summary,
     kind: artifact.kind,
     visibility: artifact.visibility,
+    generatedByAi,
     pinned: artifact.pinned,
     sourceLabel: artifact.source.label,
     updatedAt: artifact.updatedAt,
     needsReview,
     exportedProjectPath: artifact.exportedProjectPath
   };
+}
+
+export function isAiDesignProject(project: Pick<DesignProject, "generatedByAi" | "visibility" | "needsReview">): boolean {
+  return project.generatedByAi || project.visibility === "ai_generated" || project.visibility === "archived" || project.needsReview;
 }
 
 export function defaultArtifactContent(kind: ArtifactKind, title = defaultArtifactTitle(kind)): ArtifactContent {
@@ -450,6 +584,117 @@ function makeId(prefix: string): string {
   }
 
   return `${prefix}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildSourceRequirements(artifact: Artifact, version: ArtifactVersion): string[] {
+  const requirements = [
+    artifact.source.subject ? `Respond to: ${artifact.source.subject}` : "",
+    artifact.source.provider === "gmail" && artifact.source.from ? `Use context from ${artifact.source.from}.` : "",
+    version.prompt ? `Instruction: ${version.prompt}` : "",
+    version.summary ? `Current version: ${version.summary}` : "",
+    getDeliverableRequirement(version.content),
+    ...getContentRequirements(version.content)
+  ];
+
+  return uniqueStrings(requirements.map((requirement) => requirement.trim()).filter(Boolean)).slice(0, 6);
+}
+
+function buildArtifactQualitySourceText(artifact: Artifact, version: ArtifactVersion): string {
+  return [
+    artifact.source.label,
+    artifact.source.subject,
+    artifact.source.from,
+    artifact.summary,
+    version.prompt,
+    version.summary
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function isResearchLikeArtifact(artifact: Artifact, version: ArtifactVersion): boolean {
+  return /\b(research|brief|sources|market|industry|competitor|analysis|report)\b/iu.test(
+    `${artifact.title} ${artifact.summary} ${version.prompt} ${version.summary}`
+  );
+}
+
+function getDeliverableRequirement(content: ArtifactContent): string {
+  switch (content.kind) {
+    case "document":
+      return "Deliverable: editable document exportable as DOCX.";
+    case "slide_deck":
+      return "Deliverable: editable slide deck exportable as PPTX.";
+    case "website_design":
+      return "Deliverable: website design exportable as HTML/CSS or Coding project.";
+  }
+}
+
+function getContentRequirements(content: ArtifactContent): string[] {
+  switch (content.kind) {
+    case "document":
+      return countWords(content.markdown) > 0 ? [`Draft length: ${countWords(content.markdown)} words.`] : [];
+    case "slide_deck":
+      return [`Deck structure: ${content.slides.length} slides.`];
+    case "website_design":
+      return content.sections.slice(0, 3).map((section) => `Section: ${section.name} - ${section.summary}`);
+  }
+}
+
+function getArtifactReadiness(content: ArtifactContent): { ready: boolean; summary: string } {
+  switch (content.kind) {
+    case "document": {
+      const wordCount = countWords(content.markdown);
+      const ready = wordCount >= 24 && !content.markdown.toLowerCase().includes("autopilot will draft this document");
+      return {
+        ready,
+        summary: ready ? `${wordCount} words with export-ready document structure.` : "Needs more original document content before export."
+      };
+    }
+    case "slide_deck": {
+      const bulletCount = content.slides.reduce((total, slide) => total + slide.bullets.length, 0);
+      const ready = content.slides.length > 0 && bulletCount > 0 && !content.slides.some((slide) => slide.title.toLowerCase().includes("generated slide"));
+      return {
+        ready,
+        summary: ready ? `${content.slides.length} slides with ${bulletCount} supporting bullets.` : "Needs stronger slide titles and bullets before export."
+      };
+    }
+    case "website_design": {
+      const ready = content.html.includes("<") && content.css.includes("{") && content.sections.length > 0;
+      return {
+        ready,
+        summary: ready ? `${content.sections.length} named sections with HTML/CSS ready for export.` : "Needs website markup, styles, and named sections before export."
+      };
+    }
+  }
+}
+
+function getArtifactReviewKindLabel(kind: ArtifactKind): string {
+  switch (kind) {
+    case "document":
+      return "Document";
+    case "slide_deck":
+      return "Slide deck";
+    case "website_design":
+      return "Website design";
+  }
+}
+
+function countWords(value: string): number {
+  return value.split(/\s+/).filter((word) => /[A-Za-z0-9]/.test(word)).length;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(value);
+  }
+  return unique;
 }
 
 function escapeHtml(value: string): string {

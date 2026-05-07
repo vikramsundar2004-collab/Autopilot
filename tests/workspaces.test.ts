@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sanitizeWorkspaceState, upsertWorkspaceTabSnapshot } from "../src/shared/workspaces";
+import { getMostRecentWorkspaceTabId, sanitizeWorkspaceState, upsertWorkspaceTabSnapshot } from "../src/shared/workspaces";
 
 describe("workspace models", () => {
   it("keeps default workspaces and removes invalid active ids", () => {
@@ -106,5 +106,25 @@ describe("workspace models", () => {
       memoryBytes: 42,
       pinned: true
     });
+  });
+
+  it("finds the saved tab that should be restored as active", () => {
+    expect(
+      getMostRecentWorkspaceTabId([
+        {
+          id: "old",
+          title: "Old",
+          url: "https://old.example",
+          lastActiveAt: 10
+        },
+        {
+          id: "new",
+          title: "New",
+          url: "https://new.example",
+          lastActiveAt: 20
+        }
+      ])
+    ).toBe("new");
+    expect(getMostRecentWorkspaceTabId([])).toBeNull();
   });
 });

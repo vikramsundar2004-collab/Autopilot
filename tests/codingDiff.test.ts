@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCodingDiff } from "../src/renderer/codingDiff";
+import { buildCodingDiff, parseUnifiedGitDiff } from "../src/renderer/codingDiff";
 
 describe("buildCodingDiff", () => {
   it("returns no hunks when content is unchanged", () => {
@@ -39,5 +39,27 @@ describe("buildCodingDiff", () => {
     expect(diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind === "removed")).toEqual([
       expect.objectContaining({ text: "two", oldLine: 2 })
     ]);
+  });
+});
+
+describe("parseUnifiedGitDiff", () => {
+  it("turns a git patch into red and green review lines", () => {
+    const diff = parseUnifiedGitDiff(`diff --git a/src/app.ts b/src/app.ts
+index 123..456 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,3 +1,4 @@
+ import app from "./app";
+-const label = "old";
++const label = "new";
++const ready = true;
+ export default app;
+`);
+
+    expect(diff.changed).toBe(true);
+    expect(diff.added).toBe(2);
+    expect(diff.removed).toBe(1);
+    expect(diff.hunks).toHaveLength(1);
+    expect(diff.hunks[0].lines.map((line) => line.kind)).toEqual(["context", "removed", "added", "added", "context"]);
   });
 });

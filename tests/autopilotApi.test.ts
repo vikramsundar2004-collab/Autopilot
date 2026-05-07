@@ -95,4 +95,35 @@ describe("browser preview autopilot api", () => {
       })
     );
   });
+
+  it("provides browser agent stubs in browser preview", async () => {
+    const api = createPreviewAutopilotApi();
+    const snapshot = await api.tabs.getSnapshot();
+    const activeTabId = snapshot.activeTabId as string;
+
+    await expect(api.tabs.readDOM(activeTabId)).resolves.toEqual(
+      expect.objectContaining({
+        success: true,
+        elements: expect.arrayContaining([expect.objectContaining({ selector: expect.any(String) })])
+      })
+    );
+    await expect(api.tabs.clickBySelector(activeTabId, "button")).resolves.toEqual(
+      expect.objectContaining({
+        success: false,
+        action: "click"
+      })
+    );
+    await expect(api.tabs.fillBySelector(activeTabId, "input", "hello")).resolves.toEqual(
+      expect.objectContaining({
+        success: false,
+        action: "fill"
+      })
+    );
+    await expect(api.tabs.scrollTo(activeTabId, 100)).resolves.toEqual(
+      expect.objectContaining({
+        success: false,
+        action: "scroll"
+      })
+    );
+  });
 });

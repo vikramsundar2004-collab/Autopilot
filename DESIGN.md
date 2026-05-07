@@ -1,9 +1,9 @@
-# Design System - Autopilot
+# Design System - Autopilot Browser
 
 ## Product Context
-- **What this is:** A Chromium-based desktop browser focused on calm tab handling and fast navigation.
-- **Who it's for:** People who want a browser workspace that feels focused without looking sterile.
-- **Project type:** Desktop app, browser chrome, settings surface.
+- **What this is:** An AI-powered Chromium desktop browser focused on calm tab handling, work extraction, and reviewable AI output.
+- **Who it's for:** People who want one browser workspace for research, coding, email tasks, documents, slides, and design work.
+- **Project type:** Desktop app, browser chrome, workspace sidebars, AI review surfaces, settings surface.
 
 ## Aesthetic Direction
 - **Direction:** Cozy, focused, capable.
@@ -36,10 +36,16 @@
 - **Scale:** 4, 8, 12, 16, 20, 24, 32, 48.
 
 ## Layout
-- **Approach:** Browser-first workspace, not a marketing page.
-- **Desktop:** Top tab strip, toolbar, then a large neutral web content workspace.
+- **Approach:** Browser-first workspace, not a marketing page or generic dashboard.
+- **Desktop:** Thin workspace rail, browser-owned sidebar, top toolbar, then a large neutral web content workspace.
 - **Narrow:** Tabs remain scrollable, toolbar wraps cleanly, settings becomes single-column.
 - **Radius:** 8px for panels, 12px for controls, 18px for tabs/pills.
+
+## AI Workflow
+- **Pattern:** Generate → Preview → Approve / Edit / Reject.
+- **Source clarity:** Every assistant surface should show what context is shared before the model runs.
+- **Manual vs AI:** Manual file edits and artifact edits stay distinct from AI-generated revisions.
+- **Ownership:** Productivity tasks should clearly say whether AI can prepare the work or the user must handle it.
 
 ## Motion
 - **Approach:** Minimal-functional.

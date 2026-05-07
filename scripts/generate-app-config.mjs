@@ -42,25 +42,39 @@ const env = {
   ...process.env
 };
 const clientId = (env.AUTOPILOT_GOOGLE_CLIENT_ID || env.VITE_GOOGLE_CLIENT_ID || "").trim();
+const defaultSupabaseProjectRef = "ctvxwmmclsfxortzmkeq";
+const supabaseProjectRef = (env.AUTOPILOT_SUPABASE_PROJECT_REF || defaultSupabaseProjectRef).trim();
+const supabaseUrl = (env.AUTOPILOT_SUPABASE_URL || (supabaseProjectRef ? `https://${supabaseProjectRef}.supabase.co` : "")).trim();
+const supabaseAnonKey = (env.AUTOPILOT_SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY || "").trim();
 const configPath = path.join(projectRoot, "public", "autopilot-config.json");
 
-if (!clientId) {
-  console.log("Autopilot Gmail config: no client ID found in .env.local or env.local.");
+if (!clientId && !supabaseUrl) {
+  console.log("Autopilot config: no public Google or Supabase config found in .env.local or env.local.");
   process.exit(0);
+}
+
+const publicConfig = {};
+
+if (clientId) {
+  publicConfig.gmail = {
+    clientId
+  };
+} else {
+  console.log("Autopilot Gmail config: no client ID found in .env.local or env.local.");
+}
+
+if (supabaseUrl) {
+  publicConfig.supabase = {
+    projectRef: supabaseProjectRef,
+    url: supabaseUrl,
+    ...(supabaseAnonKey ? { anonKey: supabaseAnonKey } : {})
+  };
 }
 
 mkdirSync(path.dirname(configPath), { recursive: true });
 writeFileSync(
   configPath,
-  `${JSON.stringify(
-    {
-      gmail: {
-        clientId
-      }
-    },
-    null,
-    2
-  )}\n`,
+  `${JSON.stringify(publicConfig, null, 2)}\n`,
   "utf8"
 );
-console.log("Autopilot Gmail config: wrote public/autopilot-config.json.");
+console.log("Autopilot config: wrote public/autopilot-config.json.");

@@ -80,6 +80,27 @@ describe("CodingWorkspace file explorer", () => {
     expect(selected.tree?.children?.some((entry) => entry.name === "README.md")).toBe(true);
   });
 
+  it("reports TS and Python language server readiness for the coding workspace", async () => {
+    const workspace = new CodingWorkspace();
+    const statuses = await workspace.getLanguageToolStatuses();
+
+    expect(statuses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          language: "typescript",
+          serverCommand: "typescript-language-server",
+          installCommand: expect.stringContaining("typescript-language-server")
+        }),
+        expect.objectContaining({
+          language: "python",
+          serverCommand: "pyright-langserver",
+          installCommand: expect.stringContaining("pyright")
+        })
+      ])
+    );
+    expect(statuses.every((status) => typeof status.available === "boolean")).toBe(true);
+  });
+
   it("shows files and document entries when a folder contains more folders than the sidebar cap", async () => {
     const projectRoot = await makeTempRoot("large-project");
     for (let index = 0; index < 220; index += 1) {
@@ -139,7 +160,7 @@ describe("CodingWorkspace file explorer", () => {
     );
   });
 
-  it("keeps environment files out of editor previews and autosave writes", async () => {
+  it("opens and saves environment files from the active project", async () => {
     const projectRoot = await makeTempRoot("secret-project");
     const envPath = path.join(projectRoot, ".env.local");
     await writeFile(envPath, "OPENAI_API_KEY=sk-test-secret\n", "utf8");
@@ -148,20 +169,32 @@ describe("CodingWorkspace file explorer", () => {
     const workspace = new CodingWorkspace();
     await workspace.openProject({} as never);
 
+    const snapshot = await workspace.getSnapshot();
+    expect(snapshot.tree?.children?.some((entry) => entry.name === ".env.local")).toBe(true);
+
     const readResult = await workspace.readPath(envPath);
     expect(readResult).toEqual(
       expect.objectContaining({
         success: true,
-        kind: "binary",
-        reason: expect.stringContaining("Environment files are hidden")
+        kind: "text",
+        content: "OPENAI_API_KEY=sk-test-secret\n",
+        language: "dotenv"
       })
     );
 
     const writeResult = await workspace.writeFile(envPath, "OPENAI_API_KEY=changed\n");
     expect(writeResult).toEqual(
       expect.objectContaining({
-        success: false,
-        reason: expect.stringContaining("Environment files are protected")
+        success: true
+      })
+    );
+
+    const updatedReadResult = await workspace.readPath(envPath);
+    expect(updatedReadResult).toEqual(
+      expect.objectContaining({
+        success: true,
+        kind: "text",
+        content: "OPENAI_API_KEY=changed\n"
       })
     );
   });
