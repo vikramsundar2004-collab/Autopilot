@@ -1,9 +1,8 @@
-import { app, BrowserWindow, WebContentsView, session, shell, type PrinterInfo, type ProcessMetric, type Rectangle } from "electron";
+import { app, BrowserWindow, WebContentsView, session, type PrinterInfo, type ProcessMetric, type Rectangle } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  AUTOPILOT_PDF_NOTICE_MARKER,
   createHomeUrl,
   describeNavigationError,
   findDuplicateTabIds,
@@ -18,6 +17,7 @@ import {
 } from "../shared/browserModel.js";
 import type { PageDomActionResult, PageDomSnapshotResult, PageTextCaptureResult } from "../shared/productivity.js";
 import type { WorkspaceTabRecord } from "../shared/workspaces.js";
+import { isAutopilotAccountCallbackUrl } from "./account.js";
 
 type ManagedTab = Tab & {
   view: WebContentsView;
@@ -167,24 +167,53 @@ function escapeHtml(value: string): string {
   });
 }
 
-function createPdfExternalNoticeUrl(pdfUrl: string): string {
-  const safePdfUrl = escapeHtml(pdfUrl);
+function isLocalSupabaseAuthFallbackUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      parsed.protocol === "http:" &&
+      (host === "localhost" || host === "127.0.0.1") &&
+      parsed.port === "3000" &&
+      (parsed.pathname === "/" || parsed.pathname === "") &&
+      !parsed.search
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isSupabaseAuthUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname.endsWith(".supabase.co") && parsed.pathname.startsWith("/auth/v1/");
+  } catch {
+    return false;
+  }
+}
+
+function isLikelySupabaseAuthFallback(targetUrl: string, currentUrl: string, hadSupabaseAuthContext = false): boolean {
+  return isLocalSupabaseAuthFallbackUrl(targetUrl) && (hadSupabaseAuthContext || isSupabaseAuthUrl(currentUrl));
+}
+
+function createSupabaseAuthFallbackNoticeUrl(targetUrl: string): string {
+  const safeTargetUrl = escapeHtml(targetUrl);
   const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>PDF opened externally</title>
+<title>Autopilot account confirmed</title>
 <style>
   :root {
     color-scheme: light;
     --bg: #f4ebdd;
     --surface: #fffaf2;
-    --surface-2: #efe3d1;
-    --primary: #1f4a37;
-    --text: #17231d;
-    --muted: #6f6257;
-    --border: #deccb5;
+    --surface-2: #eadcc8;
+    --primary: #123c2b;
+    --text: #10231a;
+    --muted: #6b5d4d;
+    --border: #cdb99f;
   }
   * { box-sizing: border-box; }
   body {
@@ -208,7 +237,7 @@ function createPdfExternalNoticeUrl(pdfUrl: string): string {
   }
   .kicker {
     margin: 0 0 10px;
-    color: color-mix(in srgb, var(--primary) 74%, var(--text));
+    color: var(--primary);
     font-size: 12px;
     font-weight: 800;
     letter-spacing: 0;
@@ -226,19 +255,7 @@ function createPdfExternalNoticeUrl(pdfUrl: string): string {
     font-size: 16px;
     line-height: 1.55;
   }
-  a {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 46px;
-    margin-top: 24px;
-    border-radius: 12px;
-    background: var(--primary);
-    color: var(--surface);
-    font-weight: 800;
-    padding: 0 18px;
-    text-decoration: none;
-  }
+  strong { color: var(--text); }
   small {
     display: block;
     max-width: 100%;
@@ -250,26 +267,18 @@ function createPdfExternalNoticeUrl(pdfUrl: string): string {
   }
 </style>
 </head>
-<body ${AUTOPILOT_PDF_NOTICE_MARKER}>
+<body data-autopilot-page="account-auth-complete">
 <main>
-  <p class="kicker">Autopilot</p>
-  <h1>PDF opened externally</h1>
-  <p>This PDF was sent to your default PDF app or browser so its print button can use a real preview instead of Electron's unsupported PDF print dialog.</p>
-  <a href="${safePdfUrl}">Open PDF again</a>
-  <small title="${safePdfUrl}">${safePdfUrl}</small>
+  <p class="kicker">Autopilot account</p>
+  <h1>Your account link opened in Autopilot.</h1>
+  <p>Autopilot caught the account redirect so Chromium would not show a broken localhost error page.</p>
+  <p>If this was an older link that redirected to <strong>localhost:3000</strong>, send yourself a fresh magic link from Settings so Supabase can return directly to Autopilot.</p>
+  <small title="${safeTargetUrl}">Blocked fallback redirect: ${safeTargetUrl}</small>
 </main>
 </body>
 </html>`;
 
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
-}
-
-function openPdfInSystem(pdfUrl: string): void {
-  if (process.env.AUTOPILOT_SKIP_EXTERNAL_PDF_OPEN === "1") {
-    return;
-  }
-
-  void shell.openExternal(pdfUrl).catch(() => undefined);
 }
 
 function createPrinterOptions(printers: PrinterInfo[]): string {
@@ -585,8 +594,14 @@ export class TabController {
   private visible = false;
   private memoryRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private readonly recoveringTabIds = new Set<string>();
+  private readonly inlinePdfLoadKeys = new Set<string>();
+  private readonly supabaseAuthTabIds = new Set<string>();
+  private htmlFullscreenTabId: string | null = null;
 
-  constructor(window: BrowserWindow) {
+  constructor(
+    window: BrowserWindow,
+    private readonly handleAccountCallbackUrl?: (callbackUrl: string) => void | Promise<void>
+  ) {
     this.window = window;
     this.registerPdfResponseHandler();
     this.memoryRefreshTimer = setInterval(() => this.refreshMemoryMetrics(), MEMORY_REFRESH_INTERVAL_MS);
@@ -621,6 +636,7 @@ export class TabController {
   }
 
   restoreSnapshot(savedTabs: WorkspaceTabRecord[] = [], activeTabId: string | null = null): BrowserSnapshot {
+    this.leaveHtmlFullscreen();
     for (const tab of this.tabs.values()) {
       this.detachView(tab.id);
       if (!tab.view.webContents.isDestroyed()) {
@@ -652,17 +668,17 @@ export class TabController {
     return this.getSnapshot();
   }
 
-  createTab(url = createHomeUrl()): BrowserSnapshot {
+  createTab(url = createHomeUrl(), options: { allowPdfResponse?: boolean } = {}): BrowserSnapshot {
     const id = crypto.randomUUID();
     const requestedUrl = normalizeAddressInput(typeof url === "string" ? url : "", createHomeUrl());
     const safeUrl = isSafeBrowserUrl(requestedUrl) ? requestedUrl : createHomeUrl();
-    const shouldOpenPdfExternally = isExternalPdfUrl(safeUrl);
-    const initialUrl = shouldOpenPdfExternally ? createPdfExternalNoticeUrl(safeUrl) : safeUrl;
+    const shouldLoadPdfInline = options.allowPdfResponse === true || isExternalPdfUrl(safeUrl);
+    const initialUrl = safeUrl;
     const view = this.createBrowserView();
 
     const tab: ManagedTab = {
       id,
-      title: shouldOpenPdfExternally ? "PDF opened externally" : "New tab",
+      title: "New tab",
       url: initialUrl,
       isLoading: false,
       canGoBack: false,
@@ -673,11 +689,11 @@ export class TabController {
     this.registerTabEvents(tab);
     this.tabs.set(id, tab);
     this.activeTabId = id;
+    if (shouldLoadPdfInline) {
+      this.allowInlinePdfLoad(id, initialUrl);
+    }
     this.loadTabUrl(id, initialUrl);
     this.refreshMemoryMetrics();
-    if (shouldOpenPdfExternally) {
-      openPdfInSystem(safeUrl);
-    }
     this.reconcileAttachedView();
     this.emit();
     return this.getSnapshot();
@@ -687,13 +703,13 @@ export class TabController {
     const requestedUrl = savedTab.hibernated && savedTab.hibernatedUrl ? savedTab.hibernatedUrl : savedTab.url;
     const normalizedUrl = normalizeAddressInput(requestedUrl, createHomeUrl());
     const safeUrl = isSafeBrowserUrl(normalizedUrl) ? normalizedUrl : createHomeUrl();
-    const shouldOpenPdfExternally = isExternalPdfUrl(safeUrl);
-    const initialUrl = shouldOpenPdfExternally ? createPdfExternalNoticeUrl(safeUrl) : safeUrl;
+    const shouldLoadPdfInline = isExternalPdfUrl(safeUrl);
+    const initialUrl = safeUrl;
     const view = this.createBrowserView();
 
     const tab: ManagedTab = {
       id: savedTab.id || crypto.randomUUID(),
-      title: shouldOpenPdfExternally ? "PDF opened externally" : readableTitle(savedTab.title ?? "", initialUrl),
+      title: readableTitle(savedTab.title ?? "", initialUrl),
       url: initialUrl,
       isLoading: false,
       canGoBack: false,
@@ -708,10 +724,10 @@ export class TabController {
 
     this.registerTabEvents(tab);
     this.tabs.set(tab.id, tab);
-    this.loadTabUrl(tab.id, initialUrl);
-    if (shouldOpenPdfExternally) {
-      openPdfInSystem(safeUrl);
+    if (shouldLoadPdfInline) {
+      this.allowInlinePdfLoad(tab.id, initialUrl);
     }
+    this.loadTabUrl(tab.id, initialUrl);
   }
 
   private createBrowserView(): WebContentsView {
@@ -731,8 +747,10 @@ export class TabController {
     const { id, view } = tab;
 
     view.webContents.setWindowOpenHandler(({ url: popupUrl }) => {
-      if (isExternalPdfUrl(popupUrl)) {
-        this.createTab(popupUrl);
+      if (isAutopilotAccountCallbackUrl(popupUrl)) {
+        void this.handleAccountCallbackUrl?.(popupUrl);
+      } else if (isExternalPdfUrl(popupUrl)) {
+        this.openPdfInAutopilotTab(popupUrl);
       } else if (isGoogleSignInPopupUrl(popupUrl)) {
         return {
           action: "allow",
@@ -761,16 +779,46 @@ export class TabController {
     });
 
     view.webContents.on("will-navigate", (event, targetUrl) => {
+      const currentUrl = view.webContents.getURL() || this.tabs.get(id)?.url || "";
+      if (isSupabaseAuthUrl(targetUrl)) {
+        this.supabaseAuthTabIds.add(id);
+      }
+
+      if (isAutopilotAccountCallbackUrl(targetUrl)) {
+        event.preventDefault();
+        this.supabaseAuthTabIds.delete(id);
+        void this.handleAccountCallbackUrl?.(targetUrl);
+        return;
+      }
+
+      if (isLikelySupabaseAuthFallback(targetUrl, currentUrl, this.supabaseAuthTabIds.has(id))) {
+        event.preventDefault();
+        this.openSupabaseAuthFallbackNotice(id, targetUrl);
+        return;
+      }
+
       if (!isExternalPdfUrl(targetUrl)) {
         return;
       }
 
+      if (this.isInlinePdfLoadAllowed(id, targetUrl) || isExternalPdfUrl(currentUrl)) {
+        return;
+      }
+
       event.preventDefault();
-      this.openPdfExternally(id, targetUrl);
+      this.openPdfInAutopilotTab(targetUrl);
     });
 
     view.webContents.on("did-start-loading", () => {
       this.patchTab(id, { isLoading: true, navigationError: undefined });
+    });
+
+    view.webContents.on("enter-html-full-screen", () => {
+      this.enterHtmlFullscreen(id);
+    });
+
+    view.webContents.on("leave-html-full-screen", () => {
+      this.leaveHtmlFullscreen(id);
     });
 
     view.webContents.on("did-stop-loading", () => {
@@ -807,11 +855,23 @@ export class TabController {
         return;
       }
 
+      const previousUrl = this.tabs.get(id)?.url || "";
+      if (isLikelySupabaseAuthFallback(validatedUrl, previousUrl, this.supabaseAuthTabIds.has(id))) {
+        this.openSupabaseAuthFallbackNotice(id, validatedUrl);
+        return;
+      }
+
       this.markNavigationFailure(id, errorCode, errorDescription, validatedUrl);
     });
 
     view.webContents.on("did-fail-provisional-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
       if (errorCode === -3 || isMainFrame === false) {
+        return;
+      }
+
+      const previousUrl = this.tabs.get(id)?.url || "";
+      if (isLikelySupabaseAuthFallback(validatedUrl, previousUrl, this.supabaseAuthTabIds.has(id))) {
+        this.openSupabaseAuthFallbackNotice(id, validatedUrl);
         return;
       }
 
@@ -823,8 +883,33 @@ export class TabController {
         return;
       }
 
+      this.leaveHtmlFullscreen(id);
       this.recoverTabView(id);
     });
+  }
+
+  private enterHtmlFullscreen(tabId: string): void {
+    if (!this.tabs.has(tabId)) {
+      return;
+    }
+
+    this.htmlFullscreenTabId = tabId;
+    if (!this.window.isDestroyed()) {
+      this.window.setFullScreen(true);
+    }
+    this.emit();
+  }
+
+  private leaveHtmlFullscreen(tabId?: string): void {
+    if (tabId && this.htmlFullscreenTabId !== tabId) {
+      return;
+    }
+
+    this.htmlFullscreenTabId = null;
+    if (!this.window.isDestroyed() && this.window.isFullScreen()) {
+      this.window.setFullScreen(false);
+    }
+    this.emit();
   }
 
   closeTab(tabId: string): BrowserSnapshot {
@@ -836,6 +921,7 @@ export class TabController {
     const orderedTabs = [...this.tabs.values()];
     const closingIndex = orderedTabs.findIndex((tab) => tab.id === tabId);
 
+    this.leaveHtmlFullscreen(tabId);
     this.detachView(tabId);
     this.tabs.delete(tabId);
 
@@ -891,16 +977,14 @@ export class TabController {
       return this.getSnapshot();
     }
 
-    if (isExternalPdfUrl(url)) {
-      this.openPdfExternally(tabId, url);
-      return this.getSnapshot();
-    }
-
     tab.url = url;
     tab.isLoading = true;
     tab.hibernated = false;
     tab.hibernatedUrl = undefined;
     tab.navigationError = undefined;
+    if (isExternalPdfUrl(url)) {
+      this.allowInlinePdfLoad(tabId, url);
+    }
     this.loadTabUrl(tabId, url);
     this.refreshMemoryMetrics();
     this.emit();
@@ -1443,8 +1527,13 @@ export class TabController {
         return;
       }
 
+      if (this.isInlinePdfLoadAllowed(tabId, details.url)) {
+        callback({});
+        return;
+      }
+
       callback({ cancel: true });
-      setImmediate(() => this.openPdfExternally(tabId, details.url));
+      setImmediate(() => this.openPdfInAutopilotTab(details.url));
     });
 
     browserSession.webRequest.onHeadersReceived({ urls: ["http://*/*", "https://*/*"] }, (details, callback) => {
@@ -1463,24 +1552,54 @@ export class TabController {
         return;
       }
 
+      if (this.consumeInlinePdfLoad(tabId, details.url)) {
+        callback({});
+        return;
+      }
+
       callback({ cancel: true });
-      setImmediate(() => this.openPdfExternally(tabId, details.url));
+      setImmediate(() => this.openPdfInAutopilotTab(details.url));
     });
   }
 
-  private openPdfExternally(tabId: string, pdfUrl: string): void {
+  private openPdfInAutopilotTab(pdfUrl: string): void {
+    this.createTab(pdfUrl, { allowPdfResponse: true });
+  }
+
+  private getInlinePdfLoadKey(tabId: string, pdfUrl: string): string {
+    return `${tabId}\n${pdfUrl}`;
+  }
+
+  private allowInlinePdfLoad(tabId: string, pdfUrl: string): void {
+    this.inlinePdfLoadKeys.add(this.getInlinePdfLoadKey(tabId, pdfUrl));
+  }
+
+  private isInlinePdfLoadAllowed(tabId: string, pdfUrl: string): boolean {
+    return this.inlinePdfLoadKeys.has(this.getInlinePdfLoadKey(tabId, pdfUrl));
+  }
+
+  private consumeInlinePdfLoad(tabId: string, pdfUrl: string): boolean {
+    const key = this.getInlinePdfLoadKey(tabId, pdfUrl);
+    const isAllowed = this.inlinePdfLoadKeys.has(key);
+    if (isAllowed) {
+      this.inlinePdfLoadKeys.delete(key);
+    }
+    return isAllowed;
+  }
+
+  private openSupabaseAuthFallbackNotice(tabId: string, targetUrl: string): void {
     const tab = this.tabs.get(tabId);
     if (!tab || tab.view.webContents.isDestroyed()) {
       return;
     }
 
-    const noticeUrl = createPdfExternalNoticeUrl(pdfUrl);
-    tab.title = "PDF opened externally";
+    this.supabaseAuthTabIds.delete(tabId);
+    const noticeUrl = createSupabaseAuthFallbackNoticeUrl(targetUrl);
+    tab.title = "Autopilot account confirmed";
     tab.url = noticeUrl;
     tab.isLoading = false;
     tab.navigationError = undefined;
     this.loadTabUrl(tabId, noticeUrl);
-    openPdfInSystem(pdfUrl);
     this.emit();
   }
 
@@ -1600,6 +1719,10 @@ export class TabController {
     const tab = this.tabs.get(tabId);
     if (!tab) {
       return;
+    }
+
+    if (isSupabaseAuthUrl(url)) {
+      this.supabaseAuthTabIds.add(tabId);
     }
 
     if (isHomeUrl(url)) {

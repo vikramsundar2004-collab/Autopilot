@@ -41,6 +41,24 @@ describe("work item routing", () => {
     expect(roles).toContain("design");
   });
 
+  it("keeps ordinary reply drafts out of Design unless an artifact is explicit", () => {
+    const roles = routeWorkspaceRoles(
+      makeTask({
+        title: "Draft a reply to Jordan",
+        context: "Please respond to the kickoff email and confirm we can review it tomorrow.",
+        source: {
+          provider: "gmail",
+          label: "Jordan - Project kickoff",
+          subject: "Project kickoff",
+          requestedOutput: "reply",
+          recommendedAssistant: "productivity"
+        }
+      })
+    );
+
+    expect(roles).toEqual(["productivity"]);
+  });
+
   it("routes repo and build work to Coding", () => {
     const roles = routeWorkspaceRoles(
       makeTask({

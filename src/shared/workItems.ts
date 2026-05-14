@@ -1,4 +1,5 @@
 import type { ProductivityTask, ProductivityTaskSource } from "./productivity.js";
+import { inferPermissionRiskLevel } from "./permissionPolicy.js";
 
 export type WorkspaceRole = "productivity" | "design" | "coding" | "automation";
 
@@ -158,11 +159,7 @@ export function routeWorkspaceRoles(task: ProductivityTask): WorkspaceRole[] {
   const text = `${task.title} ${task.context} ${task.source.subject ?? ""} ${task.source.label}`.toLowerCase();
   const roles = new Set<WorkspaceRole>();
 
-  if (
-    /\b(slide|slides|deck|presentation|pitch|document|doc|report|proposal|writeup|write up|memo|website|landing page|mockup|design|figma|homepage|draft|create|generate)\b/u.test(
-      text
-    )
-  ) {
+  if (isExplicitDesignArtifactRequest(text)) {
     roles.add("design");
   }
 
@@ -185,6 +182,12 @@ export function routeWorkspaceRoles(task: ProductivityTask): WorkspaceRole[] {
   return [...roles];
 }
 
+function isExplicitDesignArtifactRequest(text: string): boolean {
+  return /\b(slide|slides|deck|presentation|pitch|document|doc|report|proposal|writeup|write up|memo|client brief|project brief|website|landing page|mockup|design|figma|homepage)\b/u.test(
+    text
+  );
+}
+
 export function getWorkItemOwnership(workItem: Pick<WorkItem, "assignedRoles" | "context" | "source" | "title">): WorkItemOwnership {
   if (workItem.source.provider === "google-calendar") {
     return "user";
@@ -194,6 +197,11 @@ export function getWorkItemOwnership(workItem: Pick<WorkItem, "assignedRoles" | 
   const asksForPreparatoryWork = /\b(draft|write|prepare|create|generate|summarize|respond|reply|follow up|follow-up|research|brief|plan|outline|document|slides|deck|debug|build)\b/u.test(
     text
   );
+  const inferredRisk = inferPermissionRiskLevel(text);
+  if (inferredRisk === "destructive" || (inferredRisk === "external_write" && !asksForPreparatoryWork)) {
+    return "user";
+  }
+
   if (/\b(approve|approving|decide|sign|signing|vote|attend|interview|present|negotiate|confirm|pay|paying|purchase|purchasing|submit|submitting|delete|deleting|overwrite|overwriting)\b/u.test(text)) {
     return "user";
   }
@@ -219,7 +227,8 @@ export function getWorkItemPermissionLevel(workItem: Pick<WorkItem, "assignedRol
   }
 
   const text = `${workItem.title} ${workItem.context} ${workItem.source.subject ?? ""} ${workItem.source.label}`.toLowerCase();
-  if (/\b(send|sending|sent|submit|submitting|publish|publishing|share|sharing|delete|deleting|overwrite|overwriting|pay|paying|purchase|purchasing|approve|approving|sign|signing)\b/u.test(text)) {
+  const inferredRisk = inferPermissionRiskLevel(text);
+  if (inferredRisk === "external_write" || inferredRisk === "destructive" || /\b(approve|approving)\b/u.test(text)) {
     return "approval";
   }
 
@@ -563,6 +572,7 @@ function sanitizeWorkItemSource(value: unknown): ProductivityTaskSource {
     source.provider === "gmail" ||
     source.provider === "google-calendar" ||
     source.provider === "slack" ||
+    source.provider === "chat" ||
     source.provider === "outlook" ||
     source.provider === "web" ||
     source.provider === "coding"

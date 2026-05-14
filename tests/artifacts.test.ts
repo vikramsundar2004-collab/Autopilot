@@ -10,6 +10,7 @@ import {
   getArtifactExportTargets,
   isAiDesignProject,
   sanitizeArtifacts,
+  sanitizeDesignProjectRecords,
   type Artifact
 } from "../src/shared/artifacts";
 
@@ -69,6 +70,31 @@ describe("artifact models", () => {
       expect(version.content.html).toContain("\n  <h1>Hello</h1>");
       expect(version.content.css).toContain("\n  color: red;");
     }
+  });
+
+  it("preserves the generated reply draft attached to an email artifact", () => {
+    const [artifact] = sanitizeArtifacts([
+      {
+        kind: "document",
+        title: "Client follow-up",
+        summary: "Document with reply draft",
+        emailDraftMarkdown: "Hi Maya,\n\nThanks for sending this over. I prepared the brief and will review before sending.\n\nBest,",
+        source: { provider: "gmail", label: "Maya - Brief", from: "Maya Chen", subject: "Brief request" },
+        activeVersionId: "version-1",
+        versions: [
+          {
+            id: "version-1",
+            createdAt: 1,
+            prompt: "email",
+            summary: "email",
+            content: defaultArtifactContent("document")
+          }
+        ]
+      }
+    ]);
+
+    expect(artifact.emailDraftMarkdown).toContain("Hi Maya");
+    expect(artifact.emailDraftMarkdown).toContain("review before sending");
   });
 
   it("defaults Gmail artifacts into AI generated projects", () => {
@@ -134,6 +160,37 @@ describe("artifact models", () => {
     expect(humanProject.visibility).toBe("user_project");
     expect(isAiDesignProject(humanProject)).toBe(false);
     expect(isAiDesignProject(aiProject)).toBe(true);
+  });
+
+  it("sanitizes durable design project records for blank projects and artifact registries", () => {
+    const [record] = sanitizeDesignProjectRecords([
+      {
+        id: "design-project-record:launch",
+        origin: "user",
+        title: "Launch Week",
+        summary: "Blank project",
+        artifactKindHint: "asset_pack",
+        artifactIds: ["artifact-1", "artifact-1", 42, "artifact-2"],
+        draftIds: ["draft-1", "", "draft-2"],
+        status: "generating",
+        createdAt: 10,
+        updatedAt: 20,
+        sourceLabel: "Manual prompt"
+      }
+    ]);
+
+    expect(record).toEqual(
+      expect.objectContaining({
+        id: "design-project-record:launch",
+        origin: "user",
+        title: "Launch Week",
+        artifactKindHint: "asset_pack",
+        artifactIds: ["artifact-1", "artifact-2"],
+        draftIds: ["draft-1", "draft-2"],
+        status: "generating",
+        sourceLabel: "Manual prompt"
+      })
+    );
   });
 
   it("builds source context for Gmail artifacts", () => {

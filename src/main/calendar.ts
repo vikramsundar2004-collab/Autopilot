@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 import { mapWithConcurrency } from "../shared/async.js";
-import type { GoogleCalendarEventSummary, GoogleCalendarSyncResult } from "../shared/calendar.js";
-import { GOOGLE_CALENDAR_READONLY_SCOPE } from "../shared/email.js";
+import type { CalendarWriteRequest, CalendarWriteResult, GoogleCalendarEventSummary, GoogleCalendarSyncResult } from "../shared/calendar.js";
+import { GOOGLE_CALENDAR_EVENTS_SCOPE, GOOGLE_CALENDAR_READONLY_SCOPE } from "../shared/email.js";
 import type { CalendarRecurrence } from "../shared/localCalendar.js";
 import type { EmailService } from "./email.js";
 
@@ -60,6 +60,21 @@ type GoogleCalendarEventResponse = {
   }>;
 };
 
+type GoogleCalendarEventWriteBody = {
+  summary: string;
+  description?: string;
+  location?: string;
+  start?: {
+    date?: string;
+    dateTime?: string;
+  };
+  end?: {
+    date?: string;
+    dateTime?: string;
+  };
+  recurrence?: string[];
+};
+
 const GOOGLE_CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
 const DEFAULT_CALENDAR_LOOKAHEAD_DAYS = 90;
 const DEFAULT_CALENDAR_LOOKBACK_DAYS = 45;
@@ -78,6 +93,7 @@ const GOOGLE_WEEKDAY_TO_INDEX = new Map([
   ["FR", 5],
   ["SA", 6]
 ]);
+const GOOGLE_INDEX_TO_WEEKDAY = new Map([...GOOGLE_WEEKDAY_TO_INDEX.entries()].map(([weekday, index]) => [index, weekday]));
 const WEEKDAY_SHORT_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export class GoogleCalendarService {
@@ -150,20 +166,133 @@ export class GoogleCalendarService {
       };
     }
   }
+
+  async writeEvent(request: CalendarWriteRequest): Promise<CalendarWriteResult> {
+    const token = await this.emailService.getGoogleAccessToken([GOOGLE_CALENDAR_EVENTS_SCOPE]);
+    const calendarId = request.calendarId || "primary";
+    const syncState = {
+      googleEventId: request.eventId,
+      googleCalendarId: calendarId,
+      status: "pending_sync" as const,
+      recurrenceRule: buildGoogleRecurrenceRule(request),
+      lastSyncedAt: undefined
+    };
+
+    if (!token.success) {
+      return {
+        success: false,
+        action: request.action,
+        reason: token.reason,
+        syncState: {
+          ...syncState,
+          status: "sync_failed",
+          reason: token.reason
+        }
+      };
+    }
+
+    try {
+      if (request.action === "delete") {
+        if (!request.eventId) {
+          throw new Error("Choose a synced Google Calendar event before deleting it.");
+        }
+        await calendarFetchJson<unknown>(
+          `${GOOGLE_CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(request.eventId)}`,
+          token.accessToken,
+          {
+            method: "DELETE"
+          }
+        );
+        return {
+          success: true,
+          action: request.action,
+          event: {
+            id: request.eventId,
+            calendarId,
+            calendarName: "Google Calendar",
+            title: request.title || "Deleted event",
+            startAt: request.startAt,
+            endAt: request.endAt,
+            allDay: Boolean(request.allDay),
+            status: "cancelled",
+            attendees: []
+          },
+          syncState: {
+            ...syncState,
+            status: "synced",
+            lastSyncedAt: Date.now()
+          }
+        };
+      }
+
+      const body = buildGoogleEventWriteBody(request);
+      const method = request.action === "update" ? "PATCH" : "POST";
+      const targetUrl =
+        request.action === "update" && request.eventId
+          ? `${GOOGLE_CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(request.eventId)}`
+          : `${GOOGLE_CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events`;
+      if (request.action === "update" && !request.eventId) {
+        throw new Error("Choose a synced Google Calendar event before updating it.");
+      }
+
+      const event = await calendarFetchJson<GoogleCalendarEventResponse>(targetUrl, token.accessToken, {
+        method,
+        body: JSON.stringify(body)
+      });
+      const summary = toCalendarEventSummary(event, calendarId, "Google Calendar");
+      if (!summary) {
+        throw new Error("Google Calendar saved the event but did not return a readable event.");
+      }
+
+      return {
+        success: true,
+        action: request.action,
+        event: summary,
+        syncState: {
+          googleEventId: summary.id,
+          googleCalendarId: calendarId,
+          status: "synced",
+          recurrenceRule: buildGoogleRecurrenceRule(request),
+          lastSyncedAt: Date.now()
+        }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        action: request.action,
+        reason: error instanceof Error ? error.message : "Google Calendar writeback failed.",
+        syncState: {
+          ...syncState,
+          status: "sync_failed",
+          reason: error instanceof Error ? error.message : "Google Calendar writeback failed."
+        }
+      };
+    }
+  }
 }
 
 async function calendarGetJson<T>(url: string, accessToken: string): Promise<T> {
+  return calendarFetchJson<T>(url, accessToken, { method: "GET" });
+}
+
+async function calendarFetchJson<T>(url: string, accessToken: string, init: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), getCalendarRequestTimeoutMs());
 
   try {
     const response = await fetch(url, {
+      method: init.method,
       headers: {
         authorization: `Bearer ${accessToken}`,
-        accept: "application/json"
+        accept: "application/json",
+        ...(init.body ? { "content-type": "application/json" } : {})
       },
+      body: init.body,
       signal: controller.signal
     });
+    if (response.status === 204) {
+      return {} as T;
+    }
     const json = (await response.json()) as T & { error?: { message?: string } };
     if (!response.ok) {
       throw new Error(json.error?.message || `Google Calendar returned HTTP ${response.status}.`);
@@ -243,6 +372,64 @@ function toCalendarEventSummary(
     recurrenceInterval: recurrenceInfo.recurrenceInterval,
     recurrenceWeekdays: recurrenceInfo.recurrenceWeekdays
   };
+}
+
+function buildGoogleEventWriteBody(request: CalendarWriteRequest): GoogleCalendarEventWriteBody {
+  const safeTitle = request.title.replace(/\s+/g, " ").trim() || "Untitled event";
+  const endAt = request.endAt && request.endAt > request.startAt ? request.endAt : request.startAt + 60 * 60 * 1000;
+  const body: GoogleCalendarEventWriteBody = {
+    summary: safeTitle,
+    description: cleanCalendarText(request.description, 800),
+    location: cleanCalendarText(request.location, 240)
+  };
+
+  if (request.allDay) {
+    body.start = { date: toGoogleDate(request.startAt) };
+    body.end = { date: toGoogleDate(endAt) };
+  } else {
+    body.start = { dateTime: new Date(request.startAt).toISOString() };
+    body.end = { dateTime: new Date(endAt).toISOString() };
+  }
+
+  const recurrenceRule = buildGoogleRecurrenceRule(request);
+  if (recurrenceRule) {
+    body.recurrence = [recurrenceRule];
+  }
+
+  return body;
+}
+
+export function buildGoogleRecurrenceRule(request: Pick<CalendarWriteRequest, "recurrence" | "recurrenceInterval" | "recurrenceWeekdays">): string | undefined {
+  if (!request.recurrence || request.recurrence === "none") {
+    return undefined;
+  }
+
+  const interval = Math.max(1, Math.min(52, Math.round(request.recurrenceInterval ?? 1)));
+  const intervalPart = interval > 1 ? `;INTERVAL=${interval}` : "";
+
+  if (request.recurrence === "daily") {
+    return `RRULE:FREQ=DAILY${intervalPart}`;
+  }
+
+  if (request.recurrence === "weekly") {
+    const weekdays = (request.recurrenceWeekdays ?? []).flatMap((weekday) => GOOGLE_INDEX_TO_WEEKDAY.get(weekday) ?? []);
+    const byDay = weekdays.length > 0 ? `;BYDAY=${[...new Set(weekdays)].join(",")}` : "";
+    return `RRULE:FREQ=WEEKLY${intervalPart}${byDay}`;
+  }
+
+  if (request.recurrence === "monthly") {
+    return `RRULE:FREQ=MONTHLY${intervalPart}`;
+  }
+
+  if (request.recurrence === "monthly-day") {
+    return `RRULE:FREQ=MONTHLY${intervalPart}`;
+  }
+
+  return undefined;
+}
+
+function toGoogleDate(value: number): string {
+  return new Date(value).toISOString().slice(0, 10);
 }
 
 type CalendarRecurrenceInfo = {

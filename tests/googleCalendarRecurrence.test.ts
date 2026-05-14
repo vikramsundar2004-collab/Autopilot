@@ -6,7 +6,7 @@ vi.mock("electron", () => ({
   }
 }));
 
-import { inferExpandedGoogleRecurrences, inferRepeatedGoogleEventSeries, parseGoogleCalendarRecurrence } from "../src/main/calendar";
+import { buildGoogleRecurrenceRule, inferExpandedGoogleRecurrences, inferRepeatedGoogleEventSeries, parseGoogleCalendarRecurrence } from "../src/main/calendar";
 import type { GoogleCalendarEventSummary } from "../src/shared/calendar";
 
 describe("Google Calendar recurrence metadata", () => {
@@ -61,6 +61,12 @@ describe("Google Calendar recurrence metadata", () => {
     expect(inferredEvents.every((event) => event.recurringEventId?.startsWith("inferred:"))).toBe(true);
     expect(inferredEvents.every((event) => event.recurrence === "weekly")).toBe(true);
     expect(inferredEvents.every((event) => event.recurrenceLabel === "Weekly on Mon")).toBe(true);
+  });
+
+  it("builds Google writeback recurrence rules from Autopilot recurrence settings", () => {
+    expect(buildGoogleRecurrenceRule({ recurrence: "weekly", recurrenceWeekdays: [2, 4] })).toBe("RRULE:FREQ=WEEKLY;BYDAY=TU,TH");
+    expect(buildGoogleRecurrenceRule({ recurrence: "daily", recurrenceInterval: 2 })).toBe("RRULE:FREQ=DAILY;INTERVAL=2");
+    expect(buildGoogleRecurrenceRule({ recurrence: "none" })).toBeUndefined();
   });
 });
 

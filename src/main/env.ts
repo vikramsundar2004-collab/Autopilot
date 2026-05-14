@@ -42,16 +42,30 @@ function readAppConfig(filePath: string): Record<string, string> {
         anonKey?: unknown;
         projectRef?: unknown;
       };
+      backend?: {
+        aiProxyUrl?: unknown;
+        aiArtifactUrl?: unknown;
+        aiEmailActionsUrl?: unknown;
+        model?: unknown;
+      };
     };
     const clientId = typeof parsed.gmail?.clientId === "string" ? parsed.gmail.clientId.trim() : "";
     const supabaseUrl = typeof parsed.supabase?.url === "string" ? parsed.supabase.url.trim() : "";
     const supabaseAnonKey = typeof parsed.supabase?.anonKey === "string" ? parsed.supabase.anonKey.trim() : "";
     const supabaseProjectRef = typeof parsed.supabase?.projectRef === "string" ? parsed.supabase.projectRef.trim() : "";
+    const aiProxyUrl = typeof parsed.backend?.aiProxyUrl === "string" ? parsed.backend.aiProxyUrl.trim() : "";
+    const aiArtifactUrl = typeof parsed.backend?.aiArtifactUrl === "string" ? parsed.backend.aiArtifactUrl.trim() : "";
+    const aiEmailActionsUrl = typeof parsed.backend?.aiEmailActionsUrl === "string" ? parsed.backend.aiEmailActionsUrl.trim() : "";
+    const openAiModel = typeof parsed.backend?.model === "string" ? parsed.backend.model.trim() : "";
     return {
       ...(clientId ? { AUTOPILOT_GOOGLE_CLIENT_ID: clientId } : {}),
       ...(supabaseUrl ? { AUTOPILOT_SUPABASE_URL: supabaseUrl } : {}),
       ...(supabaseAnonKey ? { AUTOPILOT_SUPABASE_ANON_KEY: supabaseAnonKey } : {}),
-      ...(supabaseProjectRef ? { AUTOPILOT_SUPABASE_PROJECT_REF: supabaseProjectRef } : {})
+      ...(supabaseProjectRef ? { AUTOPILOT_SUPABASE_PROJECT_REF: supabaseProjectRef } : {}),
+      ...(aiProxyUrl ? { AUTOPILOT_AI_PROXY_URL: aiProxyUrl } : {}),
+      ...(aiArtifactUrl ? { AUTOPILOT_AI_ARTIFACT_URL: aiArtifactUrl } : {}),
+      ...(aiEmailActionsUrl ? { AUTOPILOT_AI_EMAIL_ACTIONS_URL: aiEmailActionsUrl } : {}),
+      ...(openAiModel ? { AUTOPILOT_OPENAI_MODEL: openAiModel } : {})
     };
   } catch {
     return {};
@@ -73,10 +87,12 @@ export function getAutopilotEnvFileCandidates(projectRootFromDist: string, cwd =
 
 export function loadAutopilotEnv(): void {
   const projectRootFromDist = path.resolve(__dirname, "../..");
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   const envCandidates = getAutopilotEnvFileCandidates(projectRootFromDist);
   const configCandidates = [
     path.join(process.cwd(), "public", "autopilot-config.json"),
     path.join(projectRootFromDist, "public", "autopilot-config.json"),
+    ...(resourcesPath ? [path.join(resourcesPath, "public", "autopilot-config.json")] : []),
     path.join(__dirname, "../renderer/autopilot-config.json")
   ];
 

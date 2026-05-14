@@ -45,25 +45,45 @@ If your Google OAuth client type is `Desktop app`, the loopback redirect is hand
 
 Enable both the Gmail API and Google Calendar API in Google Cloud. Autopilot requests readonly Gmail and Calendar scopes so the Productivity workspace can turn inbox messages, meetings, and deadlines into action items. If you connected Google before Calendar support existed, disconnect and reconnect Google once so the Calendar permission is granted.
 
-## OpenAI Email Planning
+## Secure AI Backend
 
-Add your OpenAI key to `.env.local` to let Autopilot Browser read synced Gmail snippets and write the real action items into Today's Call:
+Downloaded users should not need `.env.local` and should never receive your OpenAI key. For a production build, deploy the AI proxy described in [docs/AI_BACKEND.md](docs/AI_BACKEND.md), then package only public backend config:
 
 ```bash
-AUTOPILOT_OPENAI_API_KEY=your-openai-api-key
-AUTOPILOT_OPENAI_MODEL=gpt-4o-mini
-AUTOPILOT_OPENAI_BASE_URL=https://api.openai.com/v1
+AUTOPILOT_SUPABASE_PROJECT_REF=ctvxwmmclsfxortzmkeq
+AUTOPILOT_SUPABASE_URL=https://ctvxwmmclsfxortzmkeq.supabase.co
+AUTOPILOT_SUPABASE_ANON_KEY=your-public-anon-key
+AUTOPILOT_AI_PROXY_URL=https://your-backend.example.com/api/ai
+AUTOPILOT_AI_ARTIFACT_URL=https://your-backend.example.com/api/ai/artifact
+AUTOPILOT_AI_EMAIL_ACTIONS_URL=https://your-backend.example.com/api/ai/email-actions
+AUTOPILOT_OPENAI_MODEL=gpt-5.5
+AUTOPILOT_OPENAI_MODEL_MINI=your-cheaper-model
+AUTOPILOT_OPENAI_MODEL_STANDARD=your-standard-model
+AUTOPILOT_OPENAI_MODEL_FRONTIER=gpt-5.5
 ```
 
-The OpenAI key is only read by the Electron main process. It is not written to `public/autopilot-config.json` or exposed to the renderer.
+Local development can still use `AUTOPILOT_OPENAI_API_KEY`, but packaged apps ignore local OpenAI keys by default. The production path is Supabase sign-in plus a server-side AI proxy.
+When `AUTOPILOT_AI_PROXY_URL` points at the Supabase `functions/v1/ai` endpoint, the build automatically derives the sibling `ai-artifact` and `ai-email-actions` endpoint URLs.
+Tier-specific model variables are optional. If they are set, Autopilot routes routine email/page/critique work to cheaper models and reserves the frontier model for final artifact revision, design generation, and coding agent work.
 
 ## Scripts
 
 - `npm run dev` starts Vite and Electron together.
 - `npm run build` compiles the Electron main process and renderer.
 - `npm start` builds and launches the desktop app.
+- `npm run dist:win` builds a Windows installer in a timestamped `release-package-*` folder.
+- `npm run verify:release-config` checks that the generated public config and build output are safe for beta packaging.
+- `npm run verify:release` runs check, tests, build, release config verification, e2e, and Windows packaging.
 - `npm test` runs the test suite.
 - `npm run check` type-checks the main process and renderer.
+
+## Launch Readiness
+
+- Keep installer output signed before public launch and smoke-test it on a clean Windows machine.
+- Before sending a tester build, run `npm run verify:release-config` after `npm run build`; it fails if Supabase/AI endpoint config is missing or if server-side secret-looking values appear in the packaged public config/build output.
+- Verify Browser page-read, Gmail/Calendar sync, Design generation, Coding AI planning, and packaged AI proxy health before sending a tester build.
+- Use [docs/PRIVACY_DATA_FLOW.md](docs/PRIVACY_DATA_FLOW.md) when explaining what data stays local and what goes to Supabase or the AI proxy.
+- Use [docs/COMPETITOR_ANALYSIS.md](docs/COMPETITOR_ANALYSIS.md) as the format for future competitive reviews; every analysis should end with a threat/action appendix.
 
 ## Browser Features
 

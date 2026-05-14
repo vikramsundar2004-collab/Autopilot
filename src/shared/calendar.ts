@@ -29,6 +29,44 @@ export type GoogleCalendarEventSummary = {
   recurrenceWeekdays?: number[];
 };
 
+export type GoogleCalendarSyncState = {
+  googleEventId?: string;
+  googleCalendarId?: string;
+  status: "local_only" | "synced" | "pending_sync" | "sync_failed";
+  recurrenceRule?: string;
+  lastSyncedAt?: number;
+  reason?: string;
+};
+
+export type CalendarWriteRequest = {
+  action: "create" | "update" | "delete";
+  calendarId?: string;
+  eventId?: string;
+  title: string;
+  description?: string;
+  location?: string;
+  startAt: number;
+  endAt?: number;
+  allDay?: boolean;
+  recurrence?: CalendarRecurrence;
+  recurrenceInterval?: number;
+  recurrenceWeekdays?: number[];
+};
+
+export type CalendarWriteResult =
+  | {
+      success: true;
+      action: CalendarWriteRequest["action"];
+      event: GoogleCalendarEventSummary;
+      syncState: GoogleCalendarSyncState;
+    }
+  | {
+      success: false;
+      action: CalendarWriteRequest["action"];
+      reason: string;
+      syncState: GoogleCalendarSyncState;
+    };
+
 export type GoogleCalendarSyncResult =
   | {
       success: true;

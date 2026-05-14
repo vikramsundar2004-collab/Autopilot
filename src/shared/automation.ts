@@ -3,7 +3,7 @@ import type { ArtifactQualityCheck, ArtifactQualityReport } from "./artifactQual
 
 export type AutomationSourceKind = "web" | "gmail" | "calendar" | "slack" | "coding";
 export type AutomationSchedule = "manual" | "daily" | "weekly";
-export type AutomationOutputKind = "brief" | "document" | "draft" | "research_report";
+export type AutomationOutputKind = "brief" | "document" | "draft" | "research_report" | "payment_proposal";
 export type AutomationRunState = "running" | "completed" | "needs_review" | "failed";
 export type AutomationSourceWorkspace = "browser" | "productivity" | "design" | "coding" | "automation";
 export type AutomationFirstRunMode = "run_now" | "schedule_only" | "ask_first";
@@ -42,6 +42,22 @@ export type AutomationRunSource = {
   snippet?: string;
 };
 
+export type AutomationRunLock = {
+  recipeId: string;
+  runId: string;
+  acquiredAt: number;
+  idempotencyKey: string;
+};
+
+export type AutomationQueuedRun = {
+  recipeId: string;
+  recipeName: string;
+  requestedAt: number;
+  idempotencyKey: string;
+  state: "queued" | "blocked_duplicate" | "blocked_concurrency";
+  reason?: string;
+};
+
 export type AutomationRun = {
   id: string;
   recipeId: string;
@@ -49,6 +65,9 @@ export type AutomationRun = {
   state: AutomationRunState;
   startedAt: number;
   completedAt?: number;
+  queuedAt?: number;
+  idempotencyKey?: string;
+  lock?: AutomationRunLock;
   originatingWorkspace?: AutomationSourceWorkspace;
   linkedWorkItemId?: string;
   linkedWorkAssignmentId?: string;
@@ -160,6 +179,7 @@ export function sanitizeAutomationRecipes(value: unknown): AutomationRecipe[] {
     if (!name || !goal) {
       return [];
     }
+    const outputKind = sanitizeOutputKind(recipe.outputKind);
 
     return [
       {
@@ -168,11 +188,11 @@ export function sanitizeAutomationRecipes(value: unknown): AutomationRecipe[] {
         goal,
         schedule: sanitizeSchedule(recipe.schedule),
         sources: sanitizeSources(recipe.sources),
-        outputKind: sanitizeOutputKind(recipe.outputKind),
+        outputKind,
         artifactKind: sanitizeArtifactKind(recipe.artifactKind),
         sourceWorkspace: sanitizeSourceWorkspace(recipe.sourceWorkspace),
         qualityBar: sanitizeQualityBar(recipe.qualityBar),
-        requiresApproval: recipe.requiresApproval !== false,
+        requiresApproval: outputKind === "payment_proposal" ? true : recipe.requiresApproval !== false,
         enabled: recipe.enabled !== false,
         createdAt: cleanTime(recipe.createdAt),
         updatedAt: cleanTime(recipe.updatedAt)
@@ -205,6 +225,9 @@ export function sanitizeAutomationRuns(value: unknown): AutomationRun[] {
         state: sanitizeRunState(run.state),
         startedAt: cleanTime(run.startedAt),
         completedAt: typeof run.completedAt === "number" && Number.isFinite(run.completedAt) ? run.completedAt : undefined,
+        queuedAt: typeof run.queuedAt === "number" && Number.isFinite(run.queuedAt) ? run.queuedAt : undefined,
+        idempotencyKey: cleanString(run.idempotencyKey, 220) || undefined,
+        lock: sanitizeRunLock(run.lock),
         originatingWorkspace: sanitizeSourceWorkspace(run.originatingWorkspace),
         linkedWorkItemId: cleanString(run.linkedWorkItemId, 220) || undefined,
         linkedWorkAssignmentId: cleanString(run.linkedWorkAssignmentId, 220) || undefined,
@@ -228,6 +251,27 @@ export function sanitizeAutomationRuns(value: unknown): AutomationRun[] {
       }
     ];
   });
+}
+
+function sanitizeRunLock(value: unknown): AutomationRunLock | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const lock = value as Partial<AutomationRunLock>;
+  const recipeId = cleanString(lock.recipeId, 160);
+  const runId = cleanString(lock.runId, 160);
+  const idempotencyKey = cleanString(lock.idempotencyKey, 220);
+  if (!recipeId || !runId || !idempotencyKey) {
+    return undefined;
+  }
+
+  return {
+    recipeId,
+    runId,
+    acquiredAt: cleanTime(lock.acquiredAt),
+    idempotencyKey
+  };
 }
 
 function normalizeGoal(prompt: string): string {
@@ -269,7 +313,7 @@ function sanitizeSchedule(value: unknown): AutomationSchedule {
 }
 
 function sanitizeOutputKind(value: unknown): AutomationOutputKind {
-  return value === "document" || value === "draft" || value === "research_report" ? value : "brief";
+  return value === "document" || value === "draft" || value === "research_report" || value === "payment_proposal" ? value : "brief";
 }
 
 function sanitizeArtifactKind(value: unknown): ArtifactKind {
@@ -314,6 +358,15 @@ function sanitizeQualityReport(value: unknown): ArtifactQualityReport | undefine
     copyRatio: sourceCopyRatio,
     sourceCopyRatio,
     exportReady: typeof report.exportReady === "boolean" ? report.exportReady : passedChecks.some((check) => check.id === "export_ready"),
+    attempts:
+      typeof report.attempts === "number" && Number.isFinite(report.attempts)
+        ? Math.max(1, Math.round(report.attempts))
+        : 1,
+    strictMode: Boolean(report.strictMode),
+    failedReasonCodes: Array.isArray(report.failedReasonCodes)
+      ? report.failedReasonCodes.filter((code): code is string => typeof code === "string").slice(0, 20)
+      : failedChecks.map((check) => check.id),
+    approveAnywayRequired: Boolean(report.approveAnywayRequired),
     checks,
     passedChecks,
     failedChecks,

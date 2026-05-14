@@ -1,4 +1,5 @@
 import type { Artifact, ArtifactKind } from "./artifacts.js";
+import type { ArtifactGenerationTrace } from "./artifactPrompts.js";
 import type { EmailMessageSummary } from "./email.js";
 
 export type ActionTool = "reply" | "document" | "slide_deck" | "website_design" | "browser" | "coding" | "question";
@@ -60,6 +61,7 @@ export type AgentRun = {
   planId: string;
   state: "running" | "waiting_for_user" | "completed" | "failed";
   events: AgentRunEvent[];
+  artifactTrace?: ArtifactGenerationTrace;
   createdAt: number;
   updatedAt: number;
 };
@@ -82,6 +84,9 @@ export type AgentPlanResult =
       run: AgentRun;
       model?: string;
       usedFallback?: boolean;
+      reason?: string;
+      aiSource?: "openai" | "fallback";
+      artifactTrace?: ArtifactGenerationTrace;
     }
   | {
       success: false;

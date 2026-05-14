@@ -26,6 +26,28 @@ export const BLUE_THEME: BrowserTheme = {
   focus: "#2f6bdf"
 };
 
+export const DARK_THEME: BrowserTheme = {
+  bg: "#050505",
+  surface: "#0f1010",
+  surface2: "#171918",
+  primary: "#1f5b44",
+  primaryHover: "#287158",
+  sidebarBg: "#030b08",
+  sidebarBgSoft: "#143727",
+  sidebarText: "#f4f0e8",
+  sidebarTextMuted: "#b5b7ad",
+  sidebarBorder: "#254936",
+  titlebarBg: "#030705",
+  sage: "#60a878",
+  sageMuted: "#17231b",
+  clay: "#d09b64",
+  text: "#f4f0e8",
+  textMuted: "#b5b7ad",
+  border: "#34372f",
+  danger: "#f07368",
+  focus: "#d09b64"
+};
+
 const LEGACY_BLUE_THEME: BrowserTheme = {
   bg: "#e8f0f8",
   surface: "#f8fbff",
@@ -49,7 +71,7 @@ const LEGACY_BLUE_THEME: BrowserTheme = {
 };
 
 export type ThemePreset = {
-  id: "classic" | "blue";
+  id: "classic" | "blue" | "dark";
   label: string;
   description: string;
   theme: BrowserTheme;
@@ -70,6 +92,13 @@ export const THEME_PRESETS: ThemePreset[] = [
     description: "Deep navy chrome with white browser surfaces.",
     theme: BLUE_THEME,
     swatches: [BLUE_THEME.sidebarBg, BLUE_THEME.primary, BLUE_THEME.surface, BLUE_THEME.clay]
+  },
+  {
+    id: "dark",
+    label: "Dark",
+    description: "Black chrome for late-night work.",
+    theme: DARK_THEME,
+    swatches: [DARK_THEME.sidebarBg, DARK_THEME.surface, DARK_THEME.primary, DARK_THEME.clay]
   }
 ];
 
@@ -137,7 +166,7 @@ export function loadTheme(storage: Storage = localStorage): BrowserTheme {
     ];
     const isLegacyDefault = legacyKeys.every((key) => legacyTheme[key]?.toLowerCase() === LEGACY_DARK_THEME[key].toLowerCase());
     if (isLegacyDefault) {
-      return DEFAULT_THEME;
+      return DARK_THEME;
     }
 
     if (themeMatches(theme, LEGACY_BLUE_THEME)) {
@@ -160,6 +189,7 @@ export function resetTheme(storage: Storage = localStorage): BrowserTheme {
 }
 
 export function applyTheme(theme: BrowserTheme, root: HTMLElement = document.documentElement): void {
+  root.dataset.theme = themeMatches(theme, DARK_THEME) ? "dark" : themeMatches(theme, BLUE_THEME) ? "blue" : "classic";
   root.style.setProperty("--bg", theme.bg);
   root.style.setProperty("--surface", theme.surface);
   root.style.setProperty("--surface-2", theme.surface2);

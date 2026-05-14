@@ -12,6 +12,7 @@ import {
   sanitizeProductivityTasks,
   sortProductivityTasks,
   type ProductivityDraft,
+  type ProductivityTaskInput,
   type ProductivityTask,
   type ProductivityTaskState,
   type ProductivityTaskSyncResult
@@ -195,6 +196,44 @@ export class ProductivityTaskStore {
     );
     this.tasks.sort(sortProductivityTasks);
     await this.save();
+    return structuredClone(this.tasks);
+  }
+
+  async upsertTask(input: ProductivityTaskInput): Promise<ProductivityTask[]> {
+    const tasks = await this.ensureLoaded();
+    const now = Date.now();
+    const existingTask = input.id ? tasks.find((task) => task.id === input.id) : null;
+    const sanitizedTask = sanitizeProductivityTasks([
+      {
+        ...existingTask,
+        ...input,
+        id: input.id ?? existingTask?.id ?? makeProductivityTaskId(input),
+        state: input.state ?? existingTask?.state ?? "todo",
+        priority: input.priority ?? existingTask?.priority ?? "medium",
+        createdAt: existingTask?.createdAt ?? input.createdAt ?? now,
+        updatedAt: now
+      }
+    ])[0];
+
+    if (!sanitizedTask) {
+      return structuredClone(tasks);
+    }
+
+    this.tasks = [sanitizedTask, ...tasks.filter((task) => task.id !== sanitizedTask.id)].sort(sortProductivityTasks);
+    await this.save();
+    await this.ensureWorkItemsFromTasks();
+    await this.logRun({
+      kind: "source_synced",
+      message: `Created Productivity task "${sanitizedTask.title}" from ${sanitizedTask.source.provider}.`,
+      entityId: sanitizedTask.id,
+      workspace: "productivity",
+      metadata: {
+        provider: sanitizedTask.source.provider,
+        priority: sanitizedTask.priority,
+        actionConfidence: sanitizedTask.source.actionConfidence ?? null,
+        recommendedAssistant: sanitizedTask.source.recommendedAssistant ?? null
+      }
+    });
     return structuredClone(this.tasks);
   }
 
@@ -673,6 +712,13 @@ function inferSlackActionConfidence(text: string): number {
     score -= 12;
   }
   return Math.max(55, Math.min(96, score));
+}
+
+function makeProductivityTaskId(input: ProductivityTaskInput): string {
+  const source = input.source;
+  const sourceId = source.messageId ?? source.url ?? source.label;
+  const key = `${source.provider}:${sourceId}:${input.title}:${input.context}`;
+  return `${source.provider}:${createHash("sha256").update(key).digest("hex").slice(0, 18)}`;
 }
 
 function makeProductivityDraftId(input: DraftInput): string {

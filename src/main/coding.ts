@@ -1,5 +1,6 @@
 import { app, dialog, type BrowserWindow } from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -7,10 +8,17 @@ import path from "node:path";
 import {
   createCodingAgentPlanFromOverview,
   parseGitPorcelainStatus,
+  type CodingAgentPlan,
+  type CodingAgentProgressEvent,
   type CodingAgentPlanResult,
+  type CodingAgentRunResult,
   type CodingAccessMode,
+  type CodingCommandExecution,
+  type CodingCommandLogResult,
+  type CodingCommandPlan,
   type CodingCommandRequest,
   type CodingCommandResult,
+  type CodingDeepQaBenchmarkResult,
   type CodingDeleteResult,
   type CodingDirectoryEntry,
   type CodingFileReadResult,
@@ -20,9 +28,16 @@ import {
   type CodingPluginInstallResult,
   type CodingPluginStatus,
   type CodingOpenFileResult,
+  type CodingPatchFileChange,
+  type CodingPatchSetResult,
   type CodingProject,
+  type CodingProjectMemory,
+  type CodingPreviewValidation,
+  type CodingPreviewValidationRequest,
+  type CodingPreviewValidationResult,
   type CodingRepoOverview,
   type CodingRepoOverviewResult,
+  type CodingRenameProjectResult,
   type CodingResearchPass,
   type CodingResearchReportResult,
   type CodingResearchResult,
@@ -35,15 +50,24 @@ import {
   type CodingTerminalOpenResult,
   type CodingTerminalOutputEvent,
   type CodingTreeNode,
-  type CodingWriteResult
+  type CodingWriteResult,
+  type GitCommitProposalResult,
+  type GitCommitRequest,
+  type GitCommitResult,
+  type GitPushRequest,
+  type GitPushResult,
+  type GitSafetyWarning
 } from "../shared/coding.js";
 import { CODING_PLUGIN_DEFINITIONS, type CodingPluginDefinition } from "../shared/codingPlugins.js";
+import { buildCompetitiveThreatAppendix, buildThreatResponseMatrix, isCompetitorAnalysisPrompt } from "../shared/competitiveThreats.js";
 
 const PROJECTS_FILE = "coding-projects.json";
 const MAX_TREE_DEPTH = 5;
 const MAX_TREE_CHILDREN = 160;
 const MAX_SEARCH_RESULTS = 80;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+const MAX_JSON_CONFIG_BYTES = 512 * 1024;
+const MAX_PROJECT_MEMORY_BYTES = 32 * 1024;
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 60_000;
@@ -55,6 +79,18 @@ const RESEARCH_FETCH_TIMEOUT_MS = 12_000;
 const MAX_RESEARCH_INPUT_LENGTH = 280;
 const MAX_RESEARCH_SOURCES = 8;
 const LANGUAGE_TOOL_CHECK_TIMEOUT_MS = 5_000;
+const MAX_SECRET_SCAN_BYTES = 512 * 1024;
+const PROTECTED_BRANCH_PATTERN = /^(main|master|production|prod|release)$/iu;
+const SECRET_FILE_PATTERN = /(^|[/\\])(\.env(\..*)?|id_rsa|id_dsa|id_ecdsa|id_ed25519|.*\.(pem|key|p12|pfx|crt|cer|token))$/iu;
+const SECRET_CONTENT_PATTERN = /(-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|ghp_[A-Za-z0-9]{20,}|OPENAI_API_KEY\s*=|SUPABASE_SERVICE_ROLE_KEY\s*=|STRIPE_SECRET_KEY\s*=)/u;
+
+const PROJECT_MEMORY_CANDIDATES = [
+  "AUTOPILOT.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  ".cursorrules",
+  path.join(".github", "copilot-instructions.md")
+];
 
 type PluginDefinition = CodingPluginDefinition;
 
@@ -479,7 +515,8 @@ function formatResearchSourceDate(value: number | undefined): string {
 
 function buildResearchAnswer(input: string, iterations: CodingResearchPass[], sources: CodingResearchSource[]): string {
   if (sources.length === 0) {
-    return `I ran ${iterations.length} recursive research ${iterations.length === 1 ? "pass" : "passes"} for "${input}", but no usable sources came back. Try a narrower industry, company, or time window.`;
+    const base = `I ran ${iterations.length} recursive research ${iterations.length === 1 ? "pass" : "passes"} for "${input}", but no usable sources came back. Try a narrower industry, company, or time window.`;
+    return appendCompetitiveThreatsIfNeeded(input, base);
   }
 
   const topSignals = sources
@@ -490,7 +527,7 @@ function buildResearchAnswer(input: string, iterations: CodingResearchPass[], so
     })
     .join("\n");
 
-  return [
+  const answer = [
     `I ran ${iterations.length} recursive research ${iterations.length === 1 ? "pass" : "passes"} for "${input}" using Google News/search routes.`,
     "",
     "Latest signals:",
@@ -498,6 +535,16 @@ function buildResearchAnswer(input: string, iterations: CodingResearchPass[], so
     "",
     "Ask a follow-up in the research bar to recurse on one slice, compare competitors, or turn this into a brief."
   ].join("\n");
+
+  return appendCompetitiveThreatsIfNeeded(input, answer);
+}
+
+function appendCompetitiveThreatsIfNeeded(input: string, answer: string): string {
+  if (!isCompetitorAnalysisPrompt(input)) {
+    return answer;
+  }
+
+  return `${answer}\n\n${buildCompetitiveThreatAppendix()}\n\n${buildThreatResponseMatrix()}`;
 }
 
 function sortEntries(a: CodingDirectoryEntry, b: CodingDirectoryEntry): number {
@@ -520,10 +567,24 @@ async function pathExists(targetPath: string): Promise<boolean> {
 async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   try {
     const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw) as T;
-  } catch {
+    if (Buffer.byteLength(raw, "utf8") > MAX_JSON_CONFIG_BYTES) {
+      console.warn(`Autopilot ignored oversized JSON config at ${filePath}.`);
+      return fallback;
+    }
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as T) : fallback;
+  } catch (error) {
+    warnCodingIssue(`Autopilot could not parse JSON config at ${filePath}.`, error);
     return fallback;
   }
+}
+
+function sanitizeObjectRecord(value: unknown, limit = 200): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, limit));
 }
 
 function getShellInvocation(command: string): { shell: string; args: string[] } {
@@ -695,13 +756,70 @@ function quoteShellArgument(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function sanitizeGitRef(value: string): string {
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9._/-]{1,160}$/u.test(trimmed) && !trimmed.includes("..") ? trimmed : "";
+}
+
+function sanitizeCommitMessage(value?: string): string {
+  return String(value ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+}
+
+function sanitizeGitFileSelection(rootPath: string, changedFiles: Array<{ path: string; staged: boolean }>, filePaths?: string[]): string[] {
+  const changed = new Set(changedFiles.map((file) => file.path));
+  const selected = Array.isArray(filePaths) && filePaths.length > 0
+    ? filePaths
+    : changedFiles.filter((file) => file.staged).map((file) => file.path);
+  return selected
+    .map((filePath) => {
+      const normalized = path.isAbsolute(filePath) ? toRelativePath(rootPath, path.resolve(filePath)) : filePath;
+      return normalized.replace(/\\/g, "/").replace(/^\.\/+/u, "").trim();
+    })
+    .filter((filePath, index, all) => filePath && !filePath.startsWith("../") && changed.has(filePath) && all.indexOf(filePath) === index);
+}
+
+function buildCommitMessageFromChanges(changedFiles: Array<{ path: string }>, selectedFiles: string[]): string {
+  const targets = selectedFiles.length > 0 ? selectedFiles : changedFiles.map((file) => file.path);
+  if (targets.length === 0) {
+    return "Update project files";
+  }
+  const first = targets[0]?.split(/[\\/]/u).pop() ?? "project files";
+  if (targets.length === 1) {
+    return `Update ${first}`;
+  }
+  return `Update ${first} and ${targets.length - 1} more file${targets.length === 2 ? "" : "s"}`;
+}
+
 async function readPackageJson(rootPath: string): Promise<{ scripts?: Record<string, unknown>; dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown> } | null> {
   try {
     const raw = await fs.readFile(path.join(rootPath, "package.json"), "utf8");
-    return JSON.parse(raw) as { scripts?: Record<string, unknown>; dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown> };
-  } catch {
+    if (Buffer.byteLength(raw, "utf8") > MAX_JSON_CONFIG_BYTES) {
+      console.warn(`Autopilot ignored oversized package.json in ${rootPath}.`);
+      return null;
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const record = parsed as Record<string, unknown>;
+    return {
+      scripts: sanitizeObjectRecord(record.scripts, 80),
+      dependencies: sanitizeObjectRecord(record.dependencies, 300),
+      devDependencies: sanitizeObjectRecord(record.devDependencies, 300)
+    };
+  } catch (error) {
+    warnCodingIssue(`Autopilot could not parse package.json in ${rootPath}.`, error);
     return null;
   }
+}
+
+function warnCodingIssue(message: string, error?: unknown): void {
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
+  console.warn(detail ? `${message} ${detail}` : message);
 }
 
 async function detectPackageManager(rootPath: string): Promise<CodingRepoOverview["packageManager"]> {
@@ -745,6 +863,11 @@ function getPackageScripts(packageManager: CodingRepoOverview["packageManager"],
 
 async function collectKeyFiles(rootPath: string): Promise<string[]> {
   const candidates = [
+    "AUTOPILOT.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    path.join(".github", "copilot-instructions.md"),
     "package.json",
     "README.md",
     "src/main/main.ts",
@@ -765,6 +888,67 @@ async function collectKeyFiles(rootPath: string): Promise<string[]> {
   }
 
   return keyFiles;
+}
+
+async function readProjectMemory(rootPath: string): Promise<CodingProjectMemory> {
+  for (const candidate of PROJECT_MEMORY_CANDIDATES) {
+    const memoryPath = path.join(rootPath, candidate);
+    if (!(await pathExists(memoryPath))) {
+      continue;
+    }
+
+    try {
+      const stats = await fs.stat(memoryPath);
+      if (!stats.isFile()) {
+        continue;
+      }
+
+      const raw = await fs.readFile(memoryPath, "utf8");
+      const truncated = Buffer.byteLength(raw, "utf8") > MAX_PROJECT_MEMORY_BYTES;
+      const content = truncated ? raw.slice(0, MAX_PROJECT_MEMORY_BYTES) : raw;
+      const instructions = extractProjectMemoryInstructions(content);
+      return {
+        present: true,
+        relativePath: toRelativePath(rootPath, memoryPath),
+        summary: summarizeProjectMemory(instructions, truncated),
+        instructions,
+        truncated
+      };
+    } catch (error) {
+      warnCodingIssue(`Autopilot could not read project memory at ${memoryPath}.`, error);
+    }
+  }
+
+  return {
+    present: false,
+    summary: "No AUTOPILOT.md, AGENTS.md, CLAUDE.md, .cursorrules, or Copilot instructions file was found.",
+    instructions: []
+  };
+}
+
+function extractProjectMemoryInstructions(content: string): string[] {
+  return content
+    .split(/\r?\n/u)
+    .map((line) =>
+      line
+        .replace(/^\s{0,3}[-*]\s+/u, "")
+        .replace(/^\s{0,3}\d+\.\s+/u, "")
+        .replace(/^#+\s*/u, "")
+        .trim()
+    )
+    .filter((line) => line.length > 0 && !/^```/u.test(line))
+    .filter((line) => /[a-z0-9]/iu.test(line))
+    .slice(0, 8)
+    .map((line) => line.slice(0, 180));
+}
+
+function summarizeProjectMemory(instructions: string[], truncated: boolean): string {
+  if (instructions.length === 0) {
+    return truncated ? "Project memory exists but was too large to summarize fully." : "Project memory exists but contains no plain instruction lines.";
+  }
+
+  const summary = instructions.slice(0, 3).join(" ");
+  return truncated ? `${summary} (truncated)` : summary;
 }
 
 async function collectFrameworkHints(rootPath: string, packageJson: Awaited<ReturnType<typeof readPackageJson>>): Promise<string[]> {
@@ -806,11 +990,309 @@ function buildRepoOverviewSummary(input: {
   frameworkHints: string[];
   keyFiles: string[];
   changedFiles: number;
+  projectMemory?: CodingProjectMemory;
 }): string {
   const stackLabel = input.frameworkHints.length > 0 ? input.frameworkHints.join(", ") : "no framework hints detected";
   const scriptLabel = input.scripts.length > 0 ? `${input.scripts.length} package script${input.scripts.length === 1 ? "" : "s"}` : "no package scripts";
   const fileLabel = input.keyFiles.length > 0 ? `key files include ${input.keyFiles.slice(0, 4).join(", ")}` : "no known key files found";
-  return `${input.projectName} looks like a ${input.packageManager} project with ${stackLabel}, ${scriptLabel}, and ${fileLabel}. Git currently reports ${input.changedFiles} changed file${input.changedFiles === 1 ? "" : "s"}.`;
+  const memoryLabel = input.projectMemory?.present ? ` Project memory is loaded from ${input.projectMemory.relativePath}.` : " No project memory file was found.";
+  return `${input.projectName} looks like a ${input.packageManager} project with ${stackLabel}, ${scriptLabel}, and ${fileLabel}. Git currently reports ${input.changedFiles} changed file${input.changedFiles === 1 ? "" : "s"}.${memoryLabel}`;
+}
+
+function buildCodingRunProgress(
+  runId: string,
+  plan: CodingAgentPlan,
+  input: {
+    changedFiles: Extract<CodingGitStatusResult, { success: true }>["changedFiles"];
+    diffReady: boolean;
+    gitReason?: string;
+    diffReason?: string;
+    now: number;
+  }
+): CodingAgentProgressEvent[] {
+  const events: CodingAgentProgressEvent[] = [
+    {
+      id: `${runId}:understanding`,
+      runId,
+      phase: "understanding",
+      message: `Reading project files for: ${plan.goal}`,
+      createdAt: input.now
+    }
+  ];
+
+  if (plan.projectMemory?.present) {
+    events.push({
+      id: `${runId}:memory`,
+      runId,
+      phase: "planning",
+      message: `Loaded project memory from ${plan.projectMemory.relativePath}: ${plan.projectMemory.summary}`,
+      createdAt: input.now + 1,
+      files: plan.projectMemory.relativePath ? [plan.projectMemory.relativePath] : undefined
+    });
+  }
+
+  events.push(
+    {
+      id: `${runId}:schema`,
+      runId,
+      phase: "schema",
+      message: `Found app entrypoint and target shape: ${plan.schema.expectedOutput}`,
+      createdAt: input.now + 2,
+      files: plan.schema.touchedFiles
+    },
+    {
+      id: `${runId}:editing`,
+      runId,
+      phase: "editing",
+      message:
+        plan.schema.touchedFiles.length > 0
+          ? `Writing patch candidate for ${plan.schema.touchedFiles.slice(0, 3).join(", ")}.`
+          : "Writing patch candidate after the editor target is selected.",
+      createdAt: input.now + 3,
+      files: plan.schema.touchedFiles
+    },
+    {
+      id: `${runId}:verification`,
+      runId,
+      phase: "testing",
+      message:
+        plan.suggestedCommands.length > 0
+          ? `Running tests is approval-gated: ${plan.suggestedCommands.slice(0, 3).join(", ")}`
+          : "No package verification command was detected; use the terminal for a project-specific check.",
+      createdAt: input.now + 4,
+      command: plan.suggestedCommands[0],
+      requiresApproval: true
+    },
+    {
+      id: `${runId}:review`,
+      runId,
+      phase: "review",
+      message: input.diffReady && input.changedFiles.length > 0
+        ? `Diff ready for review with ${input.changedFiles.length} changed file${input.changedFiles.length === 1 ? "" : "s"}.`
+        : `Done blocked until there is a diff, command evidence, or a precise blocker: ${input.diffReason ?? input.gitReason ?? "no changed files"}`,
+      createdAt: input.now + 5,
+      files: input.changedFiles.map((file) => file.path),
+      requiresApproval: true
+    }
+  );
+
+  return events;
+}
+
+const SAFE_COMMAND_PATTERNS = [
+  /^git\s+(status|diff|show|log|branch|rev-parse)\b/iu,
+  /^(npm|pnpm|yarn)\s+(test|run\s+(test|check|build|lint|typecheck))\b/iu,
+  /^npx\s+(vitest|playwright)\b/iu,
+  /^(node|npm|pnpm|yarn)\s+(-v|--version)\b/iu,
+  /^(ls|dir|Get-ChildItem)\b/iu
+];
+
+const WRITE_COMMAND_PATTERNS = [
+  /^(npm|pnpm|yarn)\s+(install|i|add|remove|uninstall)\b/iu,
+  /^git\s+(add|commit|checkout|switch|merge|rebase|stash)\b/iu,
+  /(^|\s)(mkdir|New-Item|Set-Content|Copy-Item|Move-Item)\b/iu,
+  /(>|>>)\s*[^&|]+$/u
+];
+
+const EXTERNAL_COMMAND_PATTERNS = [
+  /^git\s+push\b/iu,
+  /^(npm|pnpm|yarn)\s+publish\b/iu,
+  /\b(netlify|vercel|firebase|supabase)\s+.*\b(deploy|publish|push)\b/iu,
+  /\b(curl|Invoke-WebRequest|wget)\b/iu
+];
+
+const DESTRUCTIVE_COMMAND_PATTERNS = [
+  /\brm\s+-rf\b/iu,
+  /\bRemove-Item\b.*\b-Recurse\b/iu,
+  /\b(del|erase|rmdir)\b/iu,
+  /\bgit\s+(reset\s+--hard|clean\s+-fd|push\s+--force)\b/iu,
+  /\b(format|shutdown|Stop-Computer)\b/iu
+];
+
+const BLOCKED_COMMAND_PATTERNS = [
+  /\b(format|shutdown|Stop-Computer)\b/iu,
+  /\bgit\s+push\b.*\s--force(?:-with-lease)?\b/iu
+];
+
+function createCommandSafetyDecision(command: string) {
+  if (BLOCKED_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+    return {
+      allowed: false,
+      requiresApproval: true,
+      risk: "destructive" as const,
+      reason: "This command is blocked because it can destroy local state or overwrite remote history."
+    };
+  }
+
+  if (DESTRUCTIVE_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+    return {
+      allowed: true,
+      requiresApproval: true,
+      risk: "destructive" as const,
+      reason: "This command can delete or overwrite local work, so Autopilot needs explicit approval."
+    };
+  }
+
+  if (EXTERNAL_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+    return {
+      allowed: true,
+      requiresApproval: true,
+      risk: "external" as const,
+      reason: "This command can affect external systems, so Autopilot needs explicit approval."
+    };
+  }
+
+  if (WRITE_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+    return {
+      allowed: true,
+      requiresApproval: true,
+      risk: "write" as const,
+      reason: "This command can change local files or dependencies, so Autopilot needs approval unless full access is enabled."
+    };
+  }
+
+  if (SAFE_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+    return {
+      allowed: true,
+      requiresApproval: false,
+      risk: "safe" as const,
+      reason: "This looks like a read-only or verification command."
+    };
+  }
+
+  return {
+    allowed: true,
+    requiresApproval: true,
+    risk: "write" as const,
+    reason: "Autopilot could not prove this command is read-only, so it needs approval."
+  };
+}
+
+function describeCommandPurpose(command: string): string {
+  if (/\b(test|vitest|playwright)\b/iu.test(command)) {
+    return "Run project tests and attach the result to Coding proof.";
+  }
+  if (/\b(build|typecheck|check|lint)\b/iu.test(command)) {
+    return "Verify the project build or static checks before review.";
+  }
+  if (/^git\s+diff\b/iu.test(command)) {
+    return "Inspect the current code diff before approval.";
+  }
+  if (/^git\s+status\b/iu.test(command)) {
+    return "Inspect changed files in the active project.";
+  }
+  return "Run an active-project command with safety review.";
+}
+
+function parseNumstat(output: string): Map<string, { additions: number; deletions: number }> {
+  const stats = new Map<string, { additions: number; deletions: number }>();
+  for (const line of output.split(/\r?\n/u)) {
+    const parts = line.trim().split(/\t/u);
+    if (parts.length < 3) {
+      continue;
+    }
+
+    const additions = Number.parseInt(parts[0] ?? "0", 10);
+    const deletions = Number.parseInt(parts[1] ?? "0", 10);
+    const filePath = parts.slice(2).join("\t");
+    stats.set(filePath, {
+      additions: Number.isFinite(additions) ? additions : 0,
+      deletions: Number.isFinite(deletions) ? deletions : 0
+    });
+  }
+
+  return stats;
+}
+
+function toPatchFileStatus(status: string): CodingPatchFileChange["status"] {
+  if (status.includes("D")) {
+    return "deleted";
+  }
+  if (status.includes("A") || status.includes("?")) {
+    return "created";
+  }
+  return "modified";
+}
+
+function normalizeConsoleMessages(messages: string[] | undefined): string[] {
+  return (messages ?? []).map((message) => message.trim()).filter(Boolean).slice(0, 10);
+}
+
+function buildDeepQaCases(activeProjectReady: boolean): CodingDeepQaBenchmarkResult["cases"] {
+  const cases: CodingDeepQaBenchmarkResult["cases"] = [
+    {
+      scenario: "tetris",
+      prompt: "Build a playable Tetris game with keyboard controls, scoring, restart, and preview validation.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "preview", "repair_loop", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running generated-game QA."
+    },
+    {
+      scenario: "snake",
+      prompt: "Build a playable Snake game and verify the canvas is not blank in Browser Test.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "preview", "repair_loop", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running generated-game QA."
+    },
+    {
+      scenario: "todo_app",
+      prompt: "Create a CRUD todo app with persistence, empty states, and tests.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "preview", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running app-generation QA."
+    },
+    {
+      scenario: "dashboard",
+      prompt: "Build a small analytics dashboard with charts, filters, and responsive layout.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "preview", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running dashboard QA."
+    },
+    {
+      scenario: "agent",
+      prompt: "Implement a scoped agent with tool permission checks and trace output.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running agent QA."
+    },
+    {
+      scenario: "plugin",
+      prompt: "Implement a plugin scaffold with manifest validation and install status.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running plugin QA."
+    },
+    {
+      scenario: "skill",
+      prompt: "Implement a skill scaffold with readable instructions and tests.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running skill QA."
+    },
+    {
+      scenario: "complex_repo_feature",
+      prompt: "Add a feature across shared types, main process IPC, renderer UI, and tests.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "repair_loop", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running complex feature QA."
+    },
+    {
+      scenario: "fix_failing_test",
+      prompt: "Diagnose a failing test, patch the cause, rerun the test, and explain the evidence.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "repair_loop", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running repair QA."
+    },
+    {
+      scenario: "refactor_shared_module",
+      prompt: "Refactor a shared module while preserving public behavior and test coverage.",
+      requiredEvidence: ["multi_file_patch", "diff", "command", "approval_gate"],
+      status: activeProjectReady ? "ready" : "blocked",
+      reason: activeProjectReady ? undefined : "Open a project before running refactor QA."
+    }
+  ];
+
+  return cases;
 }
 
 export class CodingWorkspace {
@@ -822,6 +1304,8 @@ export class CodingWorkspace {
   private pluginLastStatuses = new Map<string, CodingPluginStatus>();
   private terminalSession: RunningTerminalSession | null = null;
   private terminalOutputListeners = new Set<(event: CodingTerminalOutputEvent) => void>();
+  private commandExecutions: CodingCommandExecution[] = [];
+  private previewValidations: CodingPreviewValidation[] = [];
 
   async getSnapshot(): Promise<CodingSnapshot> {
     await this.ensureLoaded();
@@ -860,9 +1344,10 @@ export class CodingWorkspace {
     const packageJson = await readPackageJson(activeProject.rootPath);
     const packageManager = await detectPackageManager(activeProject.rootPath);
     const scripts = getPackageScripts(packageManager, packageJson);
-    const [keyFiles, frameworkHints, gitStatus] = await Promise.all([
+    const [keyFiles, frameworkHints, projectMemory, gitStatus] = await Promise.all([
       collectKeyFiles(activeProject.rootPath),
       collectFrameworkHints(activeProject.rootPath, packageJson),
+      readProjectMemory(activeProject.rootPath),
       this.getGitStatusForRoot(activeProject.rootPath)
     ]);
     const changedFiles = gitStatus.success ? gitStatus.changedFiles : [];
@@ -876,13 +1361,15 @@ export class CodingWorkspace {
       keyFiles,
       gitBranch: gitStatus.success ? gitStatus.branch : "not a git repo",
       changedFiles,
+      projectMemory,
       summary: buildRepoOverviewSummary({
         projectName: activeProject.name,
         packageManager,
         scripts,
         frameworkHints,
         keyFiles,
-        changedFiles: changedFiles.length
+        changedFiles: changedFiles.length,
+        projectMemory
       })
     };
 
@@ -911,6 +1398,59 @@ export class CodingWorkspace {
         overview: overviewResult.overview,
         now
       })
+    };
+  }
+
+  async startAgentRun(goal: string): Promise<CodingAgentRunResult> {
+    const planResult = await this.createAgentPlan(goal);
+    if (!planResult.success) {
+      return {
+        success: false,
+        reason: planResult.reason,
+        generatedAt: Date.now()
+      };
+    }
+
+    const [status, diff] = await Promise.all([this.getGitStatus(), this.getGitDiff()]);
+    const now = Date.now();
+    const runId = `coding-run:${randomUUID()}`;
+    const changedFiles = status.success ? status.changedFiles : [];
+    const proofReady = diff.success && changedFiles.length > 0;
+    const progress = buildCodingRunProgress(runId, planResult.plan, {
+      changedFiles,
+      diffReady: diff.success,
+      gitReason: status.success ? undefined : status.reason,
+      diffReason: diff.success ? undefined : diff.reason,
+      now
+    });
+
+    return {
+      success: true,
+      plan: planResult.plan,
+      run: {
+        id: runId,
+        planId: planResult.plan.id,
+        phase: "review",
+        understanding: planResult.plan.summary,
+        schema: planResult.plan.schema,
+        plan: planResult.plan.steps,
+        commands: [],
+        changedFiles,
+        testResults: planResult.plan.suggestedCommands.length > 0
+          ? [
+              `Suggested verification: ${planResult.plan.suggestedCommands.slice(0, 3).join(", ")}`,
+              proofReady ? "Diff evidence is available." : "Done is blocked until Coding generates or detects a reviewable diff."
+            ]
+          : [
+              "No package verification command detected yet.",
+              proofReady ? "Diff evidence is available." : "Done is blocked until Coding generates or detects a reviewable diff."
+            ],
+        progress,
+        diff: diff.success ? diff.diff : undefined,
+        approvalState: "needs_review",
+        createdAt: now,
+        updatedAt: now
+      }
     };
   }
 
@@ -981,6 +1521,200 @@ export class CodingWorkspace {
       filePath: relativeFilePath,
       diff: result.stdout,
       generatedAt: Date.now()
+    };
+  }
+
+  async createGitCommitProposal(message?: string, filePaths?: string[]): Promise<GitCommitProposalResult> {
+    await this.ensureLoaded();
+    const activeProject = this.getActiveProject();
+    if (!activeProject) {
+      return {
+        success: false,
+        reason: "Open a local project before creating a commit proposal.",
+        generatedAt: Date.now()
+      };
+    }
+
+    const status = await this.getGitStatusForRoot(activeProject.rootPath);
+    if (!status.success) {
+      return {
+        success: false,
+        reason: status.reason,
+        generatedAt: Date.now()
+      };
+    }
+
+    const selectedFiles = sanitizeGitFileSelection(activeProject.rootPath, status.changedFiles, filePaths);
+    const warnings = await this.buildGitSafetyWarnings(activeProject.rootPath, status.branch, status.changedFiles, selectedFiles, false);
+    const diffCommand =
+      selectedFiles.length > 0
+        ? `git diff --no-ext-diff -- ${selectedFiles.map((filePath) => quoteShellArgument(filePath)).join(" ")}`
+        : "git diff --no-ext-diff";
+    const diffResult = await runShellCommand(diffCommand, activeProject.rootPath, REPO_COMMAND_TIMEOUT_MS, MAX_GIT_DIFF_BYTES);
+    const proposedMessage = sanitizeCommitMessage(message) || buildCommitMessageFromChanges(status.changedFiles, selectedFiles);
+
+    return {
+      success: true,
+      id: `git-commit-proposal:${randomUUID()}`,
+      rootPath: activeProject.rootPath,
+      branch: status.branch,
+      remote: "origin",
+      changedFiles: status.changedFiles,
+      selectedFiles,
+      proposedMessage,
+      diffPreview: diffResult.exitCode === 0 ? diffResult.stdout : "",
+      testsStatus: "not_run",
+      warnings,
+      blocked: warnings.some((warning) => warning.blocking),
+      approvalRequired: true,
+      generatedAt: Date.now()
+    };
+  }
+
+  async gitCommit(request: GitCommitRequest): Promise<GitCommitResult> {
+    await this.ensureLoaded();
+    const activeProject = this.getActiveProject();
+    if (!activeProject) {
+      return {
+        success: false,
+        reason: "Open a local project before committing."
+      };
+    }
+    if (request.approved !== true) {
+      return {
+        success: false,
+        reason: "Git commit requires explicit approval after reviewing status, diff, warnings, and tests."
+      };
+    }
+
+    const proposal = await this.createGitCommitProposal(request.message, request.filePaths);
+    if (!proposal.success) {
+      return { success: false, reason: proposal.reason, proposal };
+    }
+    const warnings = [
+      ...proposal.warnings,
+      ...(!request.testsPassed && !request.overrideFailedTests
+        ? [
+            {
+              code: "failed_tests" as const,
+              message: "Tests have not been marked as passed. Approve an override before committing anyway.",
+              blocking: true
+            }
+          ]
+        : [])
+    ];
+    if (warnings.some((warning) => warning.blocking)) {
+      return {
+        success: false,
+        reason: warnings.find((warning) => warning.blocking)?.message ?? "Commit is blocked by safety checks.",
+        proposal: {
+          ...proposal,
+          warnings,
+          blocked: true
+        }
+      };
+    }
+    if (proposal.selectedFiles.length === 0) {
+      return {
+        success: false,
+        reason: "Select the exact files to stage. Autopilot will not stage unrelated files by default.",
+        proposal
+      };
+    }
+
+    const addCommand = `git add -- ${proposal.selectedFiles.map((filePath) => quoteShellArgument(filePath)).join(" ")}`;
+    const addResult = await runShellCommand(addCommand, activeProject.rootPath, REPO_COMMAND_TIMEOUT_MS, PLUGIN_OUTPUT_LIMIT);
+    if (addResult.exitCode !== 0) {
+      return {
+        success: false,
+        reason: addResult.stderr.trim() || addResult.stdout.trim() || addResult.error || "Git add failed.",
+        proposal
+      };
+    }
+
+    const message = sanitizeCommitMessage(request.message) || proposal.proposedMessage;
+    const commitResult = await runShellCommand(`git commit -m ${quoteShellArgument(message)}`, activeProject.rootPath, REPO_COMMAND_TIMEOUT_MS, PLUGIN_OUTPUT_LIMIT);
+    if (commitResult.exitCode !== 0) {
+      return {
+        success: false,
+        reason: commitResult.stderr.trim() || commitResult.stdout.trim() || commitResult.error || "Git commit failed.",
+        proposal
+      };
+    }
+
+    const hashResult = await runShellCommand("git rev-parse HEAD", activeProject.rootPath, REPO_COMMAND_TIMEOUT_MS, 2000);
+    return {
+      success: true,
+      commitHash: hashResult.exitCode === 0 ? hashResult.stdout.trim() : "unknown",
+      message,
+      branch: proposal.branch,
+      files: proposal.selectedFiles,
+      stdout: commitResult.stdout,
+      stderr: commitResult.stderr.trim() || undefined,
+      committedAt: Date.now()
+    };
+  }
+
+  async gitPush(request: GitPushRequest): Promise<GitPushResult> {
+    await this.ensureLoaded();
+    const activeProject = this.getActiveProject();
+    if (!activeProject) {
+      return {
+        success: false,
+        reason: "Open a local project before pushing."
+      };
+    }
+    if (request.force) {
+      return {
+        success: false,
+        reason: "Force push is blocked in this version.",
+        warnings: [{ code: "force_push_blocked", message: "Force push is blocked in v1.", blocking: true }]
+      };
+    }
+    if (request.approved !== true) {
+      return {
+        success: false,
+        reason: "Git push requires explicit approval after reviewing branch, remote, commit, and warnings."
+      };
+    }
+
+    const status = await this.getGitStatusForRoot(activeProject.rootPath);
+    if (!status.success) {
+      return { success: false, reason: status.reason };
+    }
+    const branch = sanitizeGitRef(request.branch || status.branch);
+    const remote = sanitizeGitRef(request.remote || "origin");
+    if (!branch || branch === "unknown") {
+      return { success: false, reason: "Could not determine the branch to push." };
+    }
+    if (!remote) {
+      return { success: false, reason: "Remote is required before pushing." };
+    }
+
+    const warnings = await this.buildGitSafetyWarnings(activeProject.rootPath, branch, status.changedFiles, [], true);
+    if (warnings.some((warning) => warning.blocking)) {
+      return {
+        success: false,
+        reason: warnings.find((warning) => warning.blocking)?.message ?? "Push is blocked by safety checks.",
+        warnings
+      };
+    }
+
+    const pushResult = await runShellCommand(`git push ${quoteShellArgument(remote)} ${quoteShellArgument(branch)}`, activeProject.rootPath, REPO_COMMAND_TIMEOUT_MS * 3, PLUGIN_OUTPUT_LIMIT);
+    if (pushResult.exitCode !== 0) {
+      return {
+        success: false,
+        reason: pushResult.stderr.trim() || pushResult.stdout.trim() || pushResult.error || "Git push failed.",
+        warnings
+      };
+    }
+    return {
+      success: true,
+      remote,
+      branch,
+      stdout: pushResult.stdout,
+      stderr: pushResult.stderr.trim() || undefined,
+      pushedAt: Date.now()
     };
   }
 
@@ -1056,18 +1790,20 @@ export class CodingWorkspace {
 
   async createProject(window: BrowserWindow): Promise<CodingSnapshot> {
     await this.ensureLoaded();
-    const result = await dialog.showSaveDialog(window, {
-      title: "Create project folder",
-      buttonLabel: "Create project",
-      defaultPath: path.join(app.getPath("documents"), "New Coding Project")
+    const result = await dialog.showOpenDialog(window, {
+      title: "Choose or create project folder",
+      buttonLabel: "Use folder",
+      defaultPath: app.getPath("documents"),
+      properties: ["openDirectory", "createDirectory"]
     });
 
-    if (result.canceled || !result.filePath) {
+    if (result.canceled || result.filePaths.length === 0) {
       return this.buildSnapshot();
     }
 
-    await fs.mkdir(result.filePath, { recursive: true });
-    return this.addProject(result.filePath);
+    const folderPath = result.filePaths[0];
+    await fs.mkdir(folderPath, { recursive: true });
+    return this.addProject(folderPath);
   }
 
   async selectProject(rootPath: string): Promise<CodingSnapshot> {
@@ -1076,9 +1812,55 @@ export class CodingWorkspace {
     if (this.projects.some((project) => project.rootPath === resolvedRoot)) {
       this.activeRootPath = resolvedRoot;
       await this.saveProjects();
+      return this.buildSnapshot();
+    }
+
+    try {
+      const stats = await fs.stat(resolvedRoot);
+      if (stats.isDirectory()) {
+        return this.addProject(resolvedRoot);
+      }
+    } catch {
+      // Keep the existing snapshot when the requested folder cannot be opened.
     }
 
     return this.buildSnapshot();
+  }
+
+  async renameProject(rootPath: string, name: string): Promise<CodingRenameProjectResult> {
+    await this.ensureLoaded();
+    const resolvedRoot = path.resolve(rootPath);
+    const trimmedName = name.trim().replace(/\s+/g, " ").slice(0, 80);
+
+    if (!trimmedName) {
+      return {
+        success: false,
+        reason: "Project name cannot be empty.",
+        snapshot: await this.buildSnapshot()
+      };
+    }
+
+    if (!this.projects.some((project) => project.rootPath === resolvedRoot)) {
+      return {
+        success: false,
+        reason: "Autopilot could not find that project.",
+        snapshot: await this.buildSnapshot()
+      };
+    }
+
+    this.projects = this.projects.map((project) =>
+      project.rootPath === resolvedRoot
+        ? {
+            ...project,
+            name: trimmedName
+          }
+        : project
+    );
+    await this.saveProjects();
+    return {
+      success: true,
+      snapshot: await this.buildSnapshot()
+    };
   }
 
   async addProjectFromPath(rootPath: string): Promise<CodingSnapshot> {
@@ -1490,6 +2272,197 @@ export class CodingWorkspace {
     };
   }
 
+  async planCommand(input: CodingCommandRequest): Promise<CodingCommandPlan> {
+    await this.ensureLoaded();
+    const command = input.command.trim();
+    const activeProject = this.getActiveProject();
+    const cwd = path.resolve(input.cwd || activeProject?.rootPath || app.getPath("home"));
+    return {
+      id: `coding-command-plan:${randomUUID()}`,
+      command,
+      cwd,
+      purpose: describeCommandPurpose(command),
+      safety: command
+        ? createCommandSafetyDecision(command)
+        : {
+            allowed: false,
+            requiresApproval: false,
+            risk: "safe",
+            reason: "Enter a command to plan."
+          },
+      createdAt: Date.now()
+    };
+  }
+
+  async approveCommand(input: CodingCommandRequest): Promise<CodingCommandResult> {
+    return this.runCommand({
+      ...input,
+      approved: true
+    });
+  }
+
+  async getCommandLog(): Promise<CodingCommandLogResult> {
+    return {
+      success: true,
+      executions: [...this.commandExecutions]
+    };
+  }
+
+  async createPatchSet(): Promise<CodingPatchSetResult> {
+    await this.ensureLoaded();
+    const activeProject = this.getActiveProject();
+    if (!activeProject) {
+      return {
+        success: false,
+        reason: "Open a local project before creating a patchset.",
+        generatedAt: Date.now()
+      };
+    }
+
+    const [status, unstagedNumstat, stagedNumstat] = await Promise.all([
+      this.getGitStatus(),
+      runShellCommand("git diff --numstat", activeProject.rootPath, REPO_COMMAND_TIMEOUT_MS, MAX_GIT_DIFF_BYTES),
+      runShellCommand("git diff --cached --numstat", activeProject.rootPath, REPO_COMMAND_TIMEOUT_MS, MAX_GIT_DIFF_BYTES)
+    ]);
+    if (!status.success) {
+      return {
+        success: false,
+        reason: status.reason,
+        generatedAt: Date.now()
+      };
+    }
+
+    if (status.changedFiles.length === 0) {
+      return {
+        success: false,
+        reason: "No changed files are available. Coding cannot claim done until it has a diff or a precise blocker.",
+        generatedAt: Date.now()
+      };
+    }
+
+    const stats = new Map<string, { additions: number; deletions: number }>();
+    for (const map of [parseNumstat(unstagedNumstat.stdout), parseNumstat(stagedNumstat.stdout)]) {
+      for (const [filePath, counts] of map) {
+        const existing = stats.get(filePath) ?? { additions: 0, deletions: 0 };
+        stats.set(filePath, {
+          additions: existing.additions + counts.additions,
+          deletions: existing.deletions + counts.deletions
+        });
+      }
+    }
+
+    const files: CodingPatchFileChange[] = status.changedFiles.map((file) => {
+      const counts = stats.get(file.path) ?? { additions: 0, deletions: 0 };
+      return {
+        path: file.path,
+        status: toPatchFileStatus(file.status),
+        additions: counts.additions,
+        deletions: counts.deletions
+      };
+    });
+
+    return {
+      success: true,
+      patchSet: {
+        id: `coding-patchset:${randomUUID()}`,
+        summary: `Reviewable patchset with ${files.length} changed file${files.length === 1 ? "" : "s"}.`,
+        files,
+        createdAt: Date.now()
+      }
+    };
+  }
+
+  async validatePreview(input: CodingPreviewValidationRequest): Promise<CodingPreviewValidationResult> {
+    const now = Date.now();
+    const consoleMessages = normalizeConsoleMessages(input.consoleMessages);
+    const hasUrl = Boolean(input.url?.trim());
+    const hasHtml = Boolean(input.html?.trim());
+    const hasDomText = Boolean(input.domText?.trim());
+    const hasScreenshot = input.screenshotPresent === true;
+    const hasCanvasPixels = typeof input.canvasPixelCount === "number" && input.canvasPixelCount > 0;
+    const hasConsoleError = consoleMessages.some((message) => /\b(error|exception|failed|uncaught|cannot find)\b/iu.test(message));
+    const checks: CodingPreviewValidation["checks"] = [
+      ...(hasScreenshot ? (["screenshot"] as const) : []),
+      ...(hasDomText || hasHtml ? (["dom"] as const) : []),
+      ...(consoleMessages.length > 0 ? (["console"] as const) : []),
+      ...(hasCanvasPixels ? (["canvas"] as const) : [])
+    ];
+
+    if (!hasUrl && !hasHtml && !hasDomText && !hasScreenshot && !hasCanvasPixels) {
+      const validation: CodingPreviewValidation = {
+        id: `coding-preview:${randomUUID()}`,
+        url: input.url?.trim() || "not provided",
+        status: "blocked",
+        checks,
+        summary: "No preview evidence was provided. Browser Test cannot pass from an empty or invisible preview.",
+        createdAt: now
+      };
+      this.previewValidations.unshift(validation);
+      return {
+        success: false,
+        reason: validation.summary,
+        validation
+      };
+    }
+
+    if (hasConsoleError) {
+      const validation: CodingPreviewValidation = {
+        id: `coding-preview:${randomUUID()}`,
+        url: input.url?.trim() || "local preview",
+        status: "failed",
+        checks,
+        summary: `Preview failed because the console reported: ${consoleMessages[0]}`,
+        createdAt: now
+      };
+      this.previewValidations.unshift(validation);
+      return {
+        success: false,
+        reason: validation.summary,
+        validation
+      };
+    }
+
+    if (hasHtml && !hasDomText && !hasScreenshot && !hasCanvasPixels && stripHtml(input.html ?? "").trim().length === 0) {
+      const validation: CodingPreviewValidation = {
+        id: `coding-preview:${randomUUID()}`,
+        url: input.url?.trim() || "local preview",
+        status: "failed",
+        checks,
+        summary: "Preview rendered blank markup. Coding must repair the blank-screen state before done.",
+        createdAt: now
+      };
+      this.previewValidations.unshift(validation);
+      return {
+        success: false,
+        reason: validation.summary,
+        validation
+      };
+    }
+
+    const validation: CodingPreviewValidation = {
+      id: `coding-preview:${randomUUID()}`,
+      url: input.url?.trim() || "local preview",
+      status: "passed",
+      checks,
+      summary: "Preview has visible evidence and no blocking console errors.",
+      createdAt: now
+    };
+    this.previewValidations.unshift(validation);
+    return {
+      success: true,
+      validation
+    };
+  }
+
+  async runDeepQaBenchmark(): Promise<CodingDeepQaBenchmarkResult> {
+    await this.ensureLoaded();
+    return {
+      success: true,
+      generatedAt: Date.now(),
+      cases: buildDeepQaCases(Boolean(this.getActiveProject()))
+    };
+  }
+
   async runCommand(input: CodingCommandRequest): Promise<CodingCommandResult> {
     await this.ensureLoaded();
     const command = input.command.trim();
@@ -1499,29 +2472,46 @@ export class CodingWorkspace {
     }
 
     const cwd = path.resolve(input.cwd || activeProject?.rootPath || app.getPath("home"));
-    if (this.accessMode !== "full") {
-      if (!activeProject || !isInside(activeProject.rootPath, cwd)) {
-        return { success: false, command, cwd, reason: "Approval mode can only run commands inside the active project." };
-      }
+    const plan = await this.planCommand({ ...input, cwd });
+    const recordResult = (result: CodingCommandResult, startedAt = Date.now()): CodingCommandResult => {
+      this.commandExecutions.unshift({
+        id: `coding-command:${randomUUID()}`,
+        planId: plan.id,
+        startedAt,
+        finishedAt: Date.now(),
+        result
+      });
+      this.commandExecutions.splice(50);
+      return result;
+    };
 
+    if (!activeProject || !isInside(activeProject.rootPath, cwd)) {
+      return recordResult({ success: false, command, cwd, reason: "Commands can only run inside the active project." });
+    }
+
+    if (!plan.safety.allowed) {
+      return recordResult({ success: false, command, cwd, reason: plan.safety.reason });
+    }
+
+    if (this.accessMode !== "full" || plan.safety.requiresApproval) {
       if (!input.approved) {
-        return {
+        return recordResult({
           success: false,
           command,
           cwd,
-          reason: "Approve this command before Autopilot runs it.",
+          reason: plan.safety.reason || "Approve this command before Autopilot runs it.",
           requiresApproval: true
-        };
+        });
       }
     }
 
     if (isProtectedAppPath(cwd)) {
-      return {
+      return recordResult({
         success: false,
         command,
         cwd,
         reason: "Autopilot app source is protected. You can read it, but commands cannot run from inside the app code."
-      };
+      });
     }
 
     return new Promise((resolve) => {
@@ -1546,16 +2536,21 @@ export class CodingWorkspace {
       child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
       child.on("error", (error) => {
         clearTimeout(timeout);
-        resolve({
-          success: false,
-          command,
-          cwd,
-          reason: error.message,
-          stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-          stderr: Buffer.concat(stderrChunks).toString("utf8"),
-          exitCode: null,
-          durationMs: Date.now() - startedAt
-        });
+        resolve(
+          recordResult(
+            {
+              success: false,
+              command,
+              cwd,
+              reason: error.message,
+              stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+              stderr: Buffer.concat(stderrChunks).toString("utf8"),
+              exitCode: null,
+              durationMs: Date.now() - startedAt
+            },
+            startedAt
+          )
+        );
       });
       child.on("close", (exitCode) => {
         clearTimeout(timeout);
@@ -1563,29 +2558,39 @@ export class CodingWorkspace {
         const stdout = Buffer.concat(stdoutChunks).toString("utf8").slice(-12000);
         const stderr = Buffer.concat(stderrChunks).toString("utf8").slice(-12000);
         if (durationMs >= COMMAND_TIMEOUT_MS) {
-          resolve({
-            success: false,
-            command,
-            cwd,
-            stdout,
-            stderr,
-            exitCode,
-            durationMs,
-            reason: "Command timed out after 60 seconds."
-          });
+          resolve(
+            recordResult(
+              {
+                success: false,
+                command,
+                cwd,
+                stdout,
+                stderr,
+                exitCode,
+                durationMs,
+                reason: "Command timed out after 60 seconds."
+              },
+              startedAt
+            )
+          );
           return;
         }
 
-        resolve({
-          success: exitCode === 0,
-          command,
-          cwd,
-          stdout,
-          stderr,
-          exitCode: exitCode ?? 0,
-          durationMs,
-          reason: exitCode === 0 ? undefined : `Command exited with code ${exitCode ?? "unknown"}.`
-        } as CodingCommandResult);
+        resolve(
+          recordResult(
+            {
+              success: exitCode === 0,
+              command,
+              cwd,
+              stdout,
+              stderr,
+              exitCode: exitCode ?? 0,
+              durationMs,
+              reason: exitCode === 0 ? undefined : `Command exited with code ${exitCode ?? "unknown"}.`
+            } as CodingCommandResult,
+            startedAt
+          )
+        );
       });
     });
   }
@@ -1835,15 +2840,29 @@ export class CodingWorkspace {
     }
 
     try {
-      const stats = await fs.stat(resolvedPath);
-      if (!stats.isFile()) {
-        return { success: false, reason: "Autopilot can only save text files." };
+      let existingStats: Stats | null = null;
+      try {
+        existingStats = await fs.stat(resolvedPath);
+      } catch (error) {
+        const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : "";
+        if (code !== "ENOENT") {
+          throw error;
+        }
       }
 
-      if (!(await looksLikeTextFile(resolvedPath, stats))) {
-        return { success: false, reason: "Autopilot will not overwrite this binary file." };
+      if (existingStats) {
+        if (!existingStats.isFile()) {
+          return { success: false, reason: "Autopilot can only save text files." };
+        }
+
+        if (!(await looksLikeTextFile(resolvedPath, existingStats))) {
+          return { success: false, reason: "Autopilot will not overwrite this binary file." };
+        }
+      } else if (!isTextFilePath(resolvedPath)) {
+        return { success: false, reason: "Autopilot can only create known text/code file types." };
       }
 
+      await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
       await fs.writeFile(resolvedPath, content, "utf8");
       const savedStats = await fs.stat(resolvedPath);
       return {
@@ -1889,6 +2908,83 @@ export class CodingWorkspace {
       changedFiles: parseGitPorcelainStatus(statusResult.stdout),
       generatedAt: Date.now()
     };
+  }
+
+  private async buildGitSafetyWarnings(
+    rootPath: string,
+    branch: string,
+    changedFiles: Array<{ path: string; staged: boolean; unstaged: boolean }>,
+    selectedFiles: string[],
+    pushMode: boolean
+  ): Promise<GitSafetyWarning[]> {
+    const warnings: GitSafetyWarning[] = [];
+    if (PROTECTED_BRANCH_PATTERN.test(branch)) {
+      warnings.push({
+        code: "protected_branch",
+        message: `${pushMode ? "Push" : "Commit"} targets protected-looking branch "${branch}". Review carefully before approving.`,
+        blocking: false
+      });
+    }
+
+    if (!pushMode && selectedFiles.length === 0) {
+      warnings.push({
+        code: "no_selected_files",
+        message: "No files are selected. Autopilot will not stage unrelated files by default.",
+        blocking: true
+      });
+    }
+
+    const unselected = changedFiles.filter((file) => (file.staged || file.unstaged) && !selectedFiles.includes(file.path));
+    if (!pushMode && unselected.length > 0) {
+      warnings.push({
+        code: "unstaged_files_not_selected",
+        message: `${unselected.length} changed file${unselected.length === 1 ? "" : "s"} will not be staged by this commit.`,
+        blocking: false
+      });
+    }
+
+    for (const relativePath of selectedFiles) {
+      if (SECRET_FILE_PATTERN.test(relativePath)) {
+        warnings.push({
+          code: "secret_like_file",
+          message: `${relativePath} looks like a secret, certificate, key, or environment file. Autopilot will not commit it.`,
+          filePath: relativePath,
+          blocking: true
+        });
+        continue;
+      }
+
+      const fullPath = path.resolve(rootPath, relativePath);
+      if (!isInside(rootPath, fullPath)) {
+        warnings.push({
+          code: "secret_like_file",
+          message: `${relativePath} is outside the active project and cannot be committed.`,
+          filePath: relativePath,
+          blocking: true
+        });
+        continue;
+      }
+
+      try {
+        const stats = await fs.stat(fullPath);
+        if (!stats.isFile() || stats.size > MAX_SECRET_SCAN_BYTES) {
+          continue;
+        }
+        const raw = await fs.readFile(fullPath, "utf8");
+        if (SECRET_CONTENT_PATTERN.test(raw)) {
+          warnings.push({
+            code: "secret_like_content",
+            message: `${relativePath} contains secret-looking content. Remove the secret or commit manually after review.`,
+            filePath: relativePath,
+            blocking: true
+          });
+        }
+      } catch {
+        // Missing deleted files are allowed to be committed; unreadable files are ignored by the scanner.
+      }
+    }
+
+    return warnings;
   }
 
   private createRunningPluginStatus(plugin: PluginDefinition, install: RunningPluginInstall): CodingPluginStatus {
@@ -2039,7 +3135,13 @@ export class CodingWorkspace {
     directoryPath: string,
     options: { limit: number | null } = { limit: MAX_TREE_CHILDREN }
   ): Promise<CodingDirectoryEntry[]> {
-    const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(directoryPath, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+
     const visibleEntries = entries
       .filter((entry) => (entry.isDirectory() || entry.isFile()) && !(entry.isDirectory() && SKIPPED_DIRECTORIES.has(entry.name)))
       .sort((leftEntry, rightEntry) => {
@@ -2076,7 +3178,22 @@ export class CodingWorkspace {
   }
 
   private async buildTree(rootPath: string, targetPath: string, depth: number): Promise<CodingTreeNode> {
-    const stats = await fs.stat(targetPath);
+    let stats: Stats;
+    try {
+      stats = await fs.stat(targetPath);
+    } catch {
+      return {
+        kind: "folder",
+        name: depth === 0 ? getProjectName(rootPath) : path.basename(targetPath),
+        path: targetPath,
+        relativePath: toRelativePath(rootPath, targetPath),
+        size: 0,
+        modifiedAt: Date.now(),
+        children: [],
+        truncated: true
+      };
+    }
+
     const node: CodingTreeNode = {
       kind: "folder",
       name: depth === 0 ? getProjectName(rootPath) : path.basename(targetPath),
@@ -2094,7 +3211,15 @@ export class CodingWorkspace {
     node.children = [];
     for (const entry of entries) {
       if (entry.kind === "folder") {
-        node.children.push(await this.buildTree(rootPath, entry.path, depth + 1));
+        try {
+          node.children.push(await this.buildTree(rootPath, entry.path, depth + 1));
+        } catch {
+          node.children.push({
+            ...entry,
+            children: [],
+            truncated: true
+          });
+        }
       } else {
         node.children.push(entry);
       }

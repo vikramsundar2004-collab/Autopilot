@@ -49,11 +49,19 @@ export type CalendarWeekEvent = {
   stackOffsetHours: number;
 };
 
+export type CalendarWeekEventLayout = {
+  leftPercent: number;
+  widthPercent: number;
+};
+
 const LOCAL_CALENDAR_EVENTS_STORAGE_KEY = "autopilot:local-calendar-events";
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const CALENDAR_WEEK_START_HOUR = 1;
 export const CALENDAR_WEEK_END_HOUR = 23;
-export const CALENDAR_HOUR_HEIGHT = 58;
+export const CALENDAR_HOUR_HEIGHT = 76;
+const MIN_OVERLAP_LANES = 3;
+const MAX_VISIBLE_OVERLAP_LANES = 3;
+const OVERFLOW_LANE_STACK_OFFSET_HOURS = 0.42;
 const calendarEventColors = ["#3f7ee8", "#0b57d0", "#dc4b35", "#e2bf37", "#2f8f63", "#bd4f86", "#c96f2d"];
 
 export function getStartOfDay(date: Date): Date {
@@ -580,6 +588,18 @@ export function getCalendarWeekEvents(tasks: ProductivityTask[], localEvents: Lo
   return events;
 }
 
+export function getCalendarWeekEventLayout(event: Pick<CalendarWeekEvent, "dayIndex" | "laneIndex" | "laneCount">): CalendarWeekEventLayout {
+  const dayWidthPercent = 100 / 7;
+  const safeLaneCount = Math.max(1, event.laneCount);
+  const safeLaneIndex = Math.max(0, Math.min(event.laneIndex, safeLaneCount - 1));
+  const laneWidthPercent = dayWidthPercent / safeLaneCount;
+
+  return {
+    leftPercent: event.dayIndex * dayWidthPercent + safeLaneIndex * laneWidthPercent,
+    widthPercent: laneWidthPercent
+  };
+}
+
 function assignCalendarDayLanes(dayEvents: CalendarWeekEvent[]): void {
   const timedEvents = dayEvents
     .filter((event) => !event.allDay)
@@ -607,7 +627,7 @@ function assignClusterLanes(clusterEvents: CalendarWeekEvent[]): void {
     (leftEvent, rightEvent) => leftEvent.startAt - rightEvent.startAt || leftEvent.endAt - rightEvent.endAt || leftEvent.title.localeCompare(rightEvent.title)
   );
   const activeLanes: Array<{ laneIndex: number; endAt: number }> = [];
-  let laneCount = 1;
+  let actualLaneCount = 1;
 
   for (const event of sortedCluster) {
     for (let index = activeLanes.length - 1; index >= 0; index -= 1) {
@@ -626,12 +646,19 @@ function assignClusterLanes(clusterEvents: CalendarWeekEvent[]): void {
     event.stackIndex = laneIndex;
     event.stackOffsetHours = 0;
     activeLanes.push({ laneIndex, endAt: event.endAt });
-    laneCount = Math.max(laneCount, laneIndex + 1);
+    actualLaneCount = Math.max(actualLaneCount, laneIndex + 1);
   }
 
+  const visibleLaneCount = clusterEvents.length > 1 ? Math.min(MAX_VISIBLE_OVERLAP_LANES, Math.max(MIN_OVERLAP_LANES, actualLaneCount)) : actualLaneCount;
+
   for (const event of sortedCluster) {
-    event.laneCount = laneCount;
-    event.stackCount = laneCount;
-    event.compact = event.durationHours < 0.72 || laneCount > 2;
+    const rawLaneIndex = event.laneIndex;
+    const overflowStackIndex = Math.floor(rawLaneIndex / visibleLaneCount);
+    event.laneIndex = rawLaneIndex % visibleLaneCount;
+    event.laneCount = visibleLaneCount;
+    event.stackCount = visibleLaneCount;
+    event.stackIndex = overflowStackIndex;
+    event.stackOffsetHours = overflowStackIndex * OVERFLOW_LANE_STACK_OFFSET_HOURS;
+    event.compact = event.durationHours < 0.42 || actualLaneCount > MIN_OVERLAP_LANES;
   }
 }

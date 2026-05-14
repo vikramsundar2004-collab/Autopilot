@@ -61,6 +61,29 @@ describe("automation shared models", () => {
     expect(recipe.requiresApproval).toBe(true);
   });
 
+  it("preserves recurring payment proposal recipes as approval-first automation", () => {
+    const [recipe] = sanitizeAutomationRecipes([
+      {
+        id: "payment-recipe-1",
+        name: "Recurring invoice review",
+        goal: "Every week, review Gmail invoices and prepare payment proposals only after verification.",
+        schedule: "weekly",
+        sources: ["gmail", "web"],
+        outputKind: "payment_proposal",
+        qualityBar: 99,
+        requiresApproval: false,
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ]);
+
+    expect(recipe.outputKind).toBe("payment_proposal");
+    expect(recipe.schedule).toBe("weekly");
+    expect(recipe.sources).toEqual(["gmail", "web"]);
+    expect(recipe.requiresApproval).toBe(true);
+  });
+
   it("sanitizes automation runs without inventing fake success", () => {
     const [run] = sanitizeAutomationRuns([
       {
@@ -69,6 +92,14 @@ describe("automation shared models", () => {
         recipeName: "Daily AI browser brief",
         state: "needs_review",
         startedAt: 1,
+        queuedAt: 1,
+        idempotencyKey: "recipe-1:1",
+        lock: {
+          recipeId: "recipe-1",
+          runId: "run-lock-1",
+          acquiredAt: 1,
+          idempotencyKey: "recipe-1:1"
+        },
         originatingWorkspace: "coding",
         linkedWorkItemId: "work-1",
         scheduleStatus: "scheduled",
@@ -83,6 +114,8 @@ describe("automation shared models", () => {
 
     expect(run.state).toBe("needs_review");
     expect(run.originatingWorkspace).toBe("coding");
+    expect(run.idempotencyKey).toBe("recipe-1:1");
+    expect(run.lock?.runId).toBe("run-lock-1");
     expect(run.linkedWorkItemId).toBe("work-1");
     expect(run.scheduleStatus).toBe("scheduled");
     expect(run.failureReason).toBe("Quality bar was not met");

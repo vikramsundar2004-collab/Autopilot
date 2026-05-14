@@ -8,7 +8,8 @@ export type ArtifactQualityCheck = {
     | "appropriate_length"
     | "low_source_copy_ratio"
     | "research_sources"
-    | "export_ready";
+    | "export_ready"
+    | "named_email_context";
   label: string;
   passed: boolean;
   detail: string;
@@ -20,6 +21,10 @@ export type ArtifactQualityReport = {
   copyRatio: number;
   sourceCopyRatio: number;
   exportReady: boolean;
+  attempts: number;
+  strictMode: boolean;
+  failedReasonCodes: string[];
+  approveAnywayRequired: boolean;
   checks: ArtifactQualityCheck[];
   passedChecks: ArtifactQualityCheck[];
   failedChecks: ArtifactQualityCheck[];
@@ -34,11 +39,14 @@ export type ArtifactQualityOptions = {
   minWords?: number;
   maxCopyRatio?: number;
   requireSources?: boolean;
+  emailToArtifact?: boolean;
+  attempts?: number;
   regeneration?: ArtifactQualityReport["regeneration"];
 };
 
 const DEFAULT_MIN_WORDS = 120;
 const DEFAULT_MAX_COPY_RATIO = 0.46;
+const HEURISTIC_QUALITY_SCORE_CAP = 92;
 
 export function evaluateDocumentQuality(markdown: string, sourceText: string, options: ArtifactQualityOptions = {}): ArtifactQualityResult {
   const normalizedMarkdown = normalizeWhitespace(markdown);
@@ -48,20 +56,23 @@ export function evaluateDocumentQuality(markdown: string, sourceText: string, op
   const bulletCount = (markdown.match(/^\s*[-*]\s+\S/gmu) ?? []).length;
   const hasKnownBadRestatement =
     /\bwhat autopilot understood\b/iu.test(markdown) ||
+    /\b(ai unavailable|offline placeholder|fallback draft)\b/iu.test(markdown) ||
     /\bautopilot prepared this document from the source email\b/iu.test(markdown) ||
     /\breview the details, ask for changes\b/iu.test(markdown);
   const sourceOnlySentence = normalizeWhitespace(sourceText).slice(0, 220);
   const repeatsSourceOpening =
     sourceOnlySentence.length > 80 && normalizeWhitespace(markdown).toLowerCase().includes(sourceOnlySentence.toLowerCase());
-  const minWords = options.minWords ?? DEFAULT_MIN_WORDS;
-  const maxCopyRatio = options.maxCopyRatio ?? DEFAULT_MAX_COPY_RATIO;
+  const minWords = options.minWords ?? (options.emailToArtifact ? 160 : DEFAULT_MIN_WORDS);
+  const maxCopyRatio = options.maxCopyRatio ?? (options.emailToArtifact ? 0.3 : DEFAULT_MAX_COPY_RATIO);
 
   const checks: ArtifactQualityCheck[] = [
     {
       id: "structure",
       label: "Clear deliverable structure",
-      passed: headingCount >= 3 || (headingCount >= 2 && bulletCount >= 3),
-      detail: "Documents need multiple named sections or a section plus concrete bullets."
+      passed: options.emailToArtifact ? headingCount >= 3 : headingCount >= 3 || (headingCount >= 2 && bulletCount >= 3),
+      detail: options.emailToArtifact
+        ? "Email-generated documents need at least three named sections so they feel like a real deliverable."
+        : "Documents need multiple named sections or a section plus concrete bullets."
     },
     {
       id: "not_source_restatement",
@@ -107,7 +118,14 @@ export function evaluateDocumentQuality(markdown: string, sourceText: string, op
     });
   }
 
-  return buildQualityReport(checks, sourceCopyRatio, options.regeneration);
+  if (options.emailToArtifact) {
+    checks.push(createNamedEmailContextCheck(markdown));
+  }
+
+  return buildQualityReport(checks, sourceCopyRatio, options.regeneration, {
+    attempts: options.attempts,
+    strictMode: options.emailToArtifact
+  });
 }
 
 export function evaluateArtifactQuality(content: ArtifactContent, sourceText: string, options: ArtifactQualityOptions = {}): ArtifactQualityReport {
@@ -115,9 +133,9 @@ export function evaluateArtifactQuality(content: ArtifactContent, sourceText: st
     case "document":
       return evaluateDocumentQuality(content.markdown, sourceText, { ...options, kind: "document" });
     case "slide_deck":
-      return evaluateSlideDeckQuality(content, sourceText, { ...options, kind: "slide_deck", minWords: options.minWords ?? 42 });
+      return evaluateSlideDeckQuality(content, sourceText, { ...options, kind: "slide_deck", minWords: options.minWords ?? (options.emailToArtifact ? 90 : 42) });
     case "website_design":
-      return evaluateWebsiteDesignQuality(content, sourceText, { ...options, kind: "website_design", minWords: options.minWords ?? 32 });
+      return evaluateWebsiteDesignQuality(content, sourceText, { ...options, kind: "website_design", minWords: options.minWords ?? (options.emailToArtifact ? 64 : 32) });
   }
 }
 
@@ -159,7 +177,7 @@ function evaluateSlideDeckQuality(
   const bulletCount = content.slides.reduce((total, slide) => total + slide.bullets.length, 0);
   const weakTitles = content.slides.filter((slide) => /^generated slide|^slide\s+\d+$/iu.test(slide.title.trim())).length;
   const wordCount = countWords(qualityText);
-  const maxCopyRatio = options.maxCopyRatio ?? DEFAULT_MAX_COPY_RATIO;
+  const maxCopyRatio = options.maxCopyRatio ?? (options.emailToArtifact ? 0.3 : DEFAULT_MAX_COPY_RATIO);
 
   const checks: ArtifactQualityCheck[] = [
     {
@@ -204,7 +222,14 @@ function evaluateSlideDeckQuality(
     checks.push(createResearchSourcesCheck(qualityText));
   }
 
-  return buildQualityReport(checks, sourceCopyRatio, options.regeneration);
+  if (options.emailToArtifact) {
+    checks.push(createNamedEmailContextCheck(qualityText));
+  }
+
+  return buildQualityReport(checks, sourceCopyRatio, options.regeneration, {
+    attempts: options.attempts,
+    strictMode: options.emailToArtifact
+  });
 }
 
 function evaluateWebsiteDesignQuality(
@@ -217,14 +242,19 @@ function evaluateWebsiteDesignQuality(
   const sourceCopyRatio = calculateSourceCopyRatio(qualityText, sourceText);
   const sectionNames = content.sections.map((section) => section.name.trim()).filter(Boolean);
   const userFacingCopy = stripHtml(content.html);
-  const maxCopyRatio = options.maxCopyRatio ?? DEFAULT_MAX_COPY_RATIO;
+  const maxCopyRatio = options.maxCopyRatio ?? (options.emailToArtifact ? 0.3 : DEFAULT_MAX_COPY_RATIO);
 
   const checks: ArtifactQualityCheck[] = [
     {
       id: "structure",
       label: "Clear website structure",
-      passed: sectionNames.length >= 2 && /<(main|section|article|header)\b/iu.test(content.html) && /<h1\b/iu.test(content.html),
-      detail: "Website designs need named sections plus semantic HTML with a visible headline."
+      passed:
+        sectionNames.length >= (options.emailToArtifact ? 3 : 2) &&
+        /<(main|section|article|header)\b/iu.test(content.html) &&
+        /<h1\b/iu.test(content.html),
+      detail: options.emailToArtifact
+        ? "Email-generated website designs need at least three named sections plus semantic HTML with a visible headline."
+        : "Website designs need named sections plus semantic HTML with a visible headline."
     },
     {
       id: "not_source_restatement",
@@ -262,28 +292,45 @@ function evaluateWebsiteDesignQuality(
     checks.push(createResearchSourcesCheck(qualityText));
   }
 
-  return buildQualityReport(checks, sourceCopyRatio, options.regeneration);
+  if (options.emailToArtifact) {
+    checks.push(createNamedEmailContextCheck(qualityText));
+  }
+
+  return buildQualityReport(checks, sourceCopyRatio, options.regeneration, {
+    attempts: options.attempts,
+    strictMode: options.emailToArtifact
+  });
 }
 
 function buildQualityReport(
   checks: ArtifactQualityCheck[],
   sourceCopyRatio: number,
-  regeneration: ArtifactQualityReport["regeneration"] = "not_needed"
+  regeneration: ArtifactQualityReport["regeneration"] = "not_needed",
+  options: { attempts?: number; strictMode?: boolean } = {}
 ): ArtifactQualityReport {
   const passedChecks = checks.filter((check) => check.passed);
   const failedChecks = checks.filter((check) => !check.passed);
-  const score = Math.round((passedChecks.length / checks.length) * 100);
+  const rawScore = Math.round((passedChecks.length / checks.length) * 100);
+  const score = failedChecks.length === 0 ? Math.min(HEURISTIC_QUALITY_SCORE_CAP, rawScore) : rawScore;
   const passed = failedChecks.length === 0;
+  const strictMode = Boolean(options.strictMode);
+  const attempts = Number.isInteger(options.attempts) && options.attempts !== undefined ? Math.max(1, options.attempts) : 1;
   return {
     passed,
     score,
     copyRatio: sourceCopyRatio,
     sourceCopyRatio,
     exportReady: passedChecks.some((check) => check.id === "export_ready") && !failedChecks.some((check) => check.id === "export_ready"),
+    attempts,
+    strictMode,
+    failedReasonCodes: failedChecks.map((check) => check.id),
+    approveAnywayRequired: strictMode && failedChecks.length > 0,
     checks,
     passedChecks,
     failedChecks,
-    summary: passed ? `Quality passed at ${score}/100.` : `Quality needs review at ${score}/100.`,
+    summary: passed
+      ? `Quality gate passed at ${score}/100. This is a heuristic readiness score, not a guarantee.`
+      : `Quality needs review at ${score}/100.`,
     regeneration: passed ? regeneration : regeneration === "regenerated" ? "needs_review" : regeneration
   };
 }
@@ -294,6 +341,32 @@ function createResearchSourcesCheck(markdown: string): ArtifactQualityCheck {
     label: "Cited sources for research",
     passed: /\bhttps?:\/\//iu.test(markdown) || /\bSources?\b[\s\S]{0,500}\b[-*]\s+/iu.test(markdown),
     detail: "Research briefs need visible source links or a source list."
+  };
+}
+
+function createNamedEmailContextCheck(value: string): ArtifactQualityCheck {
+  const hasPerson = /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b/u.test(value) || /\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b/iu.test(value);
+  const hasDate =
+    /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}\b/iu.test(value) ||
+    /\bQ[1-4]\b/u.test(value) ||
+    /\b(?:today|tomorrow|next week|this week|date to confirm|deadline to confirm)\b/iu.test(value) ||
+    /\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/u.test(value);
+  const hasDecision =
+    /\b(decision|decide|recommended|recommendation|approve|approval|owner|deadline|next move|next step|action item|open question|deliverable|ship|send|publish)\b/iu.test(
+      value
+    );
+
+  return {
+    id: "named_email_context",
+    label: "Named people, dates, and decisions",
+    passed: hasPerson && hasDate && hasDecision,
+    detail: [
+      hasPerson ? "" : "Add named people or a named organization from the source.",
+      hasDate ? "" : "Add a real date, quarter, deadline, or an explicit date-to-confirm line.",
+      hasDecision ? "" : "Add decisions, owners, next moves, or approval points."
+    ]
+      .filter(Boolean)
+      .join(" ")
   };
 }
 
@@ -325,6 +398,7 @@ function tokenizeForCopyRatio(value: string): string[] {
 function hasRestatementLanguage(value: string): boolean {
   return (
     /\bwhat autopilot understood\b/iu.test(value) ||
+    /\b(ai unavailable|offline placeholder|fallback draft)\b/iu.test(value) ||
     /\bautopilot prepared this\b/iu.test(value) ||
     /\bprepared this document from the source\b/iu.test(value) ||
     /\breview the details, ask for changes\b/iu.test(value)

@@ -1,0 +1,19 @@
+[build]
+  command = "npm run build"
+  publish = "dist/renderer"
+
+[[edge_functions]]
+  function = "ai-router"
+  path = "/api/ai"
+
+[[edge_functions]]
+  function = "ai-health"
+  path = "/api/ai/health"
+
+[[edge_functions]]
+  function = "ai-email-actions"
+  path = "/api/ai/email-actions"
+
+[[edge_functions]]
+  function = "ai-artifact"
+  path = "/api/ai/artifact"

@@ -1,10 +1,14 @@
 node_modules/
 dist/
 release/
+release-build/
+release-package-*/
 coverage/
 playwright-report/
 test-results/
 tmp/
+.tmp-qa/
+supabase/.temp/
 .env
 .env.*
 !.env.example
@@ -12,6 +16,8 @@ env
 env.*
 public/autopilot-config.json
 *.log
+artifacts-*.png
+*-check.png
 .DS_Store
 Thumbs.db
 .gstack/

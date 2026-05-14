@@ -11,9 +11,14 @@
     "build": "npm run build:main && npm run configure:gmail && vite build",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:win": "npm run build && node scripts/package-windows.mjs",
     "dist:mac": "npm run build && electron-builder --mac dmg",
+    "verify:release-config": "node scripts/verify-release-readiness.mjs",
+    "test:packaged-smoke": "node scripts/packaged-app-smoke.mjs",
+    "verify:release": "npm run check && npm test -- --run && npm run build && npm run verify:release-config && npm run test:e2e && npm run dist:win && npm run test:packaged-smoke",
     "test": "vitest run",
+    "test:coding-evals": "vitest run tests/codingAgentPlan.test.ts tests/codingWorkspace.test.ts tests/codingWorkspaceUi.test.ts",
+    "test:coding-deep-qa": "vitest run tests/codingWorkspace.test.ts",
     "test:e2e": "npm run build && playwright test -c playwright.config.ts",
     "check": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.json --noEmit"
   },
@@ -87,8 +92,10 @@
     }
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
+    "monaco-editor": "^0.55.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -102,6 +109,7 @@
     "cross-env": "^7.0.3",
     "electron": "^41.3.0",
     "electron-builder": "^26.8.1",
+    "supabase": "^2.98.2",
     "typescript": "^5.9.3",
     "vite": "^6.0.7",
     "vitest": "^4.0.15",

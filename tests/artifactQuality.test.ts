@@ -44,7 +44,8 @@ Autopilot should focus on trusted work execution rather than another tab organiz
     const result = evaluateDocumentQuality(markdown, "Summarize AI browsers", { minWords: 70, requireSources: true });
 
     expect(result.passed).toBe(true);
-    expect(result.score).toBe(100);
+    expect(result.score).toBeLessThan(100);
+    expect(result.summary).toContain("not a guarantee");
   });
 
   it("quality-checks slide decks before export", () => {
@@ -100,5 +101,85 @@ Autopilot should focus on trusted work execution rather than another tab organiz
     expect(result.passed).toBe(false);
     expect(result.failedChecks.map((check) => check.id)).toContain("not_source_restatement");
     expect(result.exportReady).toBe(true);
+  });
+
+  it("applies a stricter email-to-artifact bar with named context", () => {
+    const result = evaluateArtifactQuality(
+      {
+        kind: "document",
+        markdown: `# Acme Q4 Leadership Brief
+
+## Executive Summary
+Maya Chen needs a leadership-ready Acme update by Dec 13. The brief should help Jordan Lee and Priya Shah decide whether the pilot expands into the enterprise tier and which renewal risks need immediate follow-up before the customer story is shared outside the team.
+
+## Key Questions
+- Decision needed: approve the enterprise-tier expansion recommendation or keep the pilot in its current scope.
+- Owner needed: assign renewal-risk follow-up to Jordan Lee or another account owner before Friday.
+- Date to confirm: final client-send timing after the Dec 13 leadership review.
+
+## Recommended Next Moves
+- Prepare a slide-ready customer proof section with wins, renewal blockers, and one recommendation.
+- Separate what can be sent to Acme from internal-only risk notes.
+- Keep final sharing behind user approval until the decision owner confirms the message.
+
+## Approval Checklist
+- Maya Chen confirms the narrative.
+- Priya Shah checks the renewal-risk language.
+- Jordan Lee approves the next customer-facing step.
+
+## Client-Ready Output Shape
+The artifact should become a leadership deck, not a transcript of the source message. The first slide should name the Acme decision, the middle slides should separate wins from risks, and the closing slide should make the approval path easy for Maya Chen to use in the Friday meeting. Keep any internal uncertainty visible as open questions instead of hiding it in generic copy.`,
+      },
+      "From: Maya Chen <maya@acme.example>\nSubject: Q4 customer update\nBody: Please make a Q4 deck by Dec 13 for Jordan and Priya. We need a decision on enterprise expansion and renewal-risk owner.",
+      { emailToArtifact: true }
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.sourceCopyRatio).toBeLessThanOrEqual(0.3);
+    expect(result.strictMode).toBe(true);
+    expect(result.attempts).toBe(1);
+    expect(result.approveAnywayRequired).toBe(false);
+  });
+
+  it("rejects email-to-artifact drafts that omit people, dates, or decisions", () => {
+    const result = evaluateArtifactQuality(
+      {
+        kind: "document",
+        markdown: `# Customer Update
+
+## Summary
+The email asks for a customer update. The requested work should be prepared in a useful way.
+
+## Notes
+- Include the main request.
+- Add next steps.
+- Make it ready to review.`,
+      },
+      "From: Maya Chen <maya@acme.example>\nSubject: Q4 customer update\nBody: Please make a Q4 deck by Dec 13 for Jordan and Priya. We need a decision on enterprise expansion and renewal-risk owner.",
+      { emailToArtifact: true, minWords: 20 }
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.failedChecks.map((check) => check.id)).toContain("named_email_context");
+    expect(result.failedReasonCodes).toContain("named_email_context");
+    expect(result.strictMode).toBe(true);
+    expect(result.approveAnywayRequired).toBe(true);
+  });
+
+  it("does not let offline fallback text pass as finished AI work", () => {
+    const result = evaluateArtifactQuality(
+      {
+        kind: "slide_deck",
+        slides: [
+          { id: "1", title: "AI unavailable: Q4 update", bullets: ["Offline placeholder. Regenerate with the AI backend before presenting.", "Date to confirm."] },
+          { id: "2", title: "Decision needed", bullets: ["Owner: Maya Chen.", "Do not send this fallback."] },
+          { id: "3", title: "Next step", bullets: ["Reconnect AI and regenerate."] }
+        ]
+      },
+      "Please create a deck for Maya Chen by Dec 13."
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.failedChecks.map((check) => check.id)).toContain("not_source_restatement");
   });
 });

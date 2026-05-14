@@ -65,7 +65,7 @@ export type ProductivityTaskState = "todo" | "waiting" | "snoozed" | "done";
 
 export type ProductivityTaskPriority = "high" | "medium" | "low";
 
-export type ProductivityDraftKind = "document" | "slide_deck" | "website_design";
+export type ProductivityDraftKind = "reply" | "document" | "slide_deck" | "website_design";
 
 export type ProductivityDraftStatus = "draft" | "needs_review" | "approved";
 
@@ -98,7 +98,7 @@ export function sanitizeProductivitySyncSourceIds(
 }
 
 export type ProductivityTaskSource = {
-  provider: "gmail" | "google-calendar" | "slack" | "outlook" | "manual" | "web" | "coding";
+  provider: "gmail" | "google-calendar" | "slack" | "chat" | "outlook" | "manual" | "web" | "coding";
   label: string;
   messageId?: string;
   url?: string;
@@ -135,6 +135,9 @@ export type ProductivityTask = {
   completedAt?: number;
 };
 
+export type ProductivityTaskInput = Partial<Pick<ProductivityTask, "id" | "state" | "priority" | "createdAt" | "updatedAt" | "snoozedUntil" | "completedAt">> &
+  Pick<ProductivityTask, "title" | "context" | "source">;
+
 export type ProductivityDraft = {
   id: string;
   title: string;
@@ -156,6 +159,11 @@ export type ProductivityTaskSyncResult = {
   model?: string;
   reason?: string;
   sourceResults?: ProductivitySourceSyncResult[];
+};
+
+export type ProductivityTaskSyncRequest = {
+  sourceIds?: ProductivitySyncSourceId[];
+  blockedEmailSenders?: string[];
 };
 
 export type ProductivitySourceSyncResult = {
@@ -281,6 +289,7 @@ function sanitizeTaskSource(value: unknown): ProductivityTaskSource {
     source.provider === "gmail" ||
     source.provider === "google-calendar" ||
     source.provider === "slack" ||
+    source.provider === "chat" ||
     source.provider === "outlook" ||
     source.provider === "web" ||
     source.provider === "coding"
@@ -350,7 +359,7 @@ function sanitizeDraftStatus(value: unknown): ProductivityDraftStatus {
 }
 
 function sanitizeDraftKind(value: unknown): ProductivityDraftKind {
-  return value === "slide_deck" || value === "website_design" ? value : "document";
+  return value === "reply" || value === "slide_deck" || value === "website_design" ? value : "document";
 }
 
 function sanitizeTaskPriority(value: unknown): ProductivityTaskPriority {

@@ -8,13 +8,20 @@ import path from "node:path";
 import { mapWithConcurrency } from "../shared/async.js";
 import {
   EMAIL_ACTION_ANALYSIS_CANDIDATE_LIMIT,
+  GOOGLE_CALENDAR_EVENTS_SCOPE,
+  GOOGLE_CALENDAR_READONLY_SCOPE,
   GOOGLE_SYNC_SCOPE,
+  GOOGLE_GMAIL_MODIFY_SCOPE,
+  GOOGLE_GMAIL_READONLY_SCOPE,
+  classifyEmailReplyWorthiness,
   getEmailActionAnalysisCandidates,
   getGmailMaxResults,
   getGoogleConnectionCapabilities,
   getGrantedGoogleScopes,
   parseEmailSender,
   type EmailActionAnalysisResult,
+  type EmailOrganizationAction,
+  type GmailOrganizationResult,
   type EmailActionSuggestion,
   type EmailConnectResult,
   type EmailConnectionStatus,
@@ -22,6 +29,7 @@ import {
   type EmailProviderId,
   type EmailSyncResult
 } from "../shared/email.js";
+import { AiGateway } from "./aiGateway.js";
 
 type GoogleAuthorizationControls = {
   signal: AbortSignal;
@@ -57,6 +65,15 @@ type GmailMessageResponse = {
   payload?: GmailMessagePart;
 };
 
+type GmailLabelResponse = {
+  id?: string;
+  name?: string;
+};
+
+type GmailLabelsResponse = {
+  labels?: GmailLabelResponse[];
+};
+
 type GmailMessagePart = {
   mimeType?: string;
   headers?: Array<{ name: string; value: string }>;
@@ -86,17 +103,6 @@ type EmailInboxCacheFile = {
   messages: EmailMessageSummary[];
 };
 
-type OpenAiChatCompletionsResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-  error?: {
-    message?: string;
-  };
-};
-
 type OpenAiActionPayload = {
   actions?: unknown[];
 };
@@ -112,8 +118,6 @@ const DEFAULT_GOOGLE_SIGN_IN_TIMEOUT_MS = 1000 * 60 * 5;
 const DEFAULT_GMAIL_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_GMAIL_RETRY_ATTEMPTS = 2;
 const DEFAULT_GMAIL_MESSAGE_FETCH_CONCURRENCY = 4;
-const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
-const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_OPENAI_EMAIL_MESSAGES = 16;
 
@@ -152,18 +156,6 @@ function getGmailMessageFetchConcurrency(): number {
 
 function getConfiguredGmailMaxResults(): number {
   return getGmailMaxResults(process.env.AUTOPILOT_GMAIL_MAX_RESULTS);
-}
-
-function getOpenAiApiKey(): string {
-  return (process.env.AUTOPILOT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || "").trim();
-}
-
-function getOpenAiModel(): string {
-  return (process.env.AUTOPILOT_OPENAI_MODEL || DEFAULT_OPENAI_MODEL).trim();
-}
-
-function getOpenAiBaseUrl(): string {
-  return (process.env.AUTOPILOT_OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim().replace(/\/+$/u, "");
 }
 
 function getOpenAiRequestTimeoutMs(): number {
@@ -410,6 +402,27 @@ async function getJson<T>(url: string, accessToken: string): Promise<T> {
   return body;
 }
 
+async function gmailJson<T>(url: string, accessToken: string, init: RequestInit): Promise<T> {
+  const response = await fetchWithRetry(url, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: "application/json",
+      ...(init.body ? { "content-type": "application/json" } : {}),
+      ...(init.headers ?? {})
+    }
+  });
+  if (response.status === 204) {
+    return {} as T;
+  }
+  const body = (await response.json()) as T & { error?: { message?: string } };
+  if (!response.ok) {
+    throw new Error(body.error?.message || `Gmail request failed with status ${response.status}`);
+  }
+
+  return body;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -613,27 +626,25 @@ function cleanOpenAiRequestedOutput(value: unknown): EmailActionSuggestion["requ
     : undefined;
 }
 
+function cleanOpenAiPermission(value: unknown): EmailActionSuggestion["permission"] {
+  return value === "read_only" ||
+    value === "organize_with_user_command" ||
+    value === "draft_locally" ||
+    value === "requires_send_confirmation"
+    ? value
+    : undefined;
+}
+
 function cleanOpenAiBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
-function parseOpenAiActionSuggestions(content: string, messages: EmailMessageSummary[]): EmailActionSuggestion[] {
-  let parsed: OpenAiActionPayload;
-  try {
-    parsed = JSON.parse(content) as OpenAiActionPayload;
-  } catch {
-    return [];
-  }
-
-  if (!Array.isArray(parsed.actions)) {
-    return [];
-  }
-
+function parseOpenAiActionSuggestionRecords(rawActions: unknown[], messages: EmailMessageSummary[]): EmailActionSuggestion[] {
   const messageIds = new Set(messages.map((message) => message.id));
   const suggestions: EmailActionSuggestion[] = [];
   const seenKeys = new Set<string>();
 
-  for (const rawAction of parsed.actions) {
+  for (const rawAction of rawActions) {
     if (!rawAction || typeof rawAction !== "object") {
       continue;
     }
@@ -677,7 +688,8 @@ function parseOpenAiActionSuggestions(content: string, messages: EmailMessageSum
       recommendedAssistant: cleanOpenAiRecommendedAssistant(action.recommendedAssistant),
       requestedOutput: cleanOpenAiRequestedOutput(action.requestedOutput),
       reason,
-      draftSuggested: cleanOpenAiBoolean(action.draftSuggested)
+      draftSuggested: cleanOpenAiBoolean(action.draftSuggested),
+      permission: cleanOpenAiPermission(action.permission)
     });
   }
 
@@ -687,6 +699,17 @@ function parseOpenAiActionSuggestions(content: string, messages: EmailMessageSum
     .slice(0, 10);
 }
 
+function parseOpenAiActionSuggestions(content: string, messages: EmailMessageSummary[]): EmailActionSuggestion[] {
+  let parsed: OpenAiActionPayload;
+  try {
+    parsed = JSON.parse(content) as OpenAiActionPayload;
+  } catch {
+    return [];
+  }
+
+  return Array.isArray(parsed.actions) ? parseOpenAiActionSuggestionRecords(parsed.actions, messages) : [];
+}
+
 function createLocalEmailActionSuggestions(messages: EmailMessageSummary[]): EmailActionSuggestion[] {
   const candidates = getEmailActionAnalysisCandidates(messages, Math.min(24, messages.length));
   const suggestions: EmailActionSuggestion[] = [];
@@ -694,31 +717,43 @@ function createLocalEmailActionSuggestions(messages: EmailMessageSummary[]): Ema
 
   for (const message of candidates) {
     const text = `${message.from} ${message.fromEmail} ${message.subject} ${message.snippet} ${message.actionText ?? ""}`.toLowerCase();
-    const isMarketing =
-      /\b(newsletter|unsubscribe|promotion|sale|discount|receipt|digest|weekly update|advertisement)\b/u.test(text) &&
-      !/\b(failed|failure|security|urgent|deadline|due|please|can you|could you|reply|respond|review|schedule)\b/u.test(text);
-    if (isMarketing) {
+    const replyDecision = classifyEmailReplyWorthiness(message);
+    if (replyDecision.status === "skip") {
       continue;
     }
 
     let title = "";
     let priority: EmailActionSuggestion["priority"] = "medium";
+    let recommendedAssistant: EmailActionSuggestion["recommendedAssistant"] = replyDecision.recommendedAssistant ?? "productivity";
+    let requestedOutput: EmailActionSuggestion["requestedOutput"] = replyDecision.requestedOutput ?? "reply";
+    let draftSuggested = true;
     if (/\b(github|gitlab|workflow|ci|build|test|failed|failure|blocked|error)\b/u.test(text)) {
       title = `Review and fix: ${message.subject}`;
       priority = "high";
+      recommendedAssistant = "coding";
+      requestedOutput = "code_change";
     } else if (/\b(security alert|password reset|account|login|storage|billing)\b/u.test(text)) {
       title = `Review account alert: ${message.subject}`;
       priority = "high";
     } else if (/\b(slide|deck|presentation)\b/u.test(text)) {
       title = `Prepare slides for: ${message.subject}`;
+      recommendedAssistant = "design";
+      requestedOutput = "slide_deck";
     } else if (/\b(document|report|proposal|resume|write up|write-up)\b/u.test(text)) {
       title = `Prepare document for: ${message.subject}`;
+      recommendedAssistant = "design";
+      requestedOutput = "document";
     } else if (/\b(schedule|meeting|interview|call|calendar|available|availability)\b/u.test(text)) {
       title = `Schedule or confirm: ${message.subject}`;
+      requestedOutput = "scheduling";
     } else if (/\b(reply|respond|follow up|follow-up|please|can you|could you|\?)\b/u.test(text)) {
       title = `Reply to ${message.from || "sender"} about: ${message.subject}`;
     } else if (message.unread && /\b(urgent|deadline|due|today|tomorrow|action required|needs action|assignment|homework)\b/u.test(text)) {
       title = `Follow up on: ${message.subject}`;
+    } else if (replyDecision.status === "reply_worthy") {
+      title = `Reply to ${message.from || "sender"} about: ${message.subject}`;
+    } else {
+      draftSuggested = false;
     }
 
     const cleanedTitle = title.replace(/\s+/g, " ").trim().slice(0, 180);
@@ -737,25 +772,29 @@ function createLocalEmailActionSuggestions(messages: EmailMessageSummary[]): Ema
       title: cleanedTitle,
       context,
       sourceMessageId: message.id,
-      priority
+      priority,
+      recommendedAssistant,
+      requestedOutput,
+      draftSuggested,
+      permission: "draft_locally"
     });
   }
 
   return suggestions.slice(0, 14);
 }
 
-async function fetchOpenAiActionSuggestions(messages: EmailMessageSummary[]): Promise<EmailActionAnalysisResult> {
-  const apiKey = getOpenAiApiKey();
-  const model = getOpenAiModel();
+async function fetchOpenAiActionSuggestions(aiGateway: AiGateway, messages: EmailMessageSummary[]): Promise<EmailActionAnalysisResult> {
+  const model = aiGateway.getReadiness().defaultModel;
   const candidates = getEmailActionAnalysisCandidates(messages, EMAIL_ACTION_ANALYSIS_CANDIDATE_LIMIT);
-  if (!apiKey) {
+  const readiness = aiGateway.getReadiness();
+  if (!readiness.hasEmailActionsEndpoint && !readiness.hasProxy && !readiness.hasLocalDevelopmentKey) {
     const localCandidates = createLocalEmailActionSuggestions(messages);
     return {
       success: true,
       configured: false,
       actions: [],
       model,
-      reason: `OpenAI email analysis is not configured, so Autopilot did not add guessed email tasks to the Action Queue. ${localCandidates.length} possible emails stay in the Inbox for review.`
+      reason: `AI email analysis is not configured, so Autopilot did not add guessed email tasks to the Action Queue. ${localCandidates.length} possible emails stay in the Inbox for review.`
     };
   }
 
@@ -768,69 +807,57 @@ async function fetchOpenAiActionSuggestions(messages: EmailMessageSummary[]): Pr
     };
   }
 
-  const endpoint = new URL("chat/completions", `${getOpenAiBaseUrl()}/`);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), getOpenAiRequestTimeoutMs());
-
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              "You turn inbox emails into a concise, high-precision work queue. Return JSON only as {\"actions\":[{\"title\":\"specific next action\",\"summary\":\"plain-English summary of what is needed\",\"context\":\"sender - subject plus the useful detail\",\"sourceMessageId\":\"email id\",\"priority\":\"high|medium|low\",\"confidence\":0.0,\"recommendedAssistant\":\"productivity|design|coding|automation\",\"requestedOutput\":\"reply|document|slide_deck|website_design|code_change|research_brief|scheduling|task\",\"reason\":\"why this is a real task\",\"draftSuggested\":true}]}. Only include real user work. Exclude newsletters, generic FYI, marketing, receipts, alerts without required response, and anything below 0.55 confidence."
-          },
-          {
-            role: "user",
-            content: `Read these ranked Gmail candidates and extract only the exact tasks the user or Autopilot should handle. Preserve the sourceMessageId for every task. If there are no real user actions, return {"actions":[]}.\n\n${buildOpenAiEmailDigest(candidates)}`
-          }
-        ]
-      }),
-      signal: controller.signal
+  if (readiness.hasEmailActionsEndpoint) {
+    const endpointResult = await aiGateway.analyzeEmailActions({
+      messages: candidates,
+      task: "email_triage",
+      timeoutMs: getOpenAiRequestTimeoutMs()
     });
-    const body = (await response.json()) as OpenAiChatCompletionsResponse;
-    if (!response.ok) {
+    if (endpointResult.success) {
+      return {
+        success: true,
+        configured: true,
+        actions: parseOpenAiActionSuggestionRecords(endpointResult.actions, candidates),
+        model: endpointResult.model
+      };
+    }
+
+    if (!readiness.hasProxy && !readiness.hasLocalDevelopmentKey) {
       return {
         success: false,
         configured: true,
         actions: [],
-        model,
-        reason: body.error?.message || `OpenAI request failed with status ${response.status}.`
+        model: endpointResult.model,
+        reason: endpointResult.reason || "Supabase email action analysis failed."
       };
     }
+  }
 
-    const content = body.choices?.[0]?.message?.content ?? "";
-    return {
-      success: true,
-      configured: true,
-      actions: parseOpenAiActionSuggestions(content, candidates),
-      model
-    };
-  } catch (error) {
+  const result = await aiGateway.generateText({
+    task: "email_triage",
+    responseFormat: "json_object",
+    timeoutMs: getOpenAiRequestTimeoutMs(),
+    instructions:
+      "You turn inbox emails into a concise, high-precision work queue. Return JSON only as {\"actions\":[{\"title\":\"specific next action\",\"summary\":\"plain-English summary of what is needed\",\"context\":\"sender - subject plus the useful detail\",\"sourceMessageId\":\"email id\",\"priority\":\"high|medium|low\",\"confidence\":0.0,\"recommendedAssistant\":\"productivity|design|coding|automation\",\"requestedOutput\":\"reply|document|slide_deck|website_design|code_change|research_brief|scheduling|task\",\"reason\":\"why this is a real task\",\"draftSuggested\":true,\"permission\":\"read_only|organize_with_user_command|draft_locally|requires_send_confirmation\"}]}. Only include real user work. Exclude newsletters, generic FYI, marketing, receipts, verification emails, alerts without required response, and anything below 0.55 confidence. Default to requestedOutput=reply and recommendedAssistant=productivity for ordinary follow-ups. Only choose document, slide_deck, website_design, code_change, or research_brief when the email explicitly asks for that deliverable. Do not turn a long email into a document just because it is detailed. Never recommend sending without explicit user confirmation.",
+    prompt: `Read these ranked Gmail candidates and extract only the exact tasks the user or Autopilot should handle. Preserve the sourceMessageId for every task. If there are no real user actions, return {"actions":[]}.\n\n${buildOpenAiEmailDigest(candidates)}`
+  });
+
+  if (!result.success) {
     return {
       success: false,
-      configured: true,
+      configured: readiness.hasProxy || readiness.hasLocalDevelopmentKey,
       actions: [],
-      model,
-      reason:
-        error instanceof Error && error.name === "AbortError"
-          ? `OpenAI email analysis timed out after ${Math.round(getOpenAiRequestTimeoutMs() / 1000)} seconds.`
-          : error instanceof Error
-            ? error.message
-            : "OpenAI email analysis failed."
+      model: result.model,
+      reason: result.reason || "AI email analysis failed."
     };
-  } finally {
-    clearTimeout(timeout);
   }
+
+  return {
+    success: true,
+    configured: true,
+    actions: parseOpenAiActionSuggestions(result.outputText, candidates),
+    model: result.model
+  };
 }
 
 function toMessageSummary(message: GmailMessageResponse): EmailMessageSummary | null {
@@ -861,7 +888,8 @@ function toMessageSummary(message: GmailMessageResponse): EmailMessageSummary | 
 export class EmailService {
   constructor(
     private readonly getAccountsPath = () => path.join(app.getPath("userData"), "email-accounts.json"),
-    private readonly getCachePath = () => path.join(app.getPath("userData"), "email-inbox.json")
+    private readonly getCachePath = () => path.join(app.getPath("userData"), "email-inbox.json"),
+    private readonly aiGateway = new AiGateway()
   ) {}
 
   getStatus(): EmailConnectionStatus {
@@ -979,7 +1007,93 @@ export class EmailService {
   }
 
   async analyzeActionItems(messages: EmailMessageSummary[]): Promise<EmailActionAnalysisResult> {
-    return fetchOpenAiActionSuggestions(messages);
+    return fetchOpenAiActionSuggestions(this.aiGateway, messages);
+  }
+
+  async applyOrganizationActions(actions: EmailOrganizationAction[]): Promise<GmailOrganizationResult> {
+    const token = await this.getGoogleAccessToken([GOOGLE_GMAIL_MODIFY_SCOPE]);
+    if (!token.success) {
+      return {
+        success: false,
+        appliedCount: 0,
+        skippedCount: actions.length,
+        reason: token.reason,
+        details: actions.map((action) => ({
+          messageId: action.messageId,
+          action: action.kind,
+          success: false,
+          reason: token.reason
+        }))
+      };
+    }
+
+    const details: GmailOrganizationResult["details"] = [];
+    for (const action of actions) {
+      try {
+        if (action.requiresUserCommand !== true) {
+          details.push({
+            messageId: action.messageId,
+            action: action.kind,
+            success: false,
+            reason: "Gmail organization requires an explicit user command before Autopilot changes mail."
+          });
+          continue;
+        }
+        if (!action.messageId || typeof action.messageId !== "string") {
+          details.push({
+            messageId: "",
+            action: action.kind,
+            success: false,
+            reason: "Choose a Gmail message before applying an organization action."
+          });
+          continue;
+        }
+
+        const mutation = await this.buildGmailOrganizationMutation(token.accessToken, action);
+        if (!mutation.supported) {
+          details.push({
+            messageId: action.messageId,
+            action: action.kind,
+            success: false,
+            reason: mutation.reason
+          });
+          continue;
+        }
+
+        await gmailJson<unknown>(
+          `${GMAIL_API_BASE}/messages/${encodeURIComponent(action.messageId)}/modify`,
+          token.accessToken,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              addLabelIds: mutation.addLabelIds,
+              removeLabelIds: mutation.removeLabelIds
+            })
+          }
+        );
+        details.push({
+          messageId: action.messageId,
+          action: action.kind,
+          success: true
+        });
+      } catch (error) {
+        details.push({
+          messageId: action.messageId,
+          action: action.kind,
+          success: false,
+          reason: error instanceof Error ? error.message : "Gmail organization action failed."
+        });
+      }
+    }
+
+    const appliedCount = details.filter((detail) => detail.success).length;
+    return {
+      success: appliedCount > 0 || actions.length === 0,
+      appliedCount,
+      skippedCount: details.length - appliedCount,
+      reason: appliedCount === actions.length ? undefined : "Some Gmail organization actions need review.",
+      details
+    };
   }
 
   async syncInbox(): Promise<EmailSyncResult> {
@@ -1035,16 +1149,31 @@ export class EmailService {
     if (!account) {
       return {
         success: false,
-        reason: "Connect Google before syncing Calendar."
+        reason: "Connect Google before using this Google workspace action."
       };
     }
 
     const grantedScopes = new Set(getGrantedGoogleScopes(account.scope));
     const missingScopes = requiredScopes.filter((scope) => !grantedScopes.has(scope));
     if (missingScopes.length > 0) {
+      const readableScopes = missingScopes.map((scope) => {
+        if (scope === GOOGLE_GMAIL_MODIFY_SCOPE) {
+          return "Gmail modify";
+        }
+        if (scope === GOOGLE_CALENDAR_EVENTS_SCOPE) {
+          return "Calendar write";
+        }
+        if (scope === GOOGLE_CALENDAR_READONLY_SCOPE) {
+          return "Calendar read";
+        }
+        if (scope === GOOGLE_GMAIL_READONLY_SCOPE) {
+          return "Gmail read";
+        }
+        return scope;
+      });
       return {
         success: false,
-        reason: "Reconnect Google from Productivity so Autopilot can read Calendar events."
+        reason: `Reconnect Google from Productivity and grant ${readableScopes.join(", ")} access. Autopilot will not pretend this action worked without that scope.`
       };
     }
 
@@ -1067,6 +1196,66 @@ export class EmailService {
     this.writeAccounts([]);
     this.writeCache([]);
     return this.getStatus();
+  }
+
+  private async buildGmailOrganizationMutation(
+    accessToken: string,
+    action: EmailOrganizationAction
+  ): Promise<{ supported: true; addLabelIds: string[]; removeLabelIds: string[] } | { supported: false; reason: string }> {
+    switch (action.kind) {
+      case "archive":
+        return { supported: true, addLabelIds: [], removeLabelIds: ["INBOX"] };
+      case "mark_read":
+        return { supported: true, addLabelIds: [], removeLabelIds: ["UNREAD"] };
+      case "mark_unread":
+        return { supported: true, addLabelIds: ["UNREAD"], removeLabelIds: [] };
+      case "star":
+        return { supported: true, addLabelIds: ["STARRED"], removeLabelIds: [] };
+      case "unstar":
+        return { supported: true, addLabelIds: [], removeLabelIds: ["STARRED"] };
+      case "label": {
+        const labelId = await this.getOrCreateGmailLabelId(accessToken, action.label);
+        return { supported: true, addLabelIds: [labelId], removeLabelIds: [] };
+      }
+      case "unlabel": {
+        const labelId = await this.getOrCreateGmailLabelId(accessToken, action.label);
+        return { supported: true, addLabelIds: [], removeLabelIds: [labelId] };
+      }
+      case "move": {
+        const labelId = await this.getOrCreateGmailLabelId(accessToken, action.label);
+        return { supported: true, addLabelIds: [labelId], removeLabelIds: ["INBOX"] };
+      }
+      case "snooze": {
+        const labelId = await this.getOrCreateGmailLabelId(accessToken, action.label ?? "Autopilot/Snoozed");
+        return { supported: true, addLabelIds: [labelId], removeLabelIds: ["INBOX"] };
+      }
+    }
+  }
+
+  private async getOrCreateGmailLabelId(accessToken: string, label: string | undefined): Promise<string> {
+    const cleanLabel = label?.replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!cleanLabel) {
+      throw new Error("Choose a Gmail label before applying that organization action.");
+    }
+
+    const labels = await getJson<GmailLabelsResponse>(`${GMAIL_API_BASE}/labels`, accessToken);
+    const existing = (labels.labels ?? []).find((candidate) => candidate.name?.toLowerCase() === cleanLabel.toLowerCase());
+    if (existing?.id) {
+      return existing.id;
+    }
+
+    const created = await gmailJson<GmailLabelResponse>(`${GMAIL_API_BASE}/labels`, accessToken, {
+      method: "POST",
+      body: JSON.stringify({
+        name: cleanLabel,
+        labelListVisibility: "labelShow",
+        messageListVisibility: "show"
+      })
+    });
+    if (!created.id) {
+      throw new Error("Gmail created the label but did not return a label id.");
+    }
+    return created.id;
   }
 
   private async getValidAccessToken(account: StoredEmailAccount): Promise<string> {

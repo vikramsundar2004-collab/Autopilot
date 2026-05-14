@@ -161,7 +161,7 @@ function getStatusLabel(status: ProactiveWorkStatus): string {
   }
 }
 
-function getReason(item: WorkItem, assignments: WorkAssignment[], status: ProactiveWorkStatus, permission: WorkItemPermissionLevel): string {
+function getReason(item: WorkItem, _assignments: WorkAssignment[], status: ProactiveWorkStatus, permission: WorkItemPermissionLevel): string {
   if (status === "needs_review") {
     return needsRouteReview(item) ? getRouteReviewReason(item) : "Autopilot has prepared output or a handoff; the next step is human review.";
   }

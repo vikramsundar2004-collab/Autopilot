@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const electronMock = vi.hoisted(() => {
   type Handler = (...args: unknown[]) => void;
@@ -134,6 +134,12 @@ vi.mock("electron", () => ({
 
 const { TabController } = await import("../src/main/tabs");
 
+beforeEach(() => {
+  electronMock.shellOpenExternal.mockClear();
+  electronMock.onBeforeRequest.mockClear();
+  electronMock.onHeadersReceived.mockClear();
+});
+
 function createFakeMainWindow() {
   const host = {
     children: [] as unknown[],
@@ -154,9 +160,18 @@ function createFakeMainWindow() {
   const window = new electronMock.TestEmitter() as InstanceType<typeof electronMock.TestEmitter> & {
     contentView: typeof host;
     webContents: typeof webContents;
+    isDestroyed: () => boolean;
+    isFullScreen: () => boolean;
+    setFullScreen: ReturnType<typeof vi.fn>;
   };
   window.contentView = host;
   window.webContents = webContents;
+  let isFullScreen = false;
+  window.isDestroyed = () => false;
+  window.isFullScreen = () => isFullScreen;
+  window.setFullScreen = vi.fn((enabled: boolean) => {
+    isFullScreen = enabled;
+  });
 
   return { host, webContents, window };
 }
@@ -188,6 +203,203 @@ describe("TabController browser view attachment", () => {
 
     webContents.emit("did-finish-load");
     expect(host.children).toHaveLength(1);
+
+    window.emit("closed");
+  });
+
+  it("turns Supabase localhost auth fallback redirects into an Autopilot account notice", () => {
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never);
+
+    controller.createTab("https://ctvxwmmclsfxortzmkeq.supabase.co/auth/v1/verify?token=test&type=signup");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    const event = { preventDefault: vi.fn() };
+    activeView.webContents.emit("will-navigate", event, "http://localhost:3000/");
+
+    const activeTab = controller.getSnapshot().tabs[0];
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(decodeURIComponent(activeTab.url)).toContain('data-autopilot-page="account-auth-complete"');
+    expect(activeTab.navigationError).toBeUndefined();
+
+    window.emit("closed");
+  });
+
+  it("keeps catching Supabase localhost fallback after Chromium swaps to its error page", async () => {
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never);
+
+    controller.createTab("https://ctvxwmmclsfxortzmkeq.supabase.co/auth/v1/verify?token=test&type=magiclink");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    await activeView.webContents.loadURL("chrome-error://chromewebdata/");
+    const event = { preventDefault: vi.fn() };
+    activeView.webContents.emit("will-navigate", event, "http://localhost:3000/");
+
+    const activeTab = controller.getSnapshot().tabs[0];
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(decodeURIComponent(activeTab.url)).toContain('data-autopilot-page="account-auth-complete"');
+    expect(activeTab.navigationError).toBeUndefined();
+
+    window.emit("closed");
+  });
+
+  it("hands Autopilot account callback URLs to the account callback handler", () => {
+    const handleAccountCallbackUrl = vi.fn();
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never, handleAccountCallbackUrl);
+
+    controller.createTab("https://ctvxwmmclsfxortzmkeq.supabase.co/auth/v1/verify?token=test&type=magiclink");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    const event = { preventDefault: vi.fn() };
+    const callbackUrl = "autopilot://auth/callback#access_token=access-token&refresh_token=refresh-token";
+    activeView.webContents.emit("will-navigate", event, callbackUrl);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(handleAccountCallbackUrl).toHaveBeenCalledWith(callbackUrl);
+    expect(controller.getSnapshot().tabs[0].url).toContain("supabase.co/auth/v1/verify");
+
+    window.emit("closed");
+  });
+
+  it("does not hijack normal localhost navigation outside Supabase auth", () => {
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never);
+
+    controller.createTab("https://example.com");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    const event = { preventDefault: vi.fn() };
+    activeView.webContents.emit("will-navigate", event, "http://localhost:3000/");
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+
+    window.emit("closed");
+  });
+
+  it("opens PDF popups as Autopilot tabs instead of the system browser", () => {
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never);
+
+    controller.createTab("https://example.com");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    const windowOpenHandler = activeView.webContents.setWindowOpenHandler.mock.calls[0]?.[0] as
+      | ((details: { url: string }) => { action: string })
+      | undefined;
+    expect(windowOpenHandler).toBeTypeOf("function");
+
+    const result = windowOpenHandler?.({ url: "https://example.com/report.pdf" });
+
+    expect(result).toEqual({ action: "deny" });
+    expect(electronMock.shellOpenExternal).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().tabs.map((tab) => tab.url)).toContain("https://example.com/report.pdf");
+
+    window.emit("closed");
+  });
+
+  it("moves clicked PDF navigations into a new Autopilot tab", () => {
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never);
+
+    controller.createTab("https://example.com");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    const event = { preventDefault: vi.fn() };
+    activeView.webContents.emit("will-navigate", event, "https://example.com/syllabus.pdf");
+
+    const snapshot = controller.getSnapshot();
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(electronMock.shellOpenExternal).not.toHaveBeenCalled();
+    expect(snapshot.tabs).toHaveLength(2);
+    expect(snapshot.activeTabId).toBe(snapshot.tabs[1].id);
+    expect(snapshot.tabs[1].url).toBe("https://example.com/syllabus.pdf");
+
+    window.emit("closed");
+  });
+
+  it("routes PDF responses without a .pdf URL into an Autopilot tab", async () => {
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never);
+
+    controller.createTab("https://example.com");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    const headersHandler = electronMock.onHeadersReceived.mock.calls[0]?.[1] as
+      | ((
+          details: {
+            resourceType: string;
+            webContentsId: number;
+            url: string;
+            responseHeaders: Record<string, string[]>;
+          },
+          callback: (response: { cancel?: boolean }) => void
+        ) => void)
+      | undefined;
+    const callback = vi.fn();
+    expect(headersHandler).toBeTypeOf("function");
+
+    headersHandler?.(
+      {
+        resourceType: "mainFrame",
+        webContentsId: activeView.webContents.id,
+        url: "https://example.com/download?id=semester-plan",
+        responseHeaders: {
+          "content-type": ["application/pdf"]
+        }
+      },
+      callback
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const snapshot = controller.getSnapshot();
+    expect(callback).toHaveBeenCalledWith({ cancel: true });
+    expect(electronMock.shellOpenExternal).not.toHaveBeenCalled();
+    expect(snapshot.tabs.map((tab) => tab.url)).toContain("https://example.com/download?id=semester-plan");
+
+    window.emit("closed");
+  });
+
+  it("lets page fullscreen buttons take over and release the browser window", () => {
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never);
+
+    controller.createTab("https://example.com/video");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    activeView.webContents.emit("enter-html-full-screen");
+    expect(window.setFullScreen).toHaveBeenLastCalledWith(true);
+    expect(window.isFullScreen()).toBe(true);
+
+    activeView.webContents.emit("leave-html-full-screen");
+    expect(window.setFullScreen).toHaveBeenLastCalledWith(false);
+    expect(window.isFullScreen()).toBe(false);
+
+    window.emit("closed");
+  });
+
+  it("exits page fullscreen when the fullscreen tab closes", () => {
+    const { host, window } = createFakeMainWindow();
+    const controller = new TabController(window as never);
+
+    const snapshot = controller.createTab("https://example.com/slides");
+    controller.setWebArea({ x: 16, y: 88, width: 900, height: 640 }, true);
+
+    const activeView = host.children[0] as InstanceType<typeof electronMock.MockWebContentsView>;
+    activeView.webContents.emit("enter-html-full-screen");
+    controller.closeTab(snapshot.activeTabId ?? "");
+
+    expect(window.setFullScreen).toHaveBeenLastCalledWith(false);
+    expect(window.isFullScreen()).toBe(false);
 
     window.emit("closed");
   });

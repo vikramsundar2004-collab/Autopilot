@@ -8,6 +8,8 @@ vi.mock("electron", () => ({
 
 import { createTaskFromCalendarEvent } from "../src/main/productivityTasks";
 import type { GoogleCalendarEventSummary } from "../src/shared/calendar";
+import type { ProductivityTask } from "../src/shared/productivity";
+import { getCalendarWeekDays, getCalendarWeekEventLayout, getCalendarWeekEvents } from "../src/renderer/calendarUtils";
 
 describe("createTaskFromCalendarEvent", () => {
   it("turns upcoming Google Calendar events into calendar-backed tasks", () => {
@@ -92,5 +94,125 @@ describe("createTaskFromCalendarEvent", () => {
     expect(task.state).toBe("done");
     expect(task.priority).toBe("low");
     expect(task.source.eventStartAt).toBe(event.startAt);
+  });
+});
+
+describe("getCalendarWeekEvents", () => {
+  it("keeps overlapping calendar events on separate lanes for readable rendering", () => {
+    const startAt = new Date(2026, 4, 4, 9, 0).getTime();
+    const tasks: ProductivityTask[] = Array.from({ length: 3 }, (_unused, index) => ({
+      id: `calendar:event-${index}`,
+      title: `Prepare for: Overlap ${index + 1}`,
+      context: "Same time",
+      state: "todo",
+      priority: "medium",
+      source: {
+        provider: "google-calendar",
+        label: `Calendar - Overlap ${index + 1}`,
+        messageId: `event-${index}`,
+        subject: `Overlap ${index + 1}`,
+        calendarId: "primary",
+        calendarName: "Calendar",
+        eventStartAt: startAt,
+        eventEndAt: startAt + 60 * 60 * 1000
+      },
+      createdAt: 1,
+      updatedAt: 1
+    }));
+
+    const weekEvents = getCalendarWeekEvents(tasks, [], getCalendarWeekDays(new Date(2026, 4, 4)));
+
+    expect(weekEvents).toHaveLength(3);
+    expect(weekEvents.map((event) => event.dayIndex)).toEqual([0, 0, 0]);
+    expect(weekEvents.map((event) => event.laneCount)).toEqual([3, 3, 3]);
+    expect(new Set(weekEvents.map((event) => event.laneIndex))).toEqual(new Set([0, 1, 2]));
+    expect(new Set(weekEvents.map((event) => event.startOffset))).toHaveLength(1);
+    expect(weekEvents.map((event) => getCalendarWeekEventLayout(event).leftPercent)).toEqual([0, 100 / 21, 200 / 21]);
+    expect(new Set(weekEvents.map((event) => getCalendarWeekEventLayout(event).widthPercent))).toEqual(new Set([100 / 21]));
+  });
+
+  it("does not move overlapping events down from their real start time", () => {
+    const startAt = new Date(2026, 4, 4, 15, 0).getTime();
+    const tasks: ProductivityTask[] = [
+      {
+        id: "calendar:long",
+        title: "Prepare for: Study block",
+        context: "Long event",
+        state: "todo",
+        priority: "medium",
+        source: {
+          provider: "google-calendar",
+          label: "Calendar - Study block",
+          messageId: "long",
+          subject: "Study block",
+          calendarId: "primary",
+          calendarName: "Calendar",
+          eventStartAt: startAt,
+          eventEndAt: startAt + 3 * 60 * 60 * 1000
+        },
+        createdAt: 1,
+        updatedAt: 1
+      },
+      {
+        id: "calendar:short",
+        title: "Prepare for: Club",
+        context: "Short event",
+        state: "todo",
+        priority: "medium",
+        source: {
+          provider: "google-calendar",
+          label: "Calendar - Club",
+          messageId: "short",
+          subject: "Club",
+          calendarId: "primary",
+          calendarName: "Calendar",
+          eventStartAt: startAt,
+          eventEndAt: startAt + 60 * 60 * 1000
+        },
+        createdAt: 1,
+        updatedAt: 1
+      }
+    ];
+
+    const weekEvents = getCalendarWeekEvents(tasks, [], getCalendarWeekDays(new Date(2026, 4, 4)));
+    const layouts = weekEvents.map((event) => getCalendarWeekEventLayout(event));
+
+    expect(weekEvents).toHaveLength(2);
+    expect(weekEvents.map((event) => event.laneCount)).toEqual([3, 3]);
+    expect(new Set(weekEvents.map((event) => event.startOffset))).toHaveLength(1);
+    expect(layouts[0].leftPercent).not.toBe(layouts[1].leftPercent);
+    expect(layouts[0].widthPercent).toBe(layouts[1].widthPercent);
+    expect(layouts[0].widthPercent).toBe(100 / 21);
+    expect(weekEvents.every((event) => !event.compact)).toBe(true);
+  });
+
+  it("uses three readable lanes before stacking overflow overlaps", () => {
+    const startAt = new Date(2026, 4, 4, 20, 0).getTime();
+    const tasks: ProductivityTask[] = Array.from({ length: 4 }, (_unused, index) => ({
+      id: `calendar:dense-${index}`,
+      title: `Prepare for: Dense ${index + 1}`,
+      context: "Same dense time",
+      state: "todo",
+      priority: "medium",
+      source: {
+        provider: "google-calendar",
+        label: `Calendar - Dense ${index + 1}`,
+        messageId: `dense-${index}`,
+        subject: `Dense ${index + 1}`,
+        calendarId: "primary",
+        calendarName: "Calendar",
+        eventStartAt: startAt,
+        eventEndAt: startAt + 45 * 60 * 1000
+      },
+      createdAt: 1,
+      updatedAt: 1
+    }));
+
+    const weekEvents = getCalendarWeekEvents(tasks, [], getCalendarWeekDays(new Date(2026, 4, 4)));
+
+    expect(weekEvents).toHaveLength(4);
+    expect(new Set(weekEvents.map((event) => event.laneCount))).toEqual(new Set([3]));
+    expect(weekEvents.map((event) => event.laneIndex)).toEqual([0, 1, 2, 0]);
+    expect(weekEvents[3].stackOffsetHours).toBeGreaterThan(0);
   });
 });

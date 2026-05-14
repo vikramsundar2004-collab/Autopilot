@@ -23,9 +23,10 @@ describe("workspace models", () => {
     });
 
     expect(state.activeWorkspaceId).toBe("browsing");
-    expect(state.profiles.map((profile) => profile.id)).toEqual(["browsing", "coding", "productivity", "chatting", "design"]);
-    expect(state.profiles[0].theme.sidebarBg).toBe("#123456");
-    expect("bad" in state.profiles[0].theme).toBe(false);
+    expect(state.profiles.map((profile) => profile.id)).toEqual(["home", "browsing", "coding", "productivity", "chatting", "design"]);
+    const browsing = state.profiles.find((profile) => profile.id === "browsing");
+    expect(browsing?.theme.sidebarBg).toBe("#123456");
+    expect("bad" in (browsing?.theme ?? {})).toBe(false);
   });
 
   it("migrates stale built-in workspace labels and views", () => {
@@ -69,12 +70,43 @@ describe("workspace models", () => {
       icon: "code",
       color: "violet"
     });
+    expect(state.profiles.find((profile) => profile.id === "home")).toMatchObject({
+      label: "home",
+      view: "home",
+      icon: "home",
+      color: "forest"
+    });
+    expect(state.profiles.find((profile) => profile.id === "chatting")).toMatchObject({
+      label: "chatting",
+      view: "chatting",
+      icon: "chat",
+      color: "orange"
+    });
+    expect(state.profiles.find((profile) => profile.id === "responses")).toBeUndefined();
     expect(state.profiles.find((profile) => profile.id === "design")).toMatchObject({
       label: "design",
       view: "design",
       icon: "palette",
       color: "pink"
     });
+  });
+
+  it("migrates the legacy responses workspace back into Productivity", () => {
+    const state = sanitizeWorkspaceState({
+      activeWorkspaceId: "responses",
+      profiles: [
+        {
+          id: "responses",
+          label: "responses",
+          view: "productivity",
+          icon: "chat",
+          color: "green"
+        }
+      ]
+    });
+
+    expect(state.activeWorkspaceId).toBe("productivity");
+    expect(state.profiles.find((profile) => profile.id === "responses")).toBeUndefined();
   });
 
   it("persists a browser tab snapshot on the selected workspace", () => {

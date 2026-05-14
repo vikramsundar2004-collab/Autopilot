@@ -79,6 +79,45 @@ describe("coding agent workflow models", () => {
     expect(plan.steps.at(-1)?.detail).toContain("approval");
   });
 
+  it("loads project memory into the coding plan before edits", () => {
+    const overview: CodingRepoOverview = {
+      projectName: "Client Portal",
+      rootPath: "C:/Projects/ClientPortal",
+      generatedAt: 1,
+      packageManager: "npm",
+      scripts: [{ name: "check", command: "npm run check" }],
+      frameworkHints: ["React", "TypeScript"],
+      keyFiles: ["AUTOPILOT.md", "src/App.tsx"],
+      gitBranch: "main",
+      changedFiles: [],
+      summary: "Client Portal project",
+      projectMemory: {
+        present: true,
+        relativePath: "AUTOPILOT.md",
+        summary: "Use small scoped edits and write tests.",
+        instructions: ["Use small scoped edits", "Write tests before approval"]
+      }
+    };
+
+    const plan = createCodingAgentPlanFromOverview({
+      id: "plan-memory",
+      goal: "Add a review panel",
+      overview,
+      now: 2
+    });
+
+    expect(plan.projectMemory?.relativePath).toBe("AUTOPILOT.md");
+    expect(plan.assessment.executionLoop[0]).toBe("Load project memory");
+    expect(plan.steps[0]).toEqual(
+      expect.objectContaining({
+        title: "Load project memory",
+        state: "completed"
+      })
+    );
+    expect(plan.schema.touchedFiles[0]).toBe("AUTOPILOT.md");
+    expect(plan.risks.join(" ")).toContain("Project memory loaded");
+  });
+
   it("classifies minimal and deep tasks before editing", () => {
     expect(assessCodingTask("Fix typo in the settings label").size).toBe("minimal");
     const deepAssessment = assessCodingTask("Redesign the automation architecture so it can scale to millions of users");

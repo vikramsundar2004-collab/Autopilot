@@ -19,12 +19,82 @@ export type CodingProject = {
 
 export type CodingAccessMode = "ask" | "full";
 
+export type CodingRunStatus =
+  | "idle"
+  | "queued"
+  | "understanding"
+  | "reading_files"
+  | "planning"
+  | "editing"
+  | "testing"
+  | "previewing"
+  | "ready_for_review"
+  | "blocked"
+  | "stopped";
+
+export type CodingRunHeartbeat = {
+  runToken: number;
+  status: CodingRunStatus;
+  message: string;
+  updatedAt: number;
+};
+
+export type CodingRunTimeoutState = {
+  runToken: number;
+  status: "blocked";
+  reason: string;
+  prompt: string;
+  elapsedMs: number;
+  actions: Array<"retry" | "shorter_prompt" | "check_ai_setup">;
+  updatedAt: number;
+};
+
+export type CodingVisualQaScenario =
+  | "empty_state"
+  | "one_project"
+  | "many_projects"
+  | "active_run"
+  | "board"
+  | "terminal"
+  | "browser_test"
+  | "wide_ai"
+  | "focus_ai"
+  | "light_theme"
+  | "dark_theme"
+  | "narrow_viewport"
+  | "ai_offline"
+  | "model_timeout";
+
+export type CodingExplorerViewState = {
+  selectedProjectRootPath: string | null;
+  expandedProjectRootPaths: string[];
+  expandedSectionsByProject: Record<string, Array<"chats" | "code">>;
+  searchQuery: string;
+};
+
+export type CodingTaskManagerViewState = {
+  selectedTaskId: string | null;
+  activeColumn: "drafts" | "active" | "ready" | "done";
+  filter: string;
+};
+
 export type CodingSnapshot = {
   projects: CodingProject[];
   activeProject: CodingProject | null;
   tree: CodingTreeNode | null;
   accessMode: CodingAccessMode;
 };
+
+export type CodingRenameProjectResult =
+  | {
+      success: true;
+      snapshot: CodingSnapshot;
+    }
+  | {
+      success: false;
+      reason: string;
+      snapshot: CodingSnapshot;
+    };
 
 export type CodingLanguageToolStatus = {
   language: "typescript" | "python";
@@ -259,6 +329,179 @@ export type CodingCommandResult =
       requiresApproval?: boolean;
     };
 
+export type CodingClarificationOption = {
+  id: string;
+  label: string;
+  detail: string;
+  recommended?: boolean;
+  custom?: boolean;
+};
+
+export type CodingClarificationQuestion = {
+  id: string;
+  prompt: string;
+  options: CodingClarificationOption[];
+  currentIndex: number;
+  total: number;
+  defaultOptionId: string;
+  createdAt: number;
+  sourcePrompt: string;
+  reason: string;
+};
+
+export type CodingClarificationAnswer = {
+  questionId: string;
+  optionId: string;
+  answerText: string;
+  customText?: string;
+  dismissed?: boolean;
+  answeredAt: number;
+};
+
+export type CodingCommandSafetyDecision = {
+  allowed: boolean;
+  requiresApproval: boolean;
+  risk: "safe" | "write" | "external" | "destructive";
+  reason: string;
+};
+
+export type CodingCommandPlan = {
+  id: string;
+  command: string;
+  cwd: string;
+  purpose: string;
+  safety: CodingCommandSafetyDecision;
+  createdAt: number;
+};
+
+export type CodingCommandExecution = {
+  id: string;
+  planId: string;
+  startedAt: number;
+  finishedAt?: number;
+  result?: CodingCommandResult;
+};
+
+export type CodingCommandLogResult = {
+  success: true;
+  executions: CodingCommandExecution[];
+};
+
+export type CodingCommandRunnerSkill = {
+  id: "coding-command-runner";
+  name: string;
+  description: string;
+  safeAllowlist: string[];
+  hooks: Array<"before_command" | "after_command" | "on_failure" | "on_timeout" | "before_apply">;
+};
+
+export type CodingPatchFileChange = {
+  path: string;
+  status: "created" | "modified" | "deleted";
+  additions: number;
+  deletions: number;
+};
+
+export type CodingPatchSet = {
+  id: string;
+  summary: string;
+  files: CodingPatchFileChange[];
+  createdAt: number;
+};
+
+export type CodingPatchSetResult =
+  | {
+      success: true;
+      patchSet: CodingPatchSet;
+    }
+  | {
+      success: false;
+      reason: string;
+      generatedAt: number;
+    };
+
+export type CodingRepairAttempt = {
+  id: string;
+  trigger: "test_failure" | "build_error" | "type_error" | "blank_preview" | "console_error" | "wiring_mistake";
+  action: string;
+  result: "fixed" | "blocked" | "needs_approval";
+  evidence: string;
+  createdAt: number;
+};
+
+export type CodingPreviewValidation = {
+  id: string;
+  url: string;
+  status: "passed" | "failed" | "blocked";
+  checks: Array<"screenshot" | "dom" | "console" | "canvas">;
+  summary: string;
+  createdAt: number;
+};
+
+export type CodingPreviewValidationRequest = {
+  url?: string;
+  html?: string;
+  domText?: string;
+  consoleMessages?: string[];
+  screenshotPresent?: boolean;
+  canvasPixelCount?: number;
+};
+
+export type CodingPreviewValidationResult =
+  | {
+      success: true;
+      validation: CodingPreviewValidation;
+    }
+  | {
+      success: false;
+      reason: string;
+      validation: CodingPreviewValidation;
+    };
+
+export type CodingQualityScore = {
+  score: number;
+  maxScore: 10;
+  dimensions: Record<string, number>;
+  blockers: string[];
+  evidence: string[];
+};
+
+export type CodingDeepQaScenario =
+  | "snake"
+  | "tetris"
+  | "todo_app"
+  | "dashboard"
+  | "agent"
+  | "plugin"
+  | "skill"
+  | "complex_repo_feature"
+  | "fix_failing_test"
+  | "refactor_shared_module";
+
+export type CodingDeepQaBenchmarkCase = {
+  scenario: CodingDeepQaScenario;
+  prompt: string;
+  requiredEvidence: Array<"multi_file_patch" | "diff" | "command" | "preview" | "repair_loop" | "approval_gate">;
+  status: "ready" | "blocked";
+  reason?: string;
+};
+
+export type CodingDeepQaBenchmarkResult = {
+  success: true;
+  generatedAt: number;
+  cases: CodingDeepQaBenchmarkCase[];
+};
+
+export type CodingAgentProof = {
+  runId: string;
+  doneAllowed: boolean;
+  blockers: string[];
+  evidence: string[];
+  commands: CodingCommandExecution[];
+  previews: CodingPreviewValidation[];
+  changedFiles: CodingGitChangedFile[];
+};
+
 export type CodingSearchResult = {
   kind: CodingNodeKind;
   name: string;
@@ -373,6 +616,100 @@ export type CodingGitDiffResult =
       generatedAt: number;
     };
 
+export type GitSafetyWarning = {
+  code:
+    | "protected_branch"
+    | "secret_like_file"
+    | "secret_like_content"
+    | "no_selected_files"
+    | "unstaged_files_not_selected"
+    | "failed_tests"
+    | "force_push_blocked";
+  message: string;
+  filePath?: string;
+  blocking: boolean;
+};
+
+export type GitCommitProposal = {
+  success: true;
+  id: string;
+  rootPath: string;
+  branch: string;
+  remote: string;
+  changedFiles: CodingGitChangedFile[];
+  selectedFiles: string[];
+  proposedMessage: string;
+  diffPreview: string;
+  testsStatus: "not_run" | "passed" | "failed" | "unknown";
+  warnings: GitSafetyWarning[];
+  blocked: boolean;
+  approvalRequired: true;
+  generatedAt: number;
+};
+
+export type GitCommitProposalResult =
+  | GitCommitProposal
+  | {
+      success: false;
+      reason: string;
+      generatedAt: number;
+    };
+
+export type GitCommitRequest = {
+  message: string;
+  filePaths: string[];
+  approved: boolean;
+  testsPassed?: boolean;
+  overrideFailedTests?: boolean;
+};
+
+export type GitCommitResult =
+  | {
+      success: true;
+      commitHash: string;
+      message: string;
+      branch: string;
+      files: string[];
+      stdout: string;
+      stderr?: string;
+      committedAt: number;
+    }
+  | {
+      success: false;
+      reason: string;
+      proposal?: GitCommitProposalResult;
+    };
+
+export type GitPushRequest = {
+  remote?: string;
+  branch?: string;
+  approved: boolean;
+  force?: boolean;
+};
+
+export type GitPushResult =
+  | {
+      success: true;
+      remote: string;
+      branch: string;
+      stdout: string;
+      stderr?: string;
+      pushedAt: number;
+    }
+  | {
+      success: false;
+      reason: string;
+      warnings?: GitSafetyWarning[];
+    };
+
+export type CodingProjectMemory = {
+  present: boolean;
+  relativePath?: string;
+  summary: string;
+  instructions: string[];
+  truncated?: boolean;
+};
+
 export type CodingRepoOverview = {
   projectName: string;
   rootPath: string;
@@ -384,6 +721,7 @@ export type CodingRepoOverview = {
   gitBranch: string;
   changedFiles: CodingGitChangedFile[];
   summary: string;
+  projectMemory?: CodingProjectMemory;
 };
 
 export type CodingRepoOverviewResult =
@@ -425,6 +763,7 @@ export type CodingAgentPlan = {
   goal: string;
   summary: string;
   phase: CodingAgentPhase;
+  projectMemory?: CodingProjectMemory;
   assessment: CodingTaskAssessment;
   schema: {
     dataModels: string[];
@@ -452,11 +791,43 @@ export type CodingAgentRun = {
   commands: CodingCommandResult[];
   changedFiles: CodingGitChangedFile[];
   testResults: string[];
+  progress?: CodingAgentProgressEvent[];
   diff?: string;
   approvalState: "needs_review" | "approved" | "rejected";
   createdAt: number;
   updatedAt: number;
 };
+
+export type CodingAgentProgressEvent = {
+  id: string;
+  runId: string;
+  phase: CodingAgentPhase;
+  message: string;
+  createdAt: number;
+  files?: string[];
+  command?: string;
+  requiresApproval?: boolean;
+};
+
+export type CodingReviewSurfaceState = {
+  activeRunId?: string;
+  visiblePanel: "plan" | "run_log" | "changed_files" | "diff" | "tests" | "approval";
+  changedFiles: CodingGitChangedFile[];
+  latestDiff?: string;
+  approvalState: CodingAgentRun["approvalState"];
+};
+
+export type CodingAgentRunResult =
+  | {
+      success: true;
+      plan: CodingAgentPlan;
+      run: CodingAgentRun;
+    }
+  | {
+      success: false;
+      reason: string;
+      generatedAt: number;
+    };
 
 export type CodingAgentPlanResult =
   | {
@@ -565,7 +936,8 @@ export function createCodingAgentPlanFromOverview(input: {
   now: number;
 }): CodingAgentPlan {
   const normalizedGoal = input.goal.trim() || "Understand this project and prepare a safe implementation plan.";
-  const assessment = assessCodingTask(normalizedGoal, input.overview);
+  const baseAssessment = assessCodingTask(normalizedGoal, input.overview);
+  const assessment = applyProjectMemoryToAssessment(baseAssessment, input.overview.projectMemory);
   const commandPriority = ["check", "typecheck", "test", "build", "lint"];
   const suggestedCommands = input.overview.scripts
     .filter((script) => commandPriority.some((keyword) => script.name.toLowerCase().includes(keyword)))
@@ -580,8 +952,9 @@ export function createCodingAgentPlanFromOverview(input: {
     projectName: input.overview.projectName,
     projectRootPath: input.overview.rootPath,
     goal: normalizedGoal,
-    summary: buildCodingPlanSummary(input.overview.projectName, assessment),
+    summary: buildCodingPlanSummary(input.overview.projectName, assessment, input.overview.projectMemory),
     phase: assessment.size === "minimal" ? "planning" : "schema",
+    projectMemory: input.overview.projectMemory,
     assessment,
     schema: createCodingSchema(normalizedGoal, input.overview, assessment, suggestedCommands, verificationCommand),
     steps: createCodingPlanSteps(input.id, input.overview, assessment, verificationCommand),
@@ -593,11 +966,29 @@ export function createCodingAgentPlanFromOverview(input: {
       input.overview.frameworkHints.length > 0
         ? `Detected ${input.overview.frameworkHints.join(", ")}; stay inside existing patterns.`
         : "No framework hints found; inspect architecture before introducing dependencies.",
+      input.overview.projectMemory?.present
+        ? `Project memory loaded from ${input.overview.projectMemory.relativePath}; follow it unless the user explicitly overrides it.`
+        : "No AUTOPILOT.md/AGENTS.md/CLAUDE.md project memory found; infer conventions from code before editing.",
       "Commands, commits, pushes, deletes, and production-impacting steps should remain approval-gated."
     ],
     suggestedCommands,
     createdAt: input.now,
     updatedAt: input.now
+  };
+}
+
+function applyProjectMemoryToAssessment(assessment: CodingTaskAssessment, memory?: CodingProjectMemory): CodingTaskAssessment {
+  if (!memory?.present) {
+    return assessment;
+  }
+
+  return {
+    ...assessment,
+    ambiguities: [
+      ...assessment.ambiguities,
+      memory.truncated ? "Project memory was truncated; reopen the file before making high-risk edits." : "Project memory is available and should constrain edits."
+    ],
+    executionLoop: ["Load project memory", ...assessment.executionLoop.filter((step) => step !== "Load project memory")]
   };
 }
 
@@ -659,14 +1050,15 @@ export function assessCodingTask(goal: string, overview?: Pick<CodingRepoOvervie
   };
 }
 
-function buildCodingPlanSummary(projectName: string, assessment: CodingTaskAssessment): string {
+function buildCodingPlanSummary(projectName: string, assessment: CodingTaskAssessment, memory?: CodingProjectMemory): string {
+  const memoryClause = memory?.present ? ` Project memory from ${memory.relativePath} is loaded into the plan.` : "";
   if (assessment.size === "minimal") {
-    return `Autopilot classified this as a minimal task in ${projectName}: inspect the smallest relevant area, fix it, verify, and show the diff before approval.`;
+    return `Autopilot classified this as a minimal task in ${projectName}: inspect the smallest relevant area, fix it, verify, and show the diff before approval.${memoryClause}`;
   }
   if (assessment.size === "deep") {
-    return `Autopilot classified this as a deep task in ${projectName}: reread the request, build a schema, inspect architecture, verify carefully, and keep all external actions approval-gated.`;
+    return `Autopilot classified this as a deep task in ${projectName}: reread the request, build a schema, inspect architecture, verify carefully, and keep all external actions approval-gated.${memoryClause}`;
   }
-  return `Autopilot classified this as a standard task in ${projectName}: plan, edit, test, show the diff, and wait for approval.`;
+  return `Autopilot classified this as a standard task in ${projectName}: plan, edit, test, show the diff, and wait for approval.${memoryClause}`;
 }
 
 function createCodingSchema(
@@ -681,7 +1073,13 @@ function createCodingSchema(
     dataModels: /\b(model|schema|type|interface|state|store|database)\b/u.test(goalText)
       ? ["Inspect and update existing TypeScript models before wiring UI or IPC."]
       : ["No new data model unless the inspected request flow requires it."],
-    touchedFiles: overview.keyFiles.length > 0 ? overview.keyFiles.slice(0, 6) : ["Use search/file picker to identify the request flow before editing."],
+    touchedFiles:
+      overview.keyFiles.length > 0
+        ? [
+            ...(overview.projectMemory?.relativePath ? [overview.projectMemory.relativePath] : []),
+            ...overview.keyFiles.filter((file) => file !== overview.projectMemory?.relativePath)
+          ].slice(0, 6)
+        : ["Use search/file picker to identify the request flow before editing."],
     apiChanges: /\b(ipc|api|backend|service|connector|sync)\b/u.test(goalText)
       ? ["Add or extend IPC/service contracts with backward-compatible shape."]
       : ["No public API change expected."],
@@ -689,7 +1087,11 @@ function createCodingSchema(
       ? ["Update the relevant workspace UI using existing components/styles."]
       : ["No UI change expected unless inspection shows one is needed."],
     testPlan: suggestedCommands.length > 0 ? suggestedCommands : verificationCommand ? [verificationCommand] : ["Run the project-specific verification command from the terminal."],
-    safetyRisks: [...assessment.risks, "Commit, push, destructive commands, and production-impacting actions require approval."],
+    safetyRisks: [
+      ...assessment.risks,
+      ...(overview.projectMemory?.present ? [`Respect project memory: ${overview.projectMemory.summary}`] : []),
+      "Commit, push, destructive commands, and production-impacting actions require approval."
+    ],
     expectedOutput: assessment.size === "deep" ? "Schema, implementation, verification output, diff, and approval-ready summary." : "Scoped implementation, verification output, diff, and approval-ready summary."
   };
 }
@@ -700,8 +1102,20 @@ function createCodingPlanSteps(
   assessment: CodingTaskAssessment,
   verificationCommand?: string
 ): CodingAgentPlanStep[] {
+  const memoryStep: CodingAgentPlanStep[] = overview.projectMemory?.present
+    ? [
+        {
+          id: `${id}-memory`,
+          title: "Load project memory",
+          detail: `${overview.projectMemory.relativePath}: ${overview.projectMemory.summary}`,
+          state: "completed"
+        }
+      ]
+    : [];
+
   if (assessment.size === "minimal") {
     return [
+      ...memoryStep,
       {
         id: `${id}-understand`,
         title: "Understand the small fix",
@@ -762,6 +1176,7 @@ function createCodingPlanSteps(
         ];
 
   return [
+    ...memoryStep,
     ...deepPrefix,
     {
       id: `${id}-inspect`,

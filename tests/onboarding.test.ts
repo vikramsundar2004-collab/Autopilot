@@ -68,7 +68,17 @@ describe("buildOnboardingSummary", () => {
         accountEmail: null,
         capabilities: {
           gmail: false,
-          calendar: false
+          calendar: false,
+          gmailRead: false,
+          gmailModify: false,
+          gmailDrafts: false,
+          gmailSend: false,
+          calendarRead: false,
+          calendarWrite: false,
+          driveRead: false,
+          docsRead: false,
+          slidesRead: false,
+          formsRead: false
         }
       },
       sourceResults: [],
@@ -90,7 +100,17 @@ describe("buildOnboardingSummary", () => {
         grantedScopes: [GOOGLE_GMAIL_READONLY_SCOPE],
         capabilities: {
           gmail: true,
-          calendar: false
+          calendar: false,
+          gmailRead: true,
+          gmailModify: false,
+          gmailDrafts: false,
+          gmailSend: false,
+          calendarRead: false,
+          calendarWrite: false,
+          driveRead: false,
+          docsRead: false,
+          slidesRead: false,
+          formsRead: false
         }
       },
       sourceResults: [makeSourceResult({ id: "gmail", label: "Gmail" })],
@@ -111,7 +131,17 @@ describe("buildOnboardingSummary", () => {
         accountEmail: "vikram@example.com",
         capabilities: {
           gmail: true,
-          calendar: true
+          calendar: true,
+          gmailRead: true,
+          gmailModify: false,
+          gmailDrafts: false,
+          gmailSend: false,
+          calendarRead: true,
+          calendarWrite: false,
+          driveRead: false,
+          docsRead: false,
+          slidesRead: false,
+          formsRead: false
         }
       },
       sourceResults: [

@@ -23,10 +23,22 @@ import {
   type AgentRunEvent,
   type AgentStartRunRequest
 } from "../shared/agent.js";
+import {
+  buildArtifactCritiquePrompt,
+  buildArtifactDraftPrompt,
+  buildArtifactPlanningPrompt,
+  buildArtifactRevisionPrompt,
+  parseJsonObject,
+  type AiArtifactKind,
+  type ArtifactCritiquePayload,
+  type ArtifactGenerationTrace,
+  type ArtifactPlanPayload
+} from "../shared/artifactPrompts.js";
 import type { EmailMessageSummary } from "../shared/email.js";
 import type { ArtifactStore } from "./artifacts.js";
 import type { EmailService } from "./email.js";
 import { evaluateArtifactQuality, summarizeQualityFailure, type ArtifactQualityResult } from "../shared/artifactQuality.js";
+import { AiGateway } from "./aiGateway.js";
 
 type AgentStateFile = {
   version: 1;
@@ -38,6 +50,7 @@ type GeneratedArtifactPayload = {
   title?: string;
   summary?: string;
   artifactKind?: ArtifactKind;
+  replyDraftMarkdown?: string;
   documentMarkdown?: string;
   slides?: Array<{
     title?: string;
@@ -54,33 +67,21 @@ type GeneratedArtifactPayload = {
   humanQuestion?: string;
 };
 
-type OpenAiResponsesResponse = {
-  output_text?: string;
-  output?: Array<{
-    content?: Array<{
-      text?: string;
-    }>;
-  }>;
-  error?: {
-    message?: string;
-  };
-};
-
-type OpenAiChatCompletionsResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-  error?: {
-    message?: string;
-  };
+type ArtifactAiResult = {
+  payload: GeneratedArtifactPayload | null;
+  model: string;
+  usedFallback: boolean;
+  reason?: string;
+  trace?: ArtifactGenerationTrace;
 };
 
 const AGENT_STATE_FILE = "agent-runs.json";
-const DEFAULT_OPENAI_MODEL = "gpt-5.5";
-const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
-const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 60_000;
+const ARTIFACT_ENDPOINT_TIMEOUT_MS = 90_000;
+const ARTIFACT_PLAN_TIMEOUT_MS = 20_000;
+const ARTIFACT_DRAFT_TIMEOUT_MS = 45_000;
+const ARTIFACT_CRITIQUE_TIMEOUT_MS = 20_000;
+const ARTIFACT_REVISION_TIMEOUT_MS = 45_000;
+const EMAIL_ARTIFACT_MAX_ATTEMPTS = 3;
 
 export class AgentService {
   private state: AgentStateFile | null = null;
@@ -88,7 +89,8 @@ export class AgentService {
   constructor(
     private readonly artifactStore: ArtifactStore,
     private readonly emailService: EmailService,
-    private readonly dataRoot: string | (() => string)
+    private readonly dataRoot: string | (() => string),
+    private readonly aiGateway = new AiGateway()
   ) {}
 
   async listRuns(): Promise<AgentRun[]> {
@@ -173,75 +175,75 @@ export class AgentService {
   private async generateWorkFromMessage(message: EmailMessageSummary, preferredKind?: ArtifactKind): Promise<AgentPlanResult> {
     const requestText = buildEmailWorkRequestText(message);
     const fallbackKind = chooseArtifactKindFromText(requestText, preferredKind);
-    let aiResult = await generateArtifactWithOpenAi(requestText, fallbackKind);
+    let aiResult = await generateArtifactWithOpenAi(this.aiGateway, requestText, fallbackKind, 1);
     let payload = aiResult.payload ?? buildFallbackArtifactPayload(message, fallbackKind);
     let kind = chooseArtifactKindFromText(`${payload.artifactKind ?? ""} ${requestText}`, preferredKind ?? payload.artifactKind ?? fallbackKind);
     let content = buildArtifactContent(kind, payload, message);
     let qualityResult: ArtifactQualityResult = evaluateArtifactQuality(content, requestText, {
-      requireSources: isResearchLikeRequest(requestText)
+      requireSources: isResearchLikeRequest(requestText),
+      emailToArtifact: true,
+      attempts: aiResult.trace?.attempts ?? 1
     });
 
-    if (!qualityResult.passed && !aiResult.usedFallback) {
-      const retryPrompt = `${requestText}
-
-QUALITY REQUIREMENTS:
-- Do not restate the source email.
-- Produce a new usable deliverable with clear sections.
-- Include concrete recommendations, next steps, or a ready-to-review draft.
-- Keep copied source phrasing low.
-- For slide decks, include specific slide titles and concrete bullets.
-- For website designs, include semantic HTML, CSS, named sections, and a clear CTA.
-- Do not include "What Autopilot understood" or meta commentary.`;
-      const retryResult = await generateArtifactWithOpenAi(retryPrompt, kind);
+    for (let attempt = 2; attempt <= EMAIL_ARTIFACT_MAX_ATTEMPTS && !qualityResult.passed && !aiResult.usedFallback; attempt += 1) {
+      const retryResult = await generateArtifactWithOpenAi(this.aiGateway, requestText, kind, attempt, summarizeQualityFailure(qualityResult));
       if (retryResult.payload) {
         const retryKind = chooseArtifactKindFromText(`${retryResult.payload.artifactKind ?? ""} ${requestText}`, preferredKind ?? retryResult.payload.artifactKind ?? kind);
         const retryContent = buildArtifactContent(retryKind, retryResult.payload, message);
         const retryQuality = evaluateArtifactQuality(retryContent, requestText, {
           requireSources: isResearchLikeRequest(requestText),
+          emailToArtifact: true,
+          attempts: retryResult.trace?.attempts ?? attempt,
           regeneration: "regenerated"
         });
-        if (retryQuality.score >= qualityResult.score) {
+        if (retryQuality.score >= qualityResult.score || retryQuality.passed) {
           aiResult = retryResult;
           payload = retryResult.payload;
           kind = retryKind;
           content = retryContent;
           qualityResult = retryQuality;
         }
+      } else if (retryResult.reason) {
+        aiResult = {
+          ...aiResult,
+          reason: [aiResult.reason, retryResult.reason].filter(Boolean).join(" ")
+        };
       }
     }
 
     if (!qualityResult.passed) {
-      const fallbackPayload = buildFallbackArtifactPayload(message, kind);
-      const fallbackContent = buildArtifactContent(kind, fallbackPayload, message);
-      const fallbackQuality = evaluateArtifactQuality(fallbackContent, requestText, {
-        requireSources: isResearchLikeRequest(requestText),
-        regeneration: "regenerated"
-      });
-      if (fallbackQuality.score >= qualityResult.score) {
-        payload = fallbackPayload;
-        content = fallbackContent;
-        qualityResult = fallbackQuality;
-        aiResult = {
-          ...aiResult,
-          usedFallback: true,
-          reason: `Quality gate replaced weak output. ${summarizeQualityFailure(qualityResult)}`
-        };
-      }
+      qualityResult = {
+        ...qualityResult,
+        passed: false,
+        exportReady: false,
+        regeneration: "needs_review",
+        summary: `Quality gate blocked this artifact after ${aiResult.usedFallback ? "the AI backend was unavailable" : `${EMAIL_ARTIFACT_MAX_ATTEMPTS} attempts`}.`
+      };
+      payload = {
+        ...payload,
+        summary: `Needs review: Autopilot could not meet the email-to-artifact quality bar. ${summarizeQualityFailure(qualityResult)}`.slice(0, 260),
+        humanQuestion:
+          payload.humanQuestion ||
+          "Autopilot could not produce a clean enough artifact from this email. Review the failed checks, then ask for a narrower deliverable or add the missing people, dates, or decision context."
+      };
     }
 
     const qualitySummary = qualityResult.passed
       ? ` Quality score: ${qualityResult.score}/100.`
       : ` Needs review: ${summarizeQualityFailure(qualityResult)}`;
+    const fallbackSummary = aiResult.usedFallback ? "AI unavailable fallback draft. " : "";
+    const emailDraftMarkdown = buildReplyDraftMarkdown(message, payload, kind, qualityResult, aiResult.usedFallback);
     const artifact = await this.artifactStore.createArtifact({
       kind,
       title: cleanText(payload.title, 140) || fallbackTitle(message, kind),
-      summary: `${cleanText(payload.summary, 260) || `Generated from ${message.from} - ${message.subject}`}${qualitySummary}`.slice(0, 360),
-      prompt: requestText,
+      summary: `${fallbackSummary}${cleanText(payload.summary, 260) || `Generated from ${message.from} - ${message.subject}`}${qualitySummary}`.slice(0, 360),
+      emailDraftMarkdown,
+      prompt: buildPersistedEmailArtifactPrompt(message),
       source: message.id.startsWith("manual:") ? { provider: "manual", label: "Manual prompt" } : createArtifactSourceFromEmail(message),
       content
     });
     const plan = createActionPlanFromArtifact(message, artifact, payload.finalApprovalReason, payload.humanQuestion, qualityResult);
-    const run = createAgentRun(plan, aiResult.usedFallback, aiResult.reason, qualityResult);
+    const run = createAgentRun(plan, aiResult.usedFallback, aiResult.reason, qualityResult, aiResult.trace);
 
     const state = await this.ensureState();
     state.plans = [plan, ...state.plans.filter((candidate) => candidate.id !== plan.id)].slice(0, 100);
@@ -254,7 +256,10 @@ QUALITY REQUIREMENTS:
       artifact,
       run,
       model: aiResult.model,
-      usedFallback: aiResult.usedFallback
+      usedFallback: aiResult.usedFallback,
+      reason: aiResult.reason,
+      aiSource: aiResult.usedFallback ? "fallback" : "openai",
+      artifactTrace: aiResult.trace
     };
   }
 
@@ -302,189 +307,178 @@ QUALITY REQUIREMENTS:
 }
 
 async function generateArtifactWithOpenAi(
+  aiGateway: AiGateway,
   requestText: string,
-  fallbackKind: ArtifactKind
-): Promise<{ payload: GeneratedArtifactPayload | null; model: string; usedFallback: boolean; reason?: string }> {
-  const apiKey = getOpenAiApiKey();
-  const model = getOpenAiModel();
-  if (!apiKey) {
+  fallbackKind: ArtifactKind,
+  attempt = 1,
+  previousFailure?: string
+): Promise<ArtifactAiResult> {
+  const artifactKind: AiArtifactKind = fallbackKind;
+  const artifactEndpointResult = await aiGateway.generateArtifact({
+    kind: artifactKind,
+    prompt: requestText,
+    source: { text: requestText },
+    task: "artifact_generation",
+    timeoutMs: ARTIFACT_ENDPOINT_TIMEOUT_MS
+  });
+  if (artifactEndpointResult.success) {
+    const payload = parseGeneratedArtifactValue(artifactEndpointResult.artifact);
+    if (payload) {
+      return {
+        payload,
+        model: artifactEndpointResult.model,
+        usedFallback: false,
+        trace: buildArtifactTraceFromProxy(artifactEndpointResult.trace, artifactKind, attempt)
+      };
+    }
+  }
+
+  const planResult = await aiGateway.generateText({
+    prompt: buildArtifactPlanningPrompt(requestText, artifactKind),
+    instructions:
+      "You are Autopilot's email-to-work planner. Think before writing. Return only valid JSON.",
+    task: "artifact_plan",
+    responseFormat: "json_object",
+    timeoutMs: ARTIFACT_PLAN_TIMEOUT_MS
+  });
+
+  if (!planResult.success) {
     return {
       payload: null,
-      model,
+      model: planResult.model,
       usedFallback: true,
-      reason: "OpenAI key is not configured; Autopilot used the local artifact builder."
+      reason: planResult.reason || "AI artifact planning is not configured; Autopilot used an offline placeholder."
     };
   }
 
-  const prompt = buildArtifactGenerationPrompt(requestText, fallbackKind);
-  const responsesResult = await callOpenAiResponses(apiKey, model, prompt);
-  if (responsesResult.payload) {
+  const planPayload = parseJsonObject<ArtifactPlanPayload>(planResult.outputText) ?? {};
+  const planJson = JSON.stringify(planPayload, null, 2);
+  const draftResult = await aiGateway.generateText({
+    prompt: buildArtifactDraftPrompt(requestText, artifactKind, planJson),
+    instructions:
+      "You are Autopilot's artifact drafter. Create the finished deliverable from the plan. Return only valid JSON.",
+    task: "artifact_draft",
+    responseFormat: "json_object",
+    timeoutMs: ARTIFACT_DRAFT_TIMEOUT_MS
+  });
+
+  if (!draftResult.success) {
     return {
-      payload: responsesResult.payload,
-      model,
-      usedFallback: false
+      payload: null,
+      model: draftResult.model || planResult.model,
+      usedFallback: true,
+      reason: draftResult.reason || "AI artifact drafting failed; Autopilot used an offline placeholder.",
+      trace: buildArtifactTrace(planPayload, artifactKind, [], "Drafting failed.", attempt)
     };
   }
 
-  const chatResult = await callOpenAiChatCompletions(apiKey, model, prompt);
-  if (chatResult.payload) {
+  const draftJson = draftResult.outputText.trim();
+  const critiqueResult = await aiGateway.generateText({
+    prompt: buildArtifactCritiquePrompt(artifactKind, planJson, draftJson),
+    instructions:
+      "You are Autopilot's artifact critic. Be strict and concrete. Return only valid JSON.",
+    task: "artifact_critique",
+    responseFormat: "json_object",
+    timeoutMs: ARTIFACT_CRITIQUE_TIMEOUT_MS
+  });
+  const critiquePayload = critiqueResult.success ? parseJsonObject<ArtifactCritiquePayload>(critiqueResult.outputText) ?? {} : {};
+  const critiqueJson = JSON.stringify(critiquePayload, null, 2);
+  const revisionResult = await aiGateway.generateText({
+    prompt: buildArtifactRevisionPrompt(requestText, artifactKind, planJson, draftJson, critiqueJson, previousFailure),
+    instructions:
+      "You are Autopilot's artifact reviser. Fix the critique and return the final artifact JSON only.",
+    task: "artifact_revision",
+    responseFormat: "json_object",
+    timeoutMs: ARTIFACT_REVISION_TIMEOUT_MS
+  });
+
+  if (!revisionResult.success) {
     return {
-      payload: chatResult.payload,
-      model,
-      usedFallback: false
+      payload: null,
+      model: revisionResult.model || critiqueResult.model || draftResult.model || planResult.model,
+      usedFallback: true,
+      reason: revisionResult.reason || "AI artifact revision failed; Autopilot used an offline placeholder.",
+      trace: buildArtifactTrace(planPayload, artifactKind, critiquePayload.flaws ?? [], "Revision failed.", attempt)
+    };
+  }
+
+  const payload = parseGeneratedArtifactPayload(revisionResult.outputText);
+  if (payload) {
+    return {
+      payload,
+      model: revisionResult.model,
+      usedFallback: false,
+      trace: buildArtifactTrace(
+        planPayload,
+        artifactKind,
+        critiquePayload.flaws ?? [],
+        cleanText(critiquePayload.revisionStrategy, 220) || "Revised from the critique before quality review.",
+        attempt
+      )
     };
   }
 
   return {
     payload: null,
-    model,
+    model: revisionResult.model,
     usedFallback: true,
-    reason: chatResult.reason || responsesResult.reason || "OpenAI artifact generation failed; Autopilot used the local artifact builder."
+    reason: "The AI backend returned text that was not valid artifact JSON; Autopilot used an offline placeholder.",
+    trace: buildArtifactTrace(planPayload, artifactKind, critiquePayload.flaws ?? [], "Final JSON parsing failed.", attempt)
   };
 }
 
-async function callOpenAiResponses(
-  apiKey: string,
-  model: string,
-  prompt: string
-): Promise<{ payload: GeneratedArtifactPayload | null; reason?: string }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), getOpenAiRequestTimeoutMs());
+function buildArtifactTrace(
+  plan: ArtifactPlanPayload,
+  fallbackKind: AiArtifactKind,
+  critique: string[],
+  revisionSummary: string,
+  attempts: number
+): ArtifactGenerationTrace {
+  return {
+    inferredAsk: cleanText(plan.inferredAsk, 220) || "Infer the actual deliverable from the source email.",
+    audience: cleanText(plan.audience, 160) || "User-selected audience",
+    deliverableKind: plan.deliverableKind ?? fallbackKind,
+    planningNotes: Array.isArray(plan.planningNotes)
+      ? plan.planningNotes.map((note) => cleanText(note, 180)).filter(Boolean).slice(0, 6)
+      : [
+          ...((plan.mustInclude ?? []).map((item) => `Include: ${cleanText(item, 150)}`)),
+          ...((plan.mustAvoid ?? []).map((item) => `Avoid: ${cleanText(item, 150)}`))
+        ].filter(Boolean).slice(0, 6),
+    critique: critique.map((item) => cleanText(item, 220)).filter(Boolean).slice(0, 5),
+    revisionSummary: cleanText(revisionSummary, 260) || "Revised after self-critique.",
+    attempts: Math.max(1, attempts)
+  };
+}
 
-  try {
-    const response = await fetch(new URL("responses", `${getOpenAiBaseUrl()}/`), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        model,
-        input: [
-          {
-            role: "system",
-            content:
-              "You are Autopilot's artifact builder. Return only valid JSON for an in-app artifact. Do not include markdown fences."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-        store: false
-      }),
-      signal: controller.signal
-    });
-    const body = (await response.json()) as OpenAiResponsesResponse;
-    if (!response.ok) {
-      return { payload: null, reason: body.error?.message || `OpenAI Responses request failed with status ${response.status}.` };
-    }
+function buildArtifactTraceFromProxy(trace: unknown, fallbackKind: AiArtifactKind, fallbackAttempt: number): ArtifactGenerationTrace {
+  const value = typeof trace === "object" && trace !== null ? (trace as Record<string, unknown>) : {};
+  const rawPlan = typeof value.plan === "object" && value.plan !== null ? (value.plan as ArtifactPlanPayload) : {};
+  const rawCritique = typeof value.critique === "object" && value.critique !== null ? (value.critique as ArtifactCritiquePayload) : {};
+  const rawQuality = typeof value.qualityReport === "object" && value.qualityReport !== null ? (value.qualityReport as { attempts?: unknown }) : {};
+  const rawModelRouting = typeof value.modelRouting === "object" && value.modelRouting !== null ? (value.modelRouting as Record<string, unknown>) : {};
+  const attempts = typeof rawQuality.attempts === "number" && Number.isFinite(rawQuality.attempts)
+    ? rawQuality.attempts
+    : typeof value.attempts === "number" && Number.isFinite(value.attempts)
+      ? value.attempts
+      : fallbackAttempt;
+  const revisionSummary = typeof value.revisionSummary === "string" ? value.revisionSummary : "Revised by the secure artifact endpoint.";
+  const traceResult = buildArtifactTrace(rawPlan, fallbackKind, rawCritique.flaws ?? [], revisionSummary, attempts);
+  const modelRouting = Object.fromEntries(
+    Object.entries(rawModelRouting)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0)
+      .map(([key, model]) => [key, model.trim()])
+  );
+  return Object.keys(modelRouting).length > 0 ? { ...traceResult, modelRouting } : traceResult;
+}
 
-    return { payload: parseGeneratedArtifactPayload(getResponsesOutputText(body)) };
-  } catch (error) {
-    return {
-      payload: null,
-      reason:
-        error instanceof Error && error.name === "AbortError"
-          ? `OpenAI artifact generation timed out after ${Math.round(getOpenAiRequestTimeoutMs() / 1000)} seconds.`
-          : error instanceof Error
-            ? error.message
-            : "OpenAI artifact generation failed."
-    };
-  } finally {
-    clearTimeout(timeout);
+function parseGeneratedArtifactValue(value: unknown): GeneratedArtifactPayload | null {
+  if (typeof value === "string") {
+    return parseGeneratedArtifactPayload(value);
   }
-}
-
-async function callOpenAiChatCompletions(
-  apiKey: string,
-  model: string,
-  prompt: string
-): Promise<{ payload: GeneratedArtifactPayload | null; reason?: string }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), getOpenAiRequestTimeoutMs());
-
-  try {
-    const response = await fetch(new URL("chat/completions", `${getOpenAiBaseUrl()}/`), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are Autopilot's artifact builder. Return only valid JSON for an in-app artifact. Do not include markdown fences."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ]
-      }),
-      signal: controller.signal
-    });
-    const body = (await response.json()) as OpenAiChatCompletionsResponse;
-    if (!response.ok) {
-      return { payload: null, reason: body.error?.message || `OpenAI chat request failed with status ${response.status}.` };
-    }
-
-    return { payload: parseGeneratedArtifactPayload(body.choices?.[0]?.message?.content ?? "") };
-  } catch (error) {
-    return {
-      payload: null,
-      reason:
-        error instanceof Error && error.name === "AbortError"
-          ? `OpenAI artifact generation timed out after ${Math.round(getOpenAiRequestTimeoutMs() / 1000)} seconds.`
-          : error instanceof Error
-            ? error.message
-            : "OpenAI artifact generation failed."
-    };
-  } finally {
-    clearTimeout(timeout);
+  if (!value || typeof value !== "object") {
+    return null;
   }
-}
-
-function buildArtifactGenerationPrompt(requestText: string, fallbackKind: ArtifactKind): string {
-  return `Read the email or prompt below and generate the requested work product at a high professional quality bar.
-
-Choose artifactKind as one of: document, slide_deck, website_design.
-If the request says slides, deck, pitch, or presentation, use slide_deck.
-If it says website, landing page, mockup, UI, Figma, design, or homepage, use website_design.
-If it asks for a report, proposal, writeup, memo, assignment, or reply draft, use document.
-
-Quality rules:
-- Produce the actual requested deliverable, not a summary of the email.
-- Do not write sections named "What Autopilot understood".
-- Do not say "Autopilot prepared this document from the source email".
-- Transform the source into new work with structure, concrete recommendations, decisions, next steps, or ready-to-send draft copy.
-- Keep copied source wording low. Quote only short fragments when necessary.
-- If information is missing, still draft the useful parts and put one focused question in humanQuestion.
-- If this is research, include source URLs or a source section.
-
-Return JSON only:
-{
-  "title": "artifact title",
-  "summary": "short summary",
-  "artifactKind": "${fallbackKind}",
-  "documentMarkdown": "# Title\\n...",
-  "slides": [{"title":"Slide title","bullets":["bullet"],"speakerNotes":"notes"}],
-  "websiteHtml": "<main>...</main>",
-  "websiteCss": "body{...}",
-  "websiteSections": [{"name":"Hero","summary":"..."}],
-  "finalApprovalReason": "why the user must approve before sending/publishing/sharing, or empty",
-  "humanQuestion": "only if missing information blocks the work"
-}
-
-Use the email details. Do the work now; do not tell the user to do it.
-
-Email or prompt:
-${requestText}`;
+  return value as GeneratedArtifactPayload;
 }
 
 function parseGeneratedArtifactPayload(content: string): GeneratedArtifactPayload | null {
@@ -496,7 +490,8 @@ function parseGeneratedArtifactPayload(content: string): GeneratedArtifactPayloa
   try {
     const parsed = JSON.parse(trimmed) as GeneratedArtifactPayload;
     return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
+  } catch (error) {
+    warnAgentIssue("AI artifact JSON parse failed.", error);
     return null;
   }
 }
@@ -661,7 +656,8 @@ function createAgentRun(
   plan: ActionPlan,
   usedFallback: boolean,
   fallbackReason?: string,
-  qualityResult?: ArtifactQualityResult | null
+  qualityResult?: ArtifactQualityResult | null,
+  trace?: ArtifactGenerationTrace
 ): AgentRun {
   const now = Date.now();
   const events: AgentRunEvent[] = [
@@ -688,6 +684,22 @@ function createAgentRun(
         : `Quality needs review at ${qualityResult.score}/100: ${summarizeQualityFailure(qualityResult)}`
     });
   }
+  if (trace) {
+    events.push({
+      id: makeId("event"),
+      createdAt: now,
+      level: "info",
+      message: `Planned artifact: ${trace.inferredAsk} Audience: ${trace.audience}.`
+    });
+    if (trace.critique.length > 0) {
+      events.push({
+        id: makeId("event"),
+        createdAt: now,
+        level: "info",
+        message: `Self-critique before revision: ${trace.critique.slice(0, 3).join(" ")}`
+      });
+    }
+  }
   if (usedFallback) {
     events.push({
       id: makeId("event"),
@@ -711,6 +723,7 @@ function createAgentRun(
     planId: plan.id,
     state: plan.steps.some((step) => step.state === "needs_user") ? "waiting_for_user" : "completed",
     events,
+    artifactTrace: trace,
     createdAt: now,
     updatedAt: now
   };
@@ -721,7 +734,8 @@ function buildFallbackArtifactPayload(message: EmailMessageSummary, kind: Artifa
   return {
     artifactKind: kind,
     title: fallbackTitle(message, kind),
-    summary: `Prepared from ${message.from} - ${message.subject}`,
+    summary: `AI unavailable fallback draft from ${message.from} - ${message.subject}. Do not send or export without regenerating with the AI backend.`,
+    replyDraftMarkdown: buildFallbackReplyDraft(message, kind, true),
     documentMarkdown: buildFallbackDocument(message),
     slides: buildFallbackSlides(message),
     websiteHtml: buildFallbackWebsiteHtml(message),
@@ -735,33 +749,71 @@ function buildFallbackArtifactPayload(message: EmailMessageSummary, kind: Artifa
   };
 }
 
+function buildReplyDraftMarkdown(
+  message: EmailMessageSummary,
+  payload: GeneratedArtifactPayload,
+  artifactKind: ArtifactKind,
+  qualityResult: ArtifactQualityResult,
+  usedFallback: boolean
+): string {
+  const modelDraft = cleanBlock(payload.replyDraftMarkdown);
+  const draft = modelDraft || buildFallbackReplyDraft(message, artifactKind, usedFallback);
+  const qualityLine = qualityResult.passed
+    ? `\n\n---\nDraft quality: paired with artifact quality ${qualityResult.score}/100. Review and approve before sending.`
+    : `\n\n---\nDraft quality: needs review with artifact quality ${qualityResult.score}/100. ${summarizeQualityFailure(qualityResult)}`;
+  return `${draft}${qualityLine}`.trim().slice(0, 24000);
+}
+
+function buildFallbackReplyDraft(message: EmailMessageSummary, artifactKind: ArtifactKind, usedFallback = false): string {
+  const source = cleanBlock(message.actionText || message.snippet || "");
+  const details = extractUsefulSourceDetails(source);
+  const senderFirstName = cleanText(message.from, 80).split(/\s+/u)[0] || "there";
+  const deliverable =
+    artifactKind === "slide_deck"
+      ? "the deck"
+      : artifactKind === "website_design"
+        ? "the website design"
+        : "the document";
+  const fallbackNotice = usedFallback
+    ? "\n\nNote for review: Autopilot could not reach the secure AI backend, so this is a blocked fallback draft. Please regenerate before sending."
+    : "";
+  return `Hi ${senderFirstName},
+
+Thanks for sending this over. I prepared ${deliverable} for review and pulled the key next steps into a cleaner shape.
+
+${details[0] ? `I focused first on: ${details[0]}` : "I focused first on the core request, the expected deliverable, and the next approval step."}
+${details[1] ? `I also noted: ${details[1]}` : "I also noted the owner, deadline, and any missing detail that should be confirmed before sending anything out."}
+
+Next step: I will review the final version, make any needed edits, and confirm before sharing it externally.
+
+Best,${fallbackNotice}`;
+}
+
 function buildFallbackDocument(message: EmailMessageSummary): string {
   const source = cleanBlock(message.actionText || message.snippet || "No readable body was available.");
   const details = extractUsefulSourceDetails(source);
   const subject = message.subject || "Generated document";
-  return `# ${message.subject || "Generated document"}
+  return `# AI unavailable fallback: ${message.subject || "Generated document"}
+
+> Offline placeholder. Autopilot could not reach the AI backend, so this is a review scaffold, not a finished deliverable.
 
 ## Executive Summary
-This draft turns the request from ${message.from || "the source"} into a concrete work product. The likely goal is to respond to "${subject}" with something reviewable, specific, and ready for a final approval step.
+This scaffold names the source from ${message.from || "the source"} and keeps the work blocked until the secure AI backend can generate a real client-ready deliverable. Date to confirm: review the original email for any deadline tied to "${subject}".
 
 ## Draft Deliverable
-Use this as the first version:
+Use this only as a placeholder checklist:
 
 - Acknowledge the request and confirm the core outcome.
 - Address the most important details first: ${details[0] ?? "the main request, deadline, and expected response"}.
 - Include the supporting detail that matters: ${details[1] ?? "who needs the work, where it will be used, and what decision it enables"}.
 - Close with a clear next step and ask for any missing detail only if it blocks final delivery.
 
-## Recommended Response
-Hi,
-
-Thanks for sending this over. I can take this forward and prepare the requested work. Based on the details I have, the priority is ${details[0] ?? "to produce a clear first version for review"}.
-
-I will prepare the deliverable with the relevant context, the requested next steps, and any final approval points separated out so nothing is sent or shared before review.
+## Decision Needed
+Owner: ${message.from || "source sender"}. Decision needed: regenerate this artifact with the AI backend before sending, sharing, publishing, or exporting.
 
 ## Action Plan
 - Review the source details and confirm whether any date, audience, or format requirement is missing.
-- Revise this draft in the Design workspace if tone, length, or structure needs to change.
+- Regenerate this draft in the Design workspace after AI configuration is healthy.
 - Export or approve only after the final send/share step is clear.
 
 ## Source Notes
@@ -789,22 +841,23 @@ function buildFallbackSlides(message: EmailMessageSummary): SlideArtifactSlide[]
   return [
     {
       id: makeId("slide"),
-      title: subject,
-      bullets: [context, details[1] ?? "Define the audience, deadline, and final approval path before sharing."]
+      title: `AI unavailable: ${subject}`,
+      bullets: ["Offline placeholder. Regenerate with the AI backend before presenting.", context, "Date to confirm from the original email."]
     },
     {
       id: makeId("slide"),
-      title: "Recommended direction",
+      title: "Decision needed",
       bullets: [
-        details[2] ?? "Turn the request into a concise, reviewable deliverable.",
-        "Keep the final send, share, submit, or publish step behind user approval."
+        `Owner: ${message.from || "source sender"}.`,
+        details[2] ?? "Confirm audience, deadline, and approval path.",
+        "Do not send, share, submit, or publish this fallback."
       ]
     },
     {
       id: makeId("slide"),
       title: "Next step",
       bullets: [
-        details[3] ?? "Review this first pass in Artifact Studio and revise the content where needed.",
+        details[3] ?? "Reconnect the secure AI backend, then regenerate the deck in Artifact Studio.",
         "Export or approve only when the wording and format are ready."
       ]
     }
@@ -815,16 +868,16 @@ function buildFallbackWebsiteHtml(message: EmailMessageSummary): string {
   const title = message.subject || "Generated website design";
   const source = cleanBlock(message.actionText || message.snippet || "");
   const details = extractUsefulSourceDetails(source);
-  const copy = (details[0] ?? cleanText(source, 260)) || "Autopilot prepared this design from the available request details.";
+  const copy = (details[0] ?? cleanText(source, 260)) || "AI unavailable fallback draft. Regenerate before using this page.";
   return `<main class="artifact-page">
   <section class="artifact-hero">
-    <p class="artifact-kicker">Autopilot design</p>
+    <p class="artifact-kicker">AI unavailable fallback</p>
     <h1 class="artifact-title">${escapeHtml(title)}</h1>
     <p class="artifact-copy">${escapeHtml(copy)}</p>
     <div class="artifact-grid">
       <article class="artifact-card"><strong>Context</strong><p>${escapeHtml(details[1] ?? "Use the source request to focus the page on one clear outcome.")}</p></article>
-      <article class="artifact-card"><strong>Direction</strong><p>${escapeHtml(details[2] ?? "Revise copy, sections, and layout in the Design workspace before exporting.")}</p></article>
-      <article class="artifact-card"><strong>Approval</strong><p>${escapeHtml(details[3] ?? "Export as HTML and CSS only after the user approves the final version.")}</p></article>
+      <article class="artifact-card"><strong>Decision needed</strong><p>${escapeHtml(details[2] ?? `Owner: ${message.from || "source sender"}. Date to confirm before launch.`)}</p></article>
+      <article class="artifact-card"><strong>Approval</strong><p>${escapeHtml(details[3] ?? "Regenerate with AI, then export as HTML and CSS only after the user approves the final version.")}</p></article>
     </div>
   </section>
 </main>`;
@@ -836,11 +889,34 @@ function fallbackTitle(message: EmailMessageSummary, kind: ArtifactKind): string
 }
 
 function buildEmailWorkRequestText(message: EmailMessageSummary): string {
+  const body = cleanBlock(message.actionText || message.snippet || "");
   return [
+    "Autopilot is generating work from a real Gmail message. Read the source carefully before writing.",
+    "Infer the actual requested deliverable. If the message only needs a reply, generate a polished reply draft. If it asks for a deck, document, website, or action plan, build that deliverable and keep any reply draft secondary.",
+    "Do not restate the email back to the user. Produce the useful output the sender implicitly needs.",
     `From: ${message.from}${message.fromEmail ? ` <${message.fromEmail}>` : ""}`,
+    `Received: ${new Date(message.receivedAt).toISOString()}`,
     `Subject: ${message.subject}`,
+    `Thread: ${message.threadId}`,
+    `Gmail URL: ${message.url}`,
     `Snippet: ${message.snippet}`,
-    `Body: ${message.actionText || message.snippet}`
+    "Full email body:",
+    body || "(No readable body was available; use the sender, subject, and snippet only.)"
+  ].join("\n");
+}
+
+function buildPersistedEmailArtifactPrompt(message: EmailMessageSummary): string {
+  const body = cleanBlock(message.actionText || message.snippet || "");
+  const bodyExcerpt = cleanText(body, 1200);
+  return [
+    "Email-to-artifact request metadata. Autopilot used the full selected source during generation, but stores only this compact local prompt on the artifact.",
+    `From: ${cleanText(message.from, 160)}${message.fromEmail ? ` <${cleanText(message.fromEmail, 180)}>` : ""}`,
+    `Received: ${new Date(message.receivedAt).toISOString()}`,
+    `Subject: ${cleanText(message.subject, 220)}`,
+    `Thread: ${cleanText(message.threadId, 180)}`,
+    message.url ? `Gmail URL: ${message.url}` : "Gmail URL: unavailable",
+    `Snippet: ${cleanText(message.snippet, 600) || "(No snippet available.)"}`,
+    `Body excerpt: ${bodyExcerpt || "(No readable body was available; use the source link to reopen the original email.)"}`
   ].join("\n");
 }
 
@@ -848,35 +924,9 @@ function isResearchLikeRequest(requestText: string): boolean {
   return /\b(research|brief|sources|market|industry|competitor|analysis|report|cite|citation|latest)\b/iu.test(requestText);
 }
 
-function getResponsesOutputText(body: OpenAiResponsesResponse): string {
-  if (body.output_text?.trim()) {
-    return body.output_text;
-  }
-
-  return (
-    body.output
-      ?.flatMap((item) => item.content ?? [])
-      .map((content) => content.text ?? "")
-      .join("\n")
-      .trim() ?? ""
-  );
-}
-
-function getOpenAiApiKey(): string {
-  return (process.env.AUTOPILOT_OPENAI_API_KEY || process.env.OPENAI_API_KEY || "").trim();
-}
-
-function getOpenAiModel(): string {
-  return (process.env.AUTOPILOT_OPENAI_MODEL || DEFAULT_OPENAI_MODEL).trim();
-}
-
-function getOpenAiBaseUrl(): string {
-  return (process.env.AUTOPILOT_OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim().replace(/\/+$/u, "");
-}
-
-function getOpenAiRequestTimeoutMs(): number {
-  const value = Number.parseInt(process.env.AUTOPILOT_OPENAI_REQUEST_TIMEOUT_MS || "", 10);
-  return Number.isInteger(value) && value >= 5000 && value <= 120000 ? value : DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
+function warnAgentIssue(message: string, error?: unknown): void {
+  const detail = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
+  console.warn(detail ? `${message} ${detail}` : message);
 }
 
 function cleanText(value: unknown, maxLength: number): string {

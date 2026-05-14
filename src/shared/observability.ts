@@ -3,6 +3,7 @@ import type { WorkspaceRole } from "./workItems.js";
 export type AutopilotRunLogEventKind =
   | "assignment_routed"
   | "assignment_updated"
+  | "source_synced"
   | "proactive_started"
   | "proactive_finished"
   | "automation_run"
@@ -38,6 +39,7 @@ export type CreateRunLogEventInput = {
 const EVENT_KINDS = new Set<AutopilotRunLogEventKind>([
   "assignment_routed",
   "assignment_updated",
+  "source_synced",
   "proactive_started",
   "proactive_finished",
   "automation_run",

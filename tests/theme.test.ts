@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_THEME } from "../src/shared/browserModel";
-import { BLUE_THEME, THEME_PRESETS, contrastRatio, isHexColor, sanitizeTheme } from "../src/renderer/theme";
+import { BLUE_THEME, DARK_THEME, THEME_PRESETS, applyTheme, contrastRatio, isHexColor, sanitizeTheme } from "../src/renderer/theme";
 
 describe("theme utilities", () => {
   it("accepts six-digit hex colors", () => {
@@ -28,5 +28,22 @@ describe("theme utilities", () => {
     expect(Object.values(BLUE_THEME).every(isHexColor)).toBe(true);
     expect(contrastRatio(BLUE_THEME.surface, BLUE_THEME.primary)).toBeGreaterThan(4.5);
     expect(contrastRatio(BLUE_THEME.sidebarText, BLUE_THEME.sidebarBg)).toBeGreaterThan(4.5);
+  });
+
+  it("ships a valid dark preset and marks the root with data-theme", () => {
+    expect(THEME_PRESETS.some((preset) => preset.id === "dark")).toBe(true);
+    expect(Object.values(DARK_THEME).every(isHexColor)).toBe(true);
+    expect(contrastRatio(DARK_THEME.text, DARK_THEME.surface)).toBeGreaterThan(4.5);
+    expect(contrastRatio(DARK_THEME.sidebarText, DARK_THEME.sidebarBg)).toBeGreaterThan(4.5);
+
+    const style = new Map<string, string>();
+    const root = {
+      dataset: {} as Record<string, string>,
+      style: {
+        setProperty: (key: string, value: string) => style.set(key, value)
+      }
+    } as unknown as HTMLElement;
+    applyTheme(DARK_THEME, root);
+    expect(root.dataset.theme).toBe("dark");
   });
 });

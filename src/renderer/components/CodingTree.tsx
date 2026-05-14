@@ -18,11 +18,12 @@ export function CodingTree({ node, openFolders, activePath, autoOpenRoot = true,
   const isOpen = isFolder && ((autoOpenRoot && level === 0) || Boolean(openFolders[node.path]));
   const Icon = isFolder ? (isOpen ? FolderOpen : Folder) : getCodingFileIcon(node.name);
   const isActive = activePath === node.path;
+  const tone = isFolder ? "folder" : getCodingFileTone(node.name);
 
   return (
     <div className="coding-tree-node">
       <button
-        className={`coding-file ${isActive ? "active" : ""}`}
+        className={`coding-file coding-file-tone-${tone} ${isActive ? "active" : ""}`}
         style={{ "--file-level": level } as CSSProperties}
         type="button"
         onClick={() => onOpen(node)}
@@ -58,4 +59,15 @@ function getCodingFileIcon(name: string): LucideIcon {
   }
 
   return FileText;
+}
+
+function getCodingFileTone(name: string): string {
+  const lowerName = name.toLowerCase();
+  if (/\.(ts|tsx)$/u.test(lowerName)) return "typescript";
+  if (/\.(js|jsx|mjs|cjs)$/u.test(lowerName)) return "javascript";
+  if (/\.(css|scss|sass|less)$/u.test(lowerName)) return "style";
+  if (/\.(json|jsonc)$/u.test(lowerName)) return "json";
+  if (/\.(md|mdx|txt)$/u.test(lowerName)) return "markdown";
+  if (/\.(png|jpe?g|gif|webp|avif|svg)$/u.test(lowerName)) return "asset";
+  return "file";
 }

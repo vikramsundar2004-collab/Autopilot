@@ -1,6 +1,6 @@
 import type { BrowserTheme, Tab } from "./browserModel.js";
 
-export type WorkspaceView = "browser" | "coding" | "productivity" | "design" | "settings";
+export type WorkspaceView = "home" | "browser" | "coding" | "productivity" | "chatting" | "design" | "settings";
 
 export type WorkspaceTheme = Partial<
   Pick<
@@ -43,7 +43,7 @@ export type WorkspaceProfile = {
   id: string;
   label: string;
   view: WorkspaceView;
-  icon: "globe" | "code" | "check" | "chat" | "palette" | "settings";
+  icon: "home" | "globe" | "code" | "check" | "chat" | "palette" | "settings";
   color: "blue" | "violet" | "green" | "orange" | "pink" | "forest";
   isDefault: boolean;
   profilePartition: string;
@@ -91,6 +91,22 @@ const DEFAULT_PARTITION = "persist:autopilot";
 const DEFAULT_UPDATED_AT = 1;
 
 export const DEFAULT_WORKSPACE_PROFILES: WorkspaceProfile[] = [
+  {
+    id: "home",
+    label: "home",
+    view: "home",
+    icon: "home",
+    color: "forest",
+    isDefault: true,
+    profilePartition: DEFAULT_PARTITION,
+    theme: {},
+    pinnedUrls: [],
+    savedTabs: [],
+    tabGroups: [],
+    splitView: null,
+    linkRoutes: [],
+    updatedAt: DEFAULT_UPDATED_AT
+  },
   {
     id: "browsing",
     label: "browsing",
@@ -142,7 +158,7 @@ export const DEFAULT_WORKSPACE_PROFILES: WorkspaceProfile[] = [
   {
     id: "chatting",
     label: "chatting",
-    view: "browser",
+    view: "chatting",
     icon: "chat",
     color: "orange",
     isDefault: true,
@@ -173,16 +189,19 @@ export const DEFAULT_WORKSPACE_PROFILES: WorkspaceProfile[] = [
   }
 ];
 
-const VALID_VIEWS: WorkspaceView[] = ["browser", "coding", "productivity", "design", "settings"];
-const VALID_ICONS: WorkspaceProfile["icon"][] = ["globe", "code", "check", "chat", "palette", "settings"];
+const VALID_VIEWS: WorkspaceView[] = ["home", "browser", "coding", "productivity", "chatting", "design", "settings"];
+const VALID_ICONS: WorkspaceProfile["icon"][] = ["home", "globe", "code", "check", "chat", "palette", "settings"];
 const VALID_COLORS: WorkspaceProfile["color"][] = ["blue", "violet", "green", "orange", "pink", "forest"];
 
 export function sanitizeWorkspaceState(value: unknown): WorkspaceState {
   const candidate = value && typeof value === "object" ? (value as Partial<WorkspaceState>) : {};
   const profiles = sanitizeWorkspaceProfiles(candidate.profiles);
+  const requestedActiveWorkspaceId = typeof candidate.activeWorkspaceId === "string" ? candidate.activeWorkspaceId : "";
   const activeWorkspaceId =
-    typeof candidate.activeWorkspaceId === "string" && profiles.some((profile) => profile.id === candidate.activeWorkspaceId)
-      ? candidate.activeWorkspaceId
+    requestedActiveWorkspaceId && profiles.some((profile) => profile.id === requestedActiveWorkspaceId)
+      ? requestedActiveWorkspaceId
+      : requestedActiveWorkspaceId === "responses" && profiles.some((profile) => profile.id === "productivity")
+      ? "productivity"
       : "browsing";
 
   return {
@@ -200,6 +219,9 @@ export function sanitizeWorkspaceProfiles(value: unknown): WorkspaceProfile[] {
   if (Array.isArray(value)) {
     for (const rawProfile of value) {
       const profile = sanitizeWorkspaceProfile(rawProfile);
+      if (profile?.id === "responses") {
+        continue;
+      }
       if (profile) {
         byId.set(profile.id, profile);
       }

@@ -1,5 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, shell, type Rectangle } from "electron";
-import { randomUUID } from "node:crypto";
+import { app, BrowserWindow, dialog, ipcMain, session, shell, type Rectangle } from "electron";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,17 +18,35 @@ import { loadAutopilotEnv } from "./env.js";
 import { PasswordStore } from "./passwords.js";
 import { ProductivityTaskStore } from "./productivityTasks.js";
 import { ObservabilityStore } from "./observability.js";
+import { AccountService, AUTOPILOT_AUTH_PROTOCOL, isAutopilotAccountCallbackUrl } from "./account.js";
+import { DiagnosticStore } from "./diagnostics.js";
 import { TabController } from "./tabs.js";
 import { WorkspaceStore } from "./workspaces.js";
 import { AssistantService } from "./assistant.js";
 import { AgentService } from "./agent.js";
+import { AiGateway } from "./aiGateway.js";
 import { ArtifactStore } from "./artifacts.js";
 import { AutomationService } from "./automation.js";
+import { AgentRuntimeService } from "./agentRuntime.js";
 import { SlackService } from "./slack.js";
+import { WorkGraphStore, type WorkGraphBuildInput } from "./workGraph.js";
+import { MoneyMovementService } from "./moneyMovement.js";
 import type { AddBookmarkFolderInput, AddBookmarkInput, BookmarkNodeTarget } from "../shared/bookmarks.js";
+import type { CalendarWriteRequest } from "../shared/calendar.js";
 import type { AgentPlanFromEmailRequest, AgentStartRunRequest } from "../shared/agent.js";
 import type { ArtifactCreateInput, ArtifactUpdateInput } from "../shared/artifacts.js";
-import type { CodingAccessMode, CodingCommandRequest, CodingDownloadEntry, CodingTerminalInputRequest, CodingTerminalOpenRequest, CodingTreeNode } from "../shared/coding.js";
+import type {
+  CodingAccessMode,
+  CodingCommandRequest,
+  CodingDownloadEntry,
+  CodingPreviewValidationRequest,
+  CodingTerminalInputRequest,
+  CodingTerminalOpenRequest,
+  CodingTreeNode,
+  GitCommitRequest,
+  GitPushRequest
+} from "../shared/coding.js";
+import type { InvoiceCandidate, PaymentMode, PaymentProposalInput, PaymentProviderKind, PaymentDestination } from "../shared/highImpactActions.js";
 import type { PasswordCaptureInput } from "../shared/passwords.js";
 import {
   DEFAULT_ASSISTANT_CONTEXT_SOURCES,
@@ -37,6 +54,7 @@ import {
   type AssistantContextItem,
   type AssistantContextSource
 } from "../shared/assistant.js";
+import { filterBlockedEmailMessages, normalizeEmailSenderAddress, sanitizeEmailOrganizationActions } from "../shared/email.js";
 import { sanitizeProductivitySyncSourceIds, type ProductivityTaskState } from "../shared/productivity.js";
 import type { ProductivitySourceSyncResult } from "../shared/productivity.js";
 import { getMostRecentWorkspaceTabId, type WorkspaceProfile } from "../shared/workspaces.js";
@@ -46,28 +64,41 @@ import { buildProactiveWorkPlan } from "../shared/proactiveWork.js";
 import { buildTodaysCallPlan } from "../shared/todaysCall.js";
 import { getRouteReviewReason, getWorkItemOwnership, getWorkItemPermissionLevel, needsRouteReview } from "../shared/workItems.js";
 import type { WorkAssignment, WorkItem } from "../shared/workItems.js";
+import { buildWorkTwinReplay, type WorkGraphItem } from "../shared/workGraph.js";
 import { CodingWorkspace } from "./coding.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 let tabs: TabController | null = null;
+let mainWindowRef: BrowserWindow | null = null;
+const pendingAccountCallbackUrls: string[] = [];
 loadAutopilotEnv();
 const passwordStore = new PasswordStore();
-const emailService = new EmailService();
-const googleCalendarService = new GoogleCalendarService(emailService);
 const codingWorkspace = new CodingWorkspace();
 const workspaceStore = new WorkspaceStore();
 const observabilityStore = new ObservabilityStore();
+const diagnosticStore = new DiagnosticStore();
+const accountService = new AccountService(() => app.getPath("userData"));
+const aiGateway = new AiGateway(() => accountService.getSessionAccessToken());
+const emailService = new EmailService(undefined, undefined, aiGateway);
+const googleCalendarService = new GoogleCalendarService(emailService);
 const productivityTaskStore = new ProductivityTaskStore(undefined, observabilityStore);
-const assistantService = new AssistantService();
+const assistantService = new AssistantService(aiGateway);
 const slackService = new SlackService();
 const artifactStore = new ArtifactStore(
   () => app.getPath("userData"),
   () => path.join(app.getPath("documents"), "Autopilot Artifacts")
 );
-const agentService = new AgentService(artifactStore, emailService, () => app.getPath("userData"));
+const agentService = new AgentService(artifactStore, emailService, () => app.getPath("userData"), aiGateway);
 const automationService = new AutomationService(() => app.getPath("userData"), codingWorkspace, artifactStore);
+const workGraphStore = new WorkGraphStore(() => app.getPath("userData"));
+const agentRuntimeService = new AgentRuntimeService(() => app.getPath("userData"));
+const moneyMovementService = new MoneyMovementService(
+  () => app.getPath("userData"),
+  () => accountService.getStatus(),
+  () => accountService.getSessionAccessToken()
+);
 const downloadEntries: CodingDownloadEntry[] = [];
 const MAX_DOWNLOAD_ENTRIES = 40;
 const DOWNLOAD_HISTORY_FILE = "download-history.json";
@@ -75,16 +106,203 @@ let downloadTrackingRegistered = false;
 let downloadHistoryLoaded = false;
 let downloadHistorySaveTimer: NodeJS.Timeout | null = null;
 
+function registerAutopilotAccountProtocol(): void {
+  if (process.defaultApp) {
+    const appEntry = process.argv[1] ? path.resolve(process.argv[1]) : undefined;
+    if (appEntry) {
+      app.setAsDefaultProtocolClient(AUTOPILOT_AUTH_PROTOCOL, process.execPath, [appEntry]);
+      return;
+    }
+  }
+
+  app.setAsDefaultProtocolClient(AUTOPILOT_AUTH_PROTOCOL);
+}
+
+function findAccountCallbackUrls(argv: string[]): string[] {
+  return argv.filter((candidate) => typeof candidate === "string" && isAutopilotAccountCallbackUrl(candidate));
+}
+
+async function publishAccountStatus(): Promise<void> {
+  if (mainWindowRef && !mainWindowRef.webContents.isDestroyed()) {
+    mainWindowRef.webContents.send("account:changed", await accountService.getStatus());
+  }
+}
+
+async function handleAccountCallbackUrl(callbackUrl: string): Promise<void> {
+  if (!app.isReady()) {
+    pendingAccountCallbackUrls.push(callbackUrl);
+    return;
+  }
+
+  const result = await accountService.completeMagicLinkCallback(callbackUrl);
+  await publishAccountStatus();
+  if (tabs) {
+    tabs.createTab(createAccountCallbackNoticeUrl(result.success, result.reason ?? "Autopilot account updated.", result.nextStep));
+  }
+}
+
+async function processPendingAccountCallbacks(): Promise<void> {
+  while (pendingAccountCallbackUrls.length > 0) {
+    const callbackUrl = pendingAccountCallbackUrls.shift();
+    if (callbackUrl) {
+      await handleAccountCallbackUrl(callbackUrl);
+    }
+  }
+}
+
+function createAccountCallbackNoticeUrl(success: boolean, reason: string, nextStep?: string): string {
+  const title = success ? "Autopilot account signed in" : "Autopilot account link needs attention";
+  const safeTitle = escapeDataPageHtml(title);
+  const safeReason = escapeDataPageHtml(reason);
+  const safeNextStep = nextStep ? escapeDataPageHtml(nextStep) : "";
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>${safeTitle}</title>
+<style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4ebdd;color:#10231a;font-family:Inter,Aptos,system-ui,sans-serif}
+main{width:min(620px,calc(100vw - 48px));border:1px solid #cdb99f;border-radius:18px;background:#fffaf2;box-shadow:0 28px 88px rgba(51,39,31,.15);padding:34px}
+p{color:#6b5d4d;line-height:1.55}strong{color:#123c2b}
+</style>
+</head>
+<body data-autopilot-page="account-callback">
+<main>
+<p><strong>Autopilot account</strong></p>
+<h1>${safeTitle}</h1>
+<p>${safeReason}</p>
+${safeNextStep ? `<p>${safeNextStep}</p>` : ""}
+</main>
+</body>
+</html>`;
+
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
+function escapeDataPageHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    switch (character) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case "\"":
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
 function getAppIconPath(): string {
   return isDev
     ? path.join(__dirname, "../../public/autopilot-logo.ico")
     : path.join(__dirname, "../renderer/autopilot-logo.ico");
 }
 
-function denyPermissions(): void {
+function normalizePermissionOrigin(origin: string): string {
+  try {
+    return new URL(origin).origin;
+  } catch {
+    return origin;
+  }
+}
+
+function getPermissionOrigin(details: unknown, fallbackOrigin = ""): string {
+  if (details && typeof details === "object") {
+    const permissionDetails = details as {
+      requestingUrl?: unknown;
+      securityOrigin?: unknown;
+      embeddingOrigin?: unknown;
+    };
+    for (const candidate of [permissionDetails.requestingUrl, permissionDetails.securityOrigin, permissionDetails.embeddingOrigin]) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        return normalizePermissionOrigin(candidate);
+      }
+    }
+  }
+
+  return normalizePermissionOrigin(fallbackOrigin);
+}
+
+function isAllowedBrowserMediaOrigin(origin: string): boolean {
+  try {
+    const parsedOrigin = new URL(origin);
+    return parsedOrigin.protocol === "https:" || parsedOrigin.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+const browserMediaPermissionGrants = new Set<string>();
+
+async function promptForBrowserMediaPermission(origin: string): Promise<boolean> {
+  const hostname = (() => {
+    try {
+      return new URL(origin).hostname || origin;
+    } catch {
+      return origin;
+    }
+  })();
+  const result = await dialog.showMessageBox({
+    type: "question",
+    buttons: ["Allow", "Block"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "Allow camera and microphone?",
+    message: `${hostname} wants to use your camera and microphone.`,
+    detail: "Autopilot will remember this permission for this app session. You can reload the page and the site will keep working until you restart Autopilot."
+  });
+  return result.response === 0;
+}
+
+function configureSessionPermissions(): void {
   for (const currentSession of [session.defaultSession, session.fromPartition("persist:autopilot")]) {
-    currentSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
-      callback(false);
+    currentSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
+      const origin = getPermissionOrigin(details, requestingOrigin);
+      if (permission === "fullscreen") {
+        return isAllowedBrowserMediaOrigin(origin);
+      }
+
+      if (permission !== "media") {
+        return false;
+      }
+
+      return isAllowedBrowserMediaOrigin(origin) && browserMediaPermissionGrants.has(origin);
+    });
+    currentSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+      const origin = getPermissionOrigin(details);
+      if (permission === "fullscreen") {
+        callback(isAllowedBrowserMediaOrigin(origin));
+        return;
+      }
+
+      if (permission !== "media") {
+        callback(false);
+        return;
+      }
+
+      if (!isAllowedBrowserMediaOrigin(origin)) {
+        callback(false);
+        return;
+      }
+
+      if (browserMediaPermissionGrants.has(origin)) {
+        callback(true);
+        return;
+      }
+
+      void promptForBrowserMediaPermission(origin)
+        .then((allowed) => {
+          if (allowed) {
+            browserMediaPermissionGrants.add(origin);
+          }
+          callback(allowed);
+        })
+        .catch(() => callback(false));
     });
   }
 }
@@ -434,30 +652,27 @@ function summarizeCodingTree(tree: CodingTreeNode | null, depth = 0): string {
 
 function buildProductivityDraftBody(workItem: WorkItem): string {
   const source = [workItem.source.from, workItem.source.subject].filter(Boolean).join(" - ") || workItem.source.label;
-  const actionVerb = /\b(reply|respond|follow up|follow-up)\b/iu.test(`${workItem.title} ${workItem.context}`)
-    ? "send a clear response"
-    : /\b(schedule|reschedule|meeting|calendar)\b/iu.test(`${workItem.title} ${workItem.context}`)
-      ? "prepare the scheduling step"
-      : "prepare the requested work";
-
+  const recipientName = (workItem.source.from || "there").replace(/[<>().,]/gu, " ").trim().split(/\s+/u)[0] || "there";
+  const text = `${workItem.title} ${workItem.context} ${workItem.requestedOutput}`.toLowerCase();
+  const isScheduling = /\b(schedule|reschedule|meeting|calendar|available|availability)\b/u.test(text);
+  const isApproval = /\b(approve|approval|confirm|confirmation)\b/u.test(text);
+  const nextSentence = isScheduling
+    ? "I can help coordinate the timing. Please send the best available windows, and I will confirm the one that works before anything is placed on the calendar."
+    : isApproval
+      ? "I can review this and confirm the next step after checking the details."
+      : "I can take a look and follow up with the next step.";
   return [
-    `# ${workItem.title}`,
+    `Hi ${recipientName},`,
     "",
-    "## Draft",
-    `Hi,`,
+    `Thanks for the note about ${workItem.source.subject || workItem.title}. ${nextSentence}`,
     "",
-    `Thanks for the note. I can ${actionVerb}. Here is what I have captured so far: ${workItem.context}`,
+    `What I captured: ${workItem.context}`,
     "",
-    "Before anything is sent or submitted, please review this draft and confirm the final wording.",
+    "I will review the details before anything is sent, shared, submitted, or approved.",
     "",
-    "## Next Steps",
-    "- Confirm whether the draft has the right tone and details.",
-    "- Add any missing date, recipient, attachment, or deadline.",
-    "- Approve the final external action only when it is ready to send, share, submit, or publish.",
+    "Best,",
     "",
-    "## Source",
-    `- ${source}`,
-    workItem.source.url ? `- ${workItem.source.url}` : ""
+    `Source: ${source}`
   ]
     .filter((line) => line !== "")
     .join("\n");
@@ -517,6 +732,18 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
     if (!mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send("passwords:changed", passwordStore.list());
     }
+  }
+
+  async function publishDiagnostics(): Promise<void> {
+    if (!mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("diagnostics:changed", await diagnosticStore.list());
+    }
+  }
+
+  async function recordDiagnostic(input: Parameters<DiagnosticStore["append"]>[0]) {
+    const entry = await diagnosticStore.append(input);
+    await publishDiagnostics();
+    return entry;
   }
 
   async function startRoutedWorkItem(workItemId: string) {
@@ -579,13 +806,13 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
 
       if (assignment.role === "productivity") {
         const body = buildProductivityDraftBody(route.workItem);
-        const quality = evaluateDocumentQuality(body, `${route.workItem.title}\n${route.workItem.context}`, { minWords: 70 });
+        const quality = evaluateDocumentQuality(body, `${route.workItem.title}\n${route.workItem.context}`, { minWords: 35 });
         const drafts = await productivityTaskStore.upsertDraft({
           title: `Draft: ${route.workItem.title}`,
           body,
           preview: body,
           status: quality.passed ? "needs_review" : "draft",
-          artifactKind: "document",
+          artifactKind: "reply",
           source: route.workItem.source
         });
         const draft = drafts[0];
@@ -654,6 +881,73 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
       assignments: route.assignments,
       workItems: await productivityTaskStore.listWorkItems(),
       allAssignments: await productivityTaskStore.listWorkAssignments()
+    };
+  }
+
+  async function buildWorkGraphInput(): Promise<WorkGraphBuildInput> {
+    return {
+      browserSnapshot: controller.getSnapshot(),
+      emailMessages: emailService.listCachedMessages(),
+      workItems: await productivityTaskStore.listWorkItems(),
+      workAssignments: await productivityTaskStore.listWorkAssignments(),
+      artifacts: await artifactStore.listArtifacts(),
+      actionPlans: await agentService.listPlans(),
+      agentRuns: await agentService.listRuns(),
+      automationRuns: await automationService.listRuns(),
+      codingSnapshot: await codingWorkspace.getSnapshot()
+    };
+  }
+
+  async function buildWorkGraphSnapshot() {
+    return workGraphStore.buildSnapshot(await buildWorkGraphInput());
+  }
+
+  async function findWorkGraphItem(itemId: string): Promise<WorkGraphItem | null> {
+    const snapshot = await buildWorkGraphSnapshot();
+    return snapshot.items.find((item) => item.id === itemId) ?? null;
+  }
+
+  async function startSafeWorkGraphItem(itemId: string) {
+    const item = await findWorkGraphItem(itemId);
+    if (!item) {
+      return {
+        success: false,
+        reason: "Work Twin item was not found.",
+        snapshot: await buildWorkGraphSnapshot()
+      };
+    }
+
+    if (!item.shadow.eligible) {
+      return {
+        success: false,
+        item,
+        reason: item.shadow.why,
+        snapshot: await buildWorkGraphSnapshot()
+      };
+    }
+
+    if (item.id.startsWith("work-item:")) {
+      const workItemId = item.id.replace(/^work-item:/u, "");
+      const result = await startRoutedWorkItem(workItemId);
+      const latestItem = (await findWorkGraphItem(item.id)) ?? item;
+      await workGraphStore.recordShadowRun(latestItem, result.success ? "needs_approval" : "blocked");
+      return {
+        success: result.success,
+        item: latestItem,
+        reason: result.success ? "Safe work started and external-impact actions remain approval-gated." : result.reason,
+        snapshot: await buildWorkGraphSnapshot()
+      };
+    }
+
+    const run = await workGraphStore.recordShadowRun(item, item.externalAction.requiresApproval ? "needs_approval" : "completed");
+    return {
+      success: true,
+      item,
+      run,
+      reason: item.externalAction.requiresApproval
+        ? "Shadow Mode prepared the work and stopped before the external step."
+        : "Shadow Mode completed safe local work.",
+      snapshot: await buildWorkGraphSnapshot()
     };
   }
 
@@ -777,7 +1071,9 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("email:connect-gmail-external", () => emailService.connectGmail());
   ipcMain.handle("email:sync", () => emailService.syncInbox());
   ipcMain.handle("email:analyze-actions", (_event, messages) => emailService.analyzeActionItems(messages));
+  ipcMain.handle("email:organize", (_event, actions) => emailService.applyOrganizationActions(sanitizeEmailOrganizationActions(actions)));
   ipcMain.handle("email:disconnect", () => emailService.disconnect());
+  ipcMain.handle("calendar:write", (_event, request: CalendarWriteRequest) => googleCalendarService.writeEvent(request));
   ipcMain.handle("productivity:list-tasks", () => productivityTaskStore.listTasks());
   ipcMain.handle("productivity:list-drafts", () => productivityTaskStore.listDrafts());
   ipcMain.handle("productivity:list-work-items", () => productivityTaskStore.listWorkItems());
@@ -816,6 +1112,7 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   });
   ipcMain.handle("productivity:upsert-draft", (_event, input) => productivityTaskStore.upsertDraft(input));
   ipcMain.handle("productivity:delete-draft", (_event, draftId: string) => productivityTaskStore.deleteDraft(draftId));
+  ipcMain.handle("productivity:upsert-task", (_event, input) => productivityTaskStore.upsertTask(input));
   ipcMain.handle("productivity:update-task", (_event, taskId: string, patch) => productivityTaskStore.updateTask(taskId, patch));
   ipcMain.handle("productivity:set-task-state", (_event, taskId: string, state: ProductivityTaskState) =>
     productivityTaskStore.setTaskState(taskId, state)
@@ -912,91 +1209,95 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
       };
     }
 
-    for (const assignment of route.assignments) {
-      if (assignment.role === "design") {
-        await productivityTaskStore.updateWorkAssignment(assignment.id, { state: "running" });
-        const result =
-          route.workItem.source.provider === "gmail" && route.workItem.source.messageId
-            ? await agentService.planFromEmail({ messageId: route.workItem.source.messageId })
-            : await agentService.startRun({
-                prompt: `${route.workItem.title}\n\nContext: ${route.workItem.context}\n\nSource: ${route.workItem.source.label}`
-              });
-        await productivityTaskStore.updateWorkAssignment(assignment.id, {
-          state: result.success ? (result.plan.finalApproval.required ? "waiting_for_user" : "completed") : "failed",
-          linkedArtifactId: result.success ? result.artifact.id : undefined,
-          runLogId: result.success ? result.run.id : undefined,
-          qualityScore: result.success ? getArtifactQualityScore(result.artifact.summary) : undefined,
-          approvalState: result.success && result.plan.finalApproval.required ? "needs_review" : result.success ? "not_required" : "rejected",
-          outputRefs: result.success ? [{ kind: "artifact", id: result.artifact.id, label: "Design artifact" }] : [],
-          failureReason: result.success ? undefined : result.reason,
-          reason: result.success ? "Generated a Design artifact and action plan from the routed work item." : result.reason
-        });
-      }
+    void (async () => {
+      for (const assignment of route.assignments) {
+        if (assignment.role === "design") {
+          await productivityTaskStore.updateWorkAssignment(assignment.id, { state: "running" });
+          const result =
+            route.workItem.source.provider === "gmail" && route.workItem.source.messageId
+              ? await agentService.planFromEmail({ messageId: route.workItem.source.messageId })
+              : await agentService.startRun({
+                  prompt: `${route.workItem.title}\n\nContext: ${route.workItem.context}\n\nSource: ${route.workItem.source.label}`
+                });
+          await productivityTaskStore.updateWorkAssignment(assignment.id, {
+            state: result.success ? (result.plan.finalApproval.required ? "waiting_for_user" : "completed") : "failed",
+            linkedArtifactId: result.success ? result.artifact.id : undefined,
+            runLogId: result.success ? result.run.id : undefined,
+            qualityScore: result.success ? getArtifactQualityScore(result.artifact.summary) : undefined,
+            approvalState: result.success && result.plan.finalApproval.required ? "needs_review" : result.success ? "not_required" : "rejected",
+            outputRefs: result.success ? [{ kind: "artifact", id: result.artifact.id, label: "Design artifact" }] : [],
+            failureReason: result.success ? undefined : result.reason,
+            reason: result.success ? "Generated a Design artifact and action plan from the routed work item." : result.reason
+          });
+        }
 
-      if (assignment.role === "productivity") {
-        await productivityTaskStore.updateWorkAssignment(assignment.id, { state: "running" });
-        const body = buildProductivityDraftBody(route.workItem);
-        const drafts = await productivityTaskStore.upsertDraft({
-          title: `Draft: ${route.workItem.title}`,
-          body,
-          preview: body,
-          status: "needs_review",
-          artifactKind: "document",
-          source: route.workItem.source
-        });
-        const draft = drafts[0];
-        await productivityTaskStore.updateWorkAssignment(assignment.id, {
-          state: "waiting_for_user",
-          linkedDraftId: draft?.id,
-          approvalState: "needs_review",
-          outputRefs: draft?.id ? [{ kind: "draft", id: draft.id, label: "Productivity draft" }] : [],
-          reason: draft
-            ? "Prepared a Productivity draft for review. Final sending, sharing, submitting, or publishing still needs approval."
-            : "Productivity draft could not be saved; review the source item manually."
-        });
-      }
+        if (assignment.role === "productivity") {
+          await productivityTaskStore.updateWorkAssignment(assignment.id, { state: "running" });
+          const body = buildProductivityDraftBody(route.workItem);
+          const drafts = await productivityTaskStore.upsertDraft({
+            title: `Draft: ${route.workItem.title}`,
+            body,
+            preview: body,
+            status: "needs_review",
+            artifactKind: "reply",
+            source: route.workItem.source
+          });
+          const draft = drafts[0];
+          await productivityTaskStore.updateWorkAssignment(assignment.id, {
+            state: "waiting_for_user",
+            linkedDraftId: draft?.id,
+            approvalState: "needs_review",
+            outputRefs: draft?.id ? [{ kind: "draft", id: draft.id, label: "Productivity draft" }] : [],
+            reason: draft
+              ? "Prepared a Productivity draft for review. Final sending, sharing, submitting, or publishing still needs approval."
+              : "Productivity draft could not be saved; review the source item manually."
+          });
+        }
 
-      if (assignment.role === "coding") {
-        await productivityTaskStore.updateWorkAssignment(assignment.id, { state: "running" });
-        const planResult = await codingWorkspace.createAgentPlan(`${route.workItem.title}\n\n${route.workItem.context}`);
-        await productivityTaskStore.updateWorkAssignment(assignment.id, {
-          state: planResult.success ? "waiting_for_user" : "waiting_for_user",
-          linkedCodingProjectPath: planResult.success ? planResult.plan.projectRootPath : undefined,
-          approvalState: "needs_review",
-          outputRefs: planResult.success ? [{ kind: "coding", id: planResult.plan.projectRootPath, label: "Coding plan" }] : [],
-          failureReason: planResult.success ? undefined : planResult.reason,
-          reason: planResult.success
-            ? `Coding plan ready in ${planResult.plan.projectName}: ${planResult.plan.summary}`
-            : `${planResult.reason} Open a local project in Coding, then reroute this item to create the plan, changed-file review, tests, and approval trail.`
-        });
-      }
+        if (assignment.role === "coding") {
+          await productivityTaskStore.updateWorkAssignment(assignment.id, { state: "running" });
+          const planResult = await codingWorkspace.createAgentPlan(`${route.workItem.title}\n\n${route.workItem.context}`);
+          await productivityTaskStore.updateWorkAssignment(assignment.id, {
+            state: planResult.success ? "waiting_for_user" : "waiting_for_user",
+            linkedCodingProjectPath: planResult.success ? planResult.plan.projectRootPath : undefined,
+            approvalState: "needs_review",
+            outputRefs: planResult.success ? [{ kind: "coding", id: planResult.plan.projectRootPath, label: "Coding plan" }] : [],
+            failureReason: planResult.success ? undefined : planResult.reason,
+            reason: planResult.success
+              ? `Coding plan ready in ${planResult.plan.projectName}: ${planResult.plan.summary}`
+              : `${planResult.reason} Open a local project in Coding, then reroute this item to create the plan, changed-file review, tests, and approval trail.`
+          });
+        }
 
-      if (assignment.role === "automation") {
-        await productivityTaskStore.updateWorkAssignment(assignment.id, { state: "running" });
-        const result = await automationService.createAndRunAdHoc({
-          name: route.workItem.title,
-          goal: `${route.workItem.title}\n\nContext: ${route.workItem.context}`,
-          schedule: "manual",
-          sources: getAutomationSourcesForWorkItem(route.workItem),
-          outputKind: getAutomationOutputKind(route.workItem),
-          artifactKind: "document",
-          sourceWorkspace: "productivity",
-          qualityBar: 84,
-          requiresApproval: true
-        });
-        await productivityTaskStore.updateWorkAssignment(assignment.id, {
-          state: result.success ? "completed" : "waiting_for_user",
-          linkedAutomationRunId: result.success ? result.run.id : result.run?.id,
-          linkedArtifactId: result.success ? result.run.artifactId : result.run?.artifactId,
-          runLogId: result.success ? result.run.id : result.run?.id,
-          qualityScore: result.success ? result.run.qualityScore : result.run?.qualityScore,
-          approvalState: result.success ? "not_required" : "needs_review",
-          outputRefs: buildAutomationOutputRefs(result),
-          failureReason: result.success ? undefined : result.reason,
-          reason: result.success ? "Automation produced a quality-checked run." : result.reason
-        });
+        if (assignment.role === "automation") {
+          await productivityTaskStore.updateWorkAssignment(assignment.id, { state: "running" });
+          const result = await automationService.createAndRunAdHoc({
+            name: route.workItem.title,
+            goal: `${route.workItem.title}\n\nContext: ${route.workItem.context}`,
+            schedule: "manual",
+            sources: getAutomationSourcesForWorkItem(route.workItem),
+            outputKind: getAutomationOutputKind(route.workItem),
+            artifactKind: "document",
+            sourceWorkspace: "productivity",
+            qualityBar: 84,
+            requiresApproval: true
+          });
+          await productivityTaskStore.updateWorkAssignment(assignment.id, {
+            state: result.success ? "completed" : "waiting_for_user",
+            linkedAutomationRunId: result.success ? result.run.id : result.run?.id,
+            linkedArtifactId: result.success ? result.run.artifactId : result.run?.artifactId,
+            runLogId: result.success ? result.run.id : result.run?.id,
+            qualityScore: result.success ? result.run.qualityScore : result.run?.qualityScore,
+            approvalState: result.success ? "not_required" : "needs_review",
+            outputRefs: buildAutomationOutputRefs(result),
+            failureReason: result.success ? undefined : result.reason,
+            reason: result.success ? "Automation produced a quality-checked run." : result.reason
+          });
+        }
       }
-    }
+    })().catch((error: unknown) => {
+      console.error("Failed to finish routed Productivity work in the background.", error);
+    });
 
     return {
       success: true,
@@ -1006,20 +1307,32 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
       allAssignments: await productivityTaskStore.listWorkAssignments()
     };
   });
-  ipcMain.handle("productivity:sync", async (_event, requestedSourceIds?: unknown) => {
+  ipcMain.handle("productivity:sync", async (_event, syncRequest?: unknown) => {
     let addedCount = 0;
     let updatedCount = 0;
     let model: string | undefined;
     let syncedAtLeastOneSource = false;
     const reasons: string[] = [];
     const sourceResults: ProductivitySourceSyncResult[] = [];
+    const requestedSourceIds =
+      Array.isArray(syncRequest)
+        ? syncRequest
+        : syncRequest && typeof syncRequest === "object" && "sourceIds" in syncRequest
+          ? (syncRequest as { sourceIds?: unknown }).sourceIds
+          : undefined;
+    const blockedEmailSenders =
+      syncRequest && typeof syncRequest === "object" && !Array.isArray(syncRequest) && Array.isArray((syncRequest as { blockedEmailSenders?: unknown }).blockedEmailSenders)
+        ? (syncRequest as { blockedEmailSenders: unknown[] }).blockedEmailSenders.map((sender) => normalizeEmailSenderAddress(String(sender))).filter(Boolean)
+        : [];
     const selectedSourceIds = new Set(sanitizeProductivitySyncSourceIds(requestedSourceIds));
 
     if (selectedSourceIds.has("gmail")) {
       const inboxResult = await emailService.syncInbox();
       if (inboxResult.success) {
-        const analysisResult = await emailService.analyzeActionItems(inboxResult.messages);
-        const emailTasksResult = await productivityTaskStore.syncFromEmailActions(inboxResult.messages, analysisResult);
+        const readableMessages = filterBlockedEmailMessages(inboxResult.messages, blockedEmailSenders);
+        const blockedCount = inboxResult.messages.length - readableMessages.length;
+        const analysisResult = await emailService.analyzeActionItems(readableMessages);
+        const emailTasksResult = await productivityTaskStore.syncFromEmailActions(readableMessages, analysisResult);
         if (emailTasksResult.success) {
           syncedAtLeastOneSource = true;
           addedCount += emailTasksResult.addedCount;
@@ -1036,8 +1349,8 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
           configured: inboxResult.status.configured,
           addedCount: emailTasksResult.addedCount,
           updatedCount: emailTasksResult.updatedCount,
-          itemCount: inboxResult.messages.length,
-          reason: emailTasksResult.reason,
+          itemCount: readableMessages.length,
+          reason: blockedCount > 0 ? `${emailTasksResult.reason ?? "Gmail synced."} ${blockedCount} blocked sender message${blockedCount === 1 ? "" : "s"} skipped.` : emailTasksResult.reason,
           accountEmail: inboxResult.status.accountEmail ?? undefined,
           lastSyncedAt: Date.now()
         });
@@ -1159,6 +1472,84 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
       sourceResults
     };
   });
+  ipcMain.handle("work-graph:list", () => buildWorkGraphSnapshot());
+  ipcMain.handle("work-graph:get", (_event, itemId: string) => findWorkGraphItem(itemId));
+  ipcMain.handle("work-graph:replay", async (_event, itemId: string) => {
+    const item = await findWorkGraphItem(itemId);
+    return item ? buildWorkTwinReplay(item) : [];
+  });
+  ipcMain.handle("work-graph:start-safe-work", (_event, itemId: string) => startSafeWorkGraphItem(itemId));
+  ipcMain.handle("work-graph:approve", async (_event, itemId: string) => {
+    const input = await buildWorkGraphInput();
+    return workGraphStore.applyActionResult(input, itemId, "approve");
+  });
+  ipcMain.handle("work-graph:reject", async (_event, itemId: string, reason?: string) => {
+    const input = await buildWorkGraphInput();
+    return workGraphStore.applyActionResult(input, itemId, "reject", reason);
+  });
+  ipcMain.handle("work-graph:revise", async (_event, itemId: string, feedback?: string) => {
+    const item = await findWorkGraphItem(itemId);
+    if (!item) {
+      return {
+        success: false,
+        reason: "Work Twin item was not found.",
+        snapshot: await buildWorkGraphSnapshot()
+      };
+    }
+    const run = await workGraphStore.recordShadowRun(
+      {
+        ...item,
+        run: {
+          ...item.run,
+          plan: feedback?.trim()
+            ? `${item.run.plan}\nRevision request: ${feedback.trim().slice(0, 500)}`
+            : `${item.run.plan}\nRevision requested from Work Twin.`
+        }
+      },
+      "needs_approval"
+    );
+    return {
+      success: true,
+      item,
+      run,
+      reason: "Revision request was recorded in Shadow Mode. Generated output still requires review before external impact.",
+      snapshot: await buildWorkGraphSnapshot()
+    };
+  });
+  ipcMain.handle("work-graph:make-rule", async (_event, itemId: string) => {
+    const item = await findWorkGraphItem(itemId);
+    if (!item) {
+      return {
+        success: false,
+        reason: "Work Twin item was not found.",
+        snapshot: await buildWorkGraphSnapshot()
+      };
+    }
+    const result = await workGraphStore.makeRule(item);
+    return {
+      ...result,
+      snapshot: await buildWorkGraphSnapshot()
+    };
+  });
+  ipcMain.handle("work-twin:get-proof", async (_event, itemId: string) => agentRuntimeService.getProof(await findWorkGraphItem(itemId)));
+  ipcMain.handle("agent:run", (_event, input) => agentRuntimeService.run(input));
+  ipcMain.handle("agent:list-tools", (_event, workspace?: string) => agentRuntimeService.listTools(workspace));
+  ipcMain.handle("agent:get-trace", (_event, traceId: string) => agentRuntimeService.getTrace(traceId));
+  ipcMain.handle("agent:approve-tool", (_event, traceId: string, toolName: string) => agentRuntimeService.approveTool(traceId, toolName));
+  ipcMain.handle("connectors:list", () => agentRuntimeService.listConnectors());
+  ipcMain.handle("connectors:get-status", (_event, connectorId: string) => agentRuntimeService.getConnectorStatus(connectorId));
+  ipcMain.handle("connectors:set-enabled", (_event, connectorId: string, enabled: boolean) =>
+    agentRuntimeService.setConnectorEnabled(connectorId, Boolean(enabled))
+  );
+  ipcMain.handle("memory:get", () => agentRuntimeService.getMemory());
+  ipcMain.handle("memory:update", (_event, input) => agentRuntimeService.updateMemory(input));
+  ipcMain.handle("hooks:list", () => agentRuntimeService.listHooks());
+  ipcMain.handle("hooks:test", (_event, input) => agentRuntimeService.testHook(input));
+  ipcMain.handle("subagents:list", () => agentRuntimeService.listSubagents());
+  ipcMain.handle("subagents:run", (_event, subagentId: string, prompt: string) => agentRuntimeService.runSubagent(subagentId, prompt));
+  ipcMain.handle("shadow-mode:list-runs", () => workGraphStore.listShadowRuns());
+  ipcMain.handle("shadow-mode:list-rules", () => workGraphStore.listRules());
+  ipcMain.handle("shadow-mode:set-rule-enabled", (_event, ruleId: string, enabled: boolean) => workGraphStore.setRuleEnabled(ruleId, enabled));
   ipcMain.handle("automation:list-recipes", () => automationService.listRecipes());
   ipcMain.handle("automation:create-recipe", (_event, input: AutomationCreateRecipeInput) => automationService.createRecipe(input));
   ipcMain.handle("automation:update-recipe", (_event, input: AutomationUpdateRecipeInput) => automationService.updateRecipe(input));
@@ -1168,6 +1559,65 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("automation:detect-from-prompt", (_event, prompt: string, sourceWorkspace?: AutomationSourceWorkspace) =>
     detectAutomationIntent(String(prompt ?? ""), sourceWorkspace ?? "automation")
   );
+  ipcMain.handle("diagnostics:list", (_event, limit?: number) => diagnosticStore.list(limit));
+  ipcMain.handle("diagnostics:record", (_event, input) => recordDiagnostic(input));
+  ipcMain.handle("diagnostics:clear", async () => {
+    const entries = await diagnosticStore.clear();
+    await publishDiagnostics();
+    return entries;
+  });
+  ipcMain.handle("diagnostics:export", () => diagnosticStore.exportLog());
+  ipcMain.handle("account:status", () => accountService.getStatus());
+  ipcMain.handle("account:get-config", () => accountService.getConfig());
+  ipcMain.handle("account:sign-in", (_event, request) => accountService.signIn(request));
+  ipcMain.handle("account:sign-up", (_event, request) => accountService.signUp(request));
+  ipcMain.handle("account:sign-out", () => accountService.signOut());
+  ipcMain.handle("settings:get-money-movement", () => moneyMovementService.getSettings());
+  ipcMain.handle("settings:start-money-verification", (_event, acknowledged: boolean) => moneyMovementService.startVerification(acknowledged));
+  ipcMain.handle("settings:confirm-money-verification", (_event, code: string) => moneyMovementService.confirmVerification(String(code ?? "")));
+  ipcMain.handle("settings:disable-money-movement", () => moneyMovementService.disable());
+  ipcMain.handle("settings:start-stripe-connect", () => moneyMovementService.startStripeConnect());
+  ipcMain.handle("settings:refresh-stripe-connection", () => moneyMovementService.refreshStripeConnection());
+  ipcMain.handle("settings:disconnect-stripe-account", () => moneyMovementService.disconnectStripeAccount());
+  ipcMain.handle("payments:create-proposal", (_event, input: PaymentProposalInput) => moneyMovementService.createProposal(input));
+  ipcMain.handle("payments:verify-invoice", (_event, input: InvoiceCandidate) => moneyMovementService.verifyInvoice(input));
+  ipcMain.handle(
+    "payments:verify-vendor",
+    (
+      _event,
+      input: {
+        providerKind: PaymentProviderKind;
+        payeeName: string;
+        payeeEmail?: string;
+        destination?: PaymentDestination;
+        trustedDomains?: string[];
+        userApprovedVendorRecord?: boolean;
+      }
+    ) => moneyMovementService.verifyVendor(input)
+  );
+  ipcMain.handle("payments:get-provider-readiness", () => moneyMovementService.getProviderReadiness());
+  ipcMain.handle("payments:list-receipts", () => moneyMovementService.listReceipts());
+  ipcMain.handle("payments:verify-receipt", (_event, receiptId: string) => moneyMovementService.verifyReceipt(String(receiptId ?? "")));
+  ipcMain.handle("payments:create-hosted-approval", (_event, proposalId: string) => moneyMovementService.createHostedApproval(String(proposalId ?? "")));
+  ipcMain.handle("payments:confirm-provider-status", () => moneyMovementService.getProviderReadiness());
+  ipcMain.handle("payments:get-quote", (_event, proposalId: string) => moneyMovementService.getQuote(String(proposalId ?? "")));
+  ipcMain.handle("payments:approve", (_event, proposalId: string, stepUpConfirmed: boolean) => moneyMovementService.approve(String(proposalId ?? ""), stepUpConfirmed === true));
+  ipcMain.handle("payments:execute", (_event, proposalId: string, approvalId: string, mode?: PaymentMode) =>
+    moneyMovementService.execute(String(proposalId ?? ""), String(approvalId ?? ""), mode === "live" ? "live" : "test")
+  );
+  ipcMain.handle("system:open-external-url", async (_event, rawUrl: string) => {
+    const url = String(rawUrl ?? "").trim();
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        return { success: false, reason: "Autopilot only opens http and https account links externally." };
+      }
+      await shell.openExternal(parsed.toString());
+      return { success: true };
+    } catch (error) {
+      return { success: false, reason: error instanceof Error ? error.message : "External browser could not be opened." };
+    }
+  });
   ipcMain.handle("observability:list-run-log", (_event, limit?: number) => observabilityStore.list(limit));
   ipcMain.handle("assistant:sources", () => getAssistantContextSources(controller));
   ipcMain.handle("assistant:ask", async (_event, request) => {
@@ -1175,6 +1625,8 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
     return assistantService.ask(request, contextItems);
   });
   ipcMain.handle("assistant:generate-prompts", (_event, request) => assistantService.generateDesignPrompts(request));
+  ipcMain.handle("assistant:translate-design-prompt", (_event, request) => assistantService.translateDesignPrompt(request));
+  ipcMain.handle("assistant:translate-coding-prompt", (_event, request) => assistantService.translateCodingPrompt(request));
   ipcMain.handle("artifacts:list", () => artifactStore.listArtifacts());
   ipcMain.handle("artifacts:create", (_event, input: ArtifactCreateInput) => artifactStore.createArtifact(input));
   ipcMain.handle("artifacts:update", (_event, input: ArtifactUpdateInput) => artifactStore.updateArtifact(input));
@@ -1234,6 +1686,7 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("coding:open-files", () => codingWorkspace.openFiles(mainWindow));
   ipcMain.handle("coding:create-project", () => codingWorkspace.createProject(mainWindow));
   ipcMain.handle("coding:select-project", (_event, rootPath: string) => codingWorkspace.selectProject(rootPath));
+  ipcMain.handle("coding:rename-project", (_event, rootPath: string, name: string) => codingWorkspace.renameProject(rootPath, name));
   ipcMain.handle("coding:read-path", (_event, targetPath: string) => codingWorkspace.readPath(targetPath));
   ipcMain.handle("coding:write-file", (_event, targetPath: string, content: string) => codingWorkspace.writeFile(targetPath, content));
   ipcMain.handle("coding:delete-path", (_event, targetPath: string) => codingWorkspace.deletePath(targetPath));
@@ -1241,40 +1694,22 @@ function registerIpc(controller: TabController, mainWindow: BrowserWindow): void
   ipcMain.handle("coding:search", (_event, query: string) => codingWorkspace.searchProject(query));
   ipcMain.handle("coding:open-terminal", (_event, input?: CodingTerminalOpenRequest) => codingWorkspace.openTerminal(input));
   ipcMain.handle("coding:terminal-input", (_event, input: CodingTerminalInputRequest) => codingWorkspace.sendTerminalInput(input));
+  ipcMain.handle("coding:plan-command", (_event, input: CodingCommandRequest) => codingWorkspace.planCommand(input));
+  ipcMain.handle("coding:approve-command", (_event, input: CodingCommandRequest) => codingWorkspace.approveCommand(input));
   ipcMain.handle("coding:run-command", (_event, input: CodingCommandRequest) => codingWorkspace.runCommand(input));
+  ipcMain.handle("coding:get-command-log", () => codingWorkspace.getCommandLog());
+  ipcMain.handle("coding:create-patchset", () => codingWorkspace.createPatchSet());
+  ipcMain.handle("coding:validate-preview", (_event, input: CodingPreviewValidationRequest) => codingWorkspace.validatePreview(input));
+  ipcMain.handle("coding:run-deep-qa-benchmark", () => codingWorkspace.runDeepQaBenchmark());
   ipcMain.handle("coding:repo-overview", () => codingWorkspace.getRepoOverview());
   ipcMain.handle("coding:language-tool-statuses", () => codingWorkspace.getLanguageToolStatuses());
   ipcMain.handle("coding:create-agent-plan", (_event, goal: string) => codingWorkspace.createAgentPlan(goal));
-  ipcMain.handle("coding:start-agent-run", async (_event, goal: string) => {
-    const planResult = await codingWorkspace.createAgentPlan(goal);
-    if (!planResult.success) {
-      return planResult;
-    }
-
-    const status = await codingWorkspace.getGitStatus();
-    const run = {
-      id: `coding-run:${randomUUID()}`,
-      planId: planResult.plan.id,
-      phase: planResult.plan.phase,
-      understanding: planResult.plan.summary,
-      schema: planResult.plan.schema,
-      plan: planResult.plan.steps,
-      commands: [],
-      changedFiles: status.success ? status.changedFiles : [],
-      testResults: [],
-      approvalState: "needs_review" as const,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
-
-    return {
-      success: true,
-      plan: planResult.plan,
-      run
-    };
-  });
+  ipcMain.handle("coding:start-agent-run", (_event, goal: string) => codingWorkspace.startAgentRun(goal));
   ipcMain.handle("coding:git-status", () => codingWorkspace.getGitStatus());
   ipcMain.handle("coding:git-diff", (_event, filePath?: string) => codingWorkspace.getGitDiff(filePath));
+  ipcMain.handle("coding:git-commit-proposal", (_event, message?: string, filePaths?: string[]) => codingWorkspace.createGitCommitProposal(message, filePaths));
+  ipcMain.handle("coding:git-commit", (_event, request: GitCommitRequest) => codingWorkspace.gitCommit(request));
+  ipcMain.handle("coding:git-push", (_event, request: GitPushRequest) => codingWorkspace.gitPush(request));
   ipcMain.handle("coding:browse", (_event, input: string) => codingWorkspace.browse(input));
   ipcMain.handle("coding:research", (_event, input: string) => codingWorkspace.research(input));
   ipcMain.handle("coding:plugin-statuses", () => codingWorkspace.getPluginStatuses());
@@ -1339,9 +1774,39 @@ async function createMainWindow(): Promise<void> {
   });
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    void diagnosticStore.append({
+      severity: "error",
+      workspace: "browser",
+      source: "navigation",
+      message: `Page failed to load: ${errorDescription}`,
+      details: `${validatedURL || "unknown URL"} (${errorCode})`,
+      suggestedAction: isMainFrame
+        ? "Check the URL or network connection. Autopilot will keep the browser shell running."
+        : "A page subresource failed to load; reload if the page looks broken.",
+      relatedEntity: { kind: "tab", label: validatedURL }
+    });
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    void diagnosticStore.append({
+      severity: "error",
+      workspace: "system",
+      source: "renderer",
+      message: `Renderer process stopped: ${details.reason}`,
+      details: `Exit code: ${details.exitCode}`,
+      suggestedAction: "Restart Autopilot if the screen does not recover."
+    });
+  });
 
-  tabs = new TabController(mainWindow);
+  mainWindowRef = mainWindow;
+
+  tabs = new TabController(mainWindow, handleAccountCallbackUrl);
   registerIpc(tabs, mainWindow);
+  mainWindow.on("closed", () => {
+    if (mainWindowRef === mainWindow) {
+      mainWindowRef = null;
+    }
+  });
   mainWindow.on("close", () => {
     if (tabs) {
       void persistActiveBrowserSnapshot(tabs);
@@ -1360,15 +1825,49 @@ async function createMainWindow(): Promise<void> {
   }
 
   await restoreInitialBrowserWorkspace(tabs);
+  await processPendingAccountCallbacks();
 }
+
+const useSingleInstanceLock = process.env.NODE_ENV !== "test" && process.env.AUTOPILOT_DISABLE_SINGLE_INSTANCE_LOCK !== "1";
+const gotSingleInstanceLock = useSingleInstanceLock ? app.requestSingleInstanceLock() : true;
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else if (useSingleInstanceLock) {
+  app.on("second-instance", (_event, argv) => {
+    const focusedWindow = BrowserWindow.getAllWindows()[0];
+    if (focusedWindow) {
+      if (focusedWindow.isMinimized()) {
+        focusedWindow.restore();
+      }
+      focusedWindow.focus();
+    }
+
+    for (const callbackUrl of findAccountCallbackUrls(argv)) {
+      void handleAccountCallbackUrl(callbackUrl);
+    }
+  });
+}
+
+app.on("open-url", (event, callbackUrl) => {
+  if (!isAutopilotAccountCallbackUrl(callbackUrl)) {
+    return;
+  }
+
+  event.preventDefault();
+  void handleAccountCallbackUrl(callbackUrl);
+});
 
 app.whenReady().then(async () => {
   app.setName("Autopilot Browser");
   app.setAppUserModelId("Autopilot.Browser");
+  registerAutopilotAccountProtocol();
   await ensureDownloadHistoryLoaded();
-  denyPermissions();
+  configureSessionPermissions();
   registerDownloadTracking();
   await createMainWindow();
+  for (const callbackUrl of findAccountCallbackUrls(process.argv)) {
+    await handleAccountCallbackUrl(callbackUrl);
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

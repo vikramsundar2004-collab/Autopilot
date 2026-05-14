@@ -143,7 +143,7 @@ Thanks!`)
         preview: "",
         status: "needs_review",
         artifactId: "artifact-1",
-        artifactKind: "document",
+        artifactKind: "reply",
         source: { provider: "gmail", label: "Gmail", messageId: "message-1" },
         createdAt: 1,
         updatedAt: 2
@@ -173,7 +173,8 @@ Thanks!`)
       title: "Reply draft",
       body: "Hi team,\n\nHere is the update.",
       preview: "Hi team, Here is the update.",
-      status: "needs_review"
+      status: "needs_review",
+      artifactKind: "reply"
     });
   });
 });
